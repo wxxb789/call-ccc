@@ -2299,6 +2299,215 @@ supersede it with a newer one and say which it supersedes.
   measured).
 - **Settled by:** nothing owner-only.
 
+## Q-0007-01 — The OpenCode installation is the harness's own importer, so a missing binary is a boundary
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** an OpenCode session is a row in the harness's own SQLite store, and the harness ships an
+  importer (`opencode session import`). Should a host without that binary still get an installation — by
+  writing the store's rows from this build, or by writing a second store the harness might read?
+- **Default taken:** no. The install runs the harness's own importer with the document staged outside the
+  home (a temporary file removed once the importer has it) and reports installed only when the harness
+  answers `Imported session: <id>` for this conversion's id; a host whose binary is absent fails the run
+  with the boundary named (`… is not on PATH, and this target's installation is the harness's own
+  importer: …`), and the native check ends `RESULT: INCOMPLETE` (exit 2) before any check. Writing the
+  store's rows here would be a second writer of a private store — exactly what the goal's Bounds refuse —
+  and a store this build invented is one no harness was shown to read. An `already exists` answer (which
+  the harness prints on stderr with exit 0) is a failure rather than a success, because this run did not
+  install that session.
+- **Reversal:** teach the installer a store writer if a harness version ships no import path at all (then
+  the check would have to show the harness reading what this build wrote, and the report would say which
+  writer ran).
+- **Settled by:** an OpenCode release that documents a stable on-disk session format, or an operator
+  decision that a missing-binary run should install anyway.
+
+## Q-0007-02 — The data root the report names is the harness's own, taken from XDG_DATA_HOME
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** `--target-home DIR` on every other route names the directory the harness keeps its data
+  in. OpenCode has no variable that names its own directory: it reads `$XDG_DATA_HOME/opencode`. Should
+  `--target-home` name the data root (`…/opencode`'s parent) or the data directory itself?
+- **Default taken:** both spellings are accepted and resolved to the same directory. `ResolveOpenCodeHome`
+  treats a value whose base name is `opencode` as the data directory itself (and names its parent as the
+  data root) and any other value as the data root; the report, the `XDG_DATA_HOME` every command this
+  route runs is given, and the store path all agree; `OPENCODE_DB` is removed from the child environment
+  (it would point the harness at another store), and the printed resume line and the resume check pin this
+  home's own store in it instead -- a shell line can set a variable but cannot remove one, so a caller's
+  inherited override is answered by naming the database beside the root (measured: `debug paths db`
+  answers the pinned file, `session export` resolves the session there, and the same export against
+  another store refuses it, where `run --session <id>` would *create* the session) -- and a caller's own
+  `XDG_DATA_HOME` is the fallback when no flag is given. A demo therefore cannot silently split the store
+  the report names from the store the harness reads.
+- **Reversal:** accept only one spelling (the data root), which would make a caller who names
+  `…/opencode` install into a sibling directory.
+- **Settled by:** nothing owner-only.
+
+## Q-0007-03 — The load level asks `session export`, never `run`
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** OpenCode's non-interactive turn command (`run --session <id>`) is the command a caller
+  resumes with. Can the load level use it, as a harness whose loader reads a file might?
+- **Default taken:** no. Measured on 2.2.5: `run --session <id>` **creates** a session for an id the store
+  does not hold and appends its own records even when the turn fails, so a `run`-based load would answer
+  about a session it had just made rather than about the installed one. The load level therefore asks
+  `session export <id> --standalone` (the harness's own reader, content-neutral for the session's own
+  records — measured: identical rows and an identical document around it) with an unknown-id control arm
+  that must refuse naming that id, and the answer is accepted only when it names the installed session's
+  own id. The real turn belongs to the resume level, which runs it explicitly
+  (`--verify resume --resume-prompt TEXT`) and measures the growth through the harness's own reader.
+- **Reversal:** use `run` for the load level, at the cost of the check being about a session the check
+  itself created.
+- **Settled by:** a harness version whose `run` refuses an unknown id.
+
+## Q-0007-04 — An assistant record's completion instant is written from the record's own instant
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** the harness's importer requires an assistant message's `time.completed` — measured: a
+  message whose `time` carries `created` alone is accepted and then **silently dropped** (no row, no
+  export entry; every other member was bisected). The source read answers one instant per record, not a
+  span. What should the member hold?
+- **Default taken:** the record's own instant, so the message reads as a zero-length turn; the choice is
+  disclosed on every run as `assistant_completion_instant ×<n>` (carried with caveat) with the
+  measurement in its detail. The alternatives were a span derived from the *next* record's instant (an
+  interval the source never recorded) or leaving the member out (the harness would drop the message, and
+  the dialogue and tool evidence with it).
+- **Reversal:** write the next record's instant as the completion if a future harness version is measured
+  to need a positive span (the report's detail sentence would then say which instant it wrote).
+- **Settled by:** an OpenCode release whose importer keeps a message without `time.completed`, or one that
+  documents what it does with the member.
+
+## Q-0007-05 — The structural comparison canonicalizes a tool part's input JSON
+
+- **Status:** resolved (default taken; 0007's implementation)
+- **Question:** the inherited reader renders a tool call's input with Go's own JSON encoding (compact,
+  keys sorted), while the document a conversion writes carries the source's own spelling
+  (`{"file_path": "…"}`). Should the read-back comparison treat the two spellings as a difference?
+- **Default taken:** no, for that one member. Measured on 2.2.5: the importer stores `state.input` as a
+  parsed value and re-encodes it, so the store's own row holds the compact spelling and the document's
+  whitespace is not evidence the store keeps. The comparison therefore canonicalizes the *intended* side's
+  input JSON through `canonicalJSONValue` (a value that does not parse is left exactly as recorded, so the
+  walk reports it) while every other member — dialogue, call id and name, the result's text, the boundary
+  summary — is compared as recorded, and a changed value (or a changed tool name) is still a difference.
+- **Reversal:** compare the raw spelling, which would report every real conversion as a difference over a
+  member the harness itself normalizes.
+- **Settled by:** a harness version that stores the input's original spelling.
+
+## Q-0007-06 — A failed importer process is reconciled through the harness's own reader
+
+- **Status:** resolved (default taken; 0007's review round 7)
+- **Question:** this route's installation is another process's write (Q-0007-01), and — measured on 2.2.5
+  — the harness's own importer commits the session and then exits, so a deadline or a cancellation between
+  those two moments leaves the store holding the session while this run observed only a process error.
+  Should a failed process answer "installed?" with the only thing the run saw — a failure — and report
+  nothing published?
+- **Default taken:** no, and three answers are kept apart. The harness's own `Imported session: <id>` line
+  in the captured output is its answer that the store holds this session; where the process failed without
+  acknowledging anything, the harness's own reader is asked (`session export <id> --standalone`, the
+  interface Q-0007-03 already reads this store through, measured to change none of a session's own
+  records); and where neither answers — an answered refusal being its own answer that the id does not
+  resolve — the run reports Q-0007-07's third state. The question is asked with a context that **outlives
+  the caller's own deadline** (`context.WithoutCancel` plus the route's own question deadline): the
+  deadline that stopped the import is exactly what would make the question unable to answer, and asking it
+  is a bounded, read-only act, where not asking it is what would leave the report asserting an absence
+  nobody observed. A published answer keeps the installer's own convention — the path beside the error
+  (`continue.go`) — so the report still carries the identity the session is resumed by.
+- **Reversal:** read every process failure as "nothing was published". The cost is the one the goal's own
+  clause names: a caller who acts on that line and converts the same conversation again leaves a second
+  snapshot of one conversation in the store, with nothing recording either attempt.
+- **Settled by:** a harness version whose importer answers only after committing (then the process error
+  itself would be the absence), or an operator who prefers the cheapest report over a reconciled one.
+
+## Q-0007-07 — The installation block has a third state, `unresolved`
+
+- **Status:** resolved (default taken; 0007's review round 7; amends Q-0002-15's two-state vocabulary and
+  its `(proposed; nothing was installed)` marker)
+- **Question:** `installation.state` has carried `installed`/`not-installed` since 0002 (Q-0002-15), and the
+  human block renders everything that is not `installed` as `not-installed (nothing was published under
+  <home>)` with the identity lines marked `(proposed; nothing was installed)`. A run whose installer cannot
+  establish whether it published anything (Q-0007-06's unanswered case) has neither answer. Should the
+  third answer be a wire value of its own, or should such a run borrow `not-installed`'s words?
+- **Default taken:** a wire value of its own: `installation.state` is `unresolved`, the human block prints
+  `installed:    unresolved (whether the store under <home> holds this session could not be established)`,
+  and the three identity lines are marked `(proposed; installation unresolved)`. The other fields are
+  unchanged, the run still exits failure and still carries the failure in its error, detail and warnings,
+  and an installer that handed back a published path reports `installed` however its process ended — the
+  path is the answer. Borrowing `not-installed`'s words would put an absence nobody observed in the one
+  line a reader scans for that question.
+- **Reversal:** fold the state into `not-installed` and carry the difference in `installation.detail`
+  alone: the same information for a reader of the detail, at the cost of the one line a reader scans for
+  "is it installed?" answering with a claim the run does not have.
+- **Settled by:** an operator who prefers the two-state vocabulary for a consumer already reading it, or a
+  harness version that cannot leave this question unanswered.
+
+## Q-0007-08 — A reader's rendering of a record's own trace is removed from that record's text
+
+- **Status:** resolved (default taken; 0007's review round 8; a rule of the shared `dialogueText` every
+  target writer reads its text through, not of this route alone)
+- **Question:** the readers that render a persisted reasoning trace into `Content` instead of projecting a
+  dialogue (ZCode's thinking parts, Cline's reasoning records, Copilot's reasoning blocks and the generic
+  block reader) write it as `[Thinking]…[/Thinking]` *beside* the record's own text; only the shape where
+  the rendering is the whole `Content` was recognised (the round-7 rule, `thinkingRenderingOnly`). A record
+  carrying both therefore travelled with its trace twice — once as the record's own reasoning and once as
+  words the reader rendered into the dialogue. Should such a record's `Content` be carried whole (the
+  duplication), be dropped whole and counted, or have the rendering removed from it?
+- **Default taken:** the rendering is removed from the record's text, and only where the record's own trace
+  stands behind it: the block's own words must be part of the message's trace (so a record the read
+  answered no trace for, a block no trace of that record holds — a model writing the markers itself —, a
+  marker with no closer and an empty block keep their `Content` byte for byte), the removal happens where
+  the block stands (a reader that keeps the record's part order may render the trace *after* the text it
+  followed), and the line feeds that joined the rendering to its neighbours go with it. The alternative
+  arms each lose something this one keeps: carrying the `Content` whole presents the trace as dialogue the
+  source never recorded the agent as saying, and dropping it whole discards the record's own words, which
+  nothing shows to be reasoning. (Round 10 narrowed it to the reader the words test cannot see: the removal
+  is authorised only for a record whose *reader* renders the trace into `Content` —
+  `Message.ContentRendersThinking`, established from the session's agent label by
+  `internal/ccc/dialogue_provenance.go`'s `thinkingRenderingReaders`, whose thirteen entries each name their
+  reader's construction site in the carried tree. A reader that records `Content` as the source wrote it —
+  Vibe's independent `content` and `reasoning_content` among them — keeps its `Content` byte for byte *even
+  where its words are the record's trace*, the coincidence the round's finding measured: a reader the table
+  does not name is treated as a non-renderer, and the table is maintained with the carried readers. Round
+  12 replaced the words test's own criterion with the readings: a block is removed only where *every*
+  reading of the record's own bytes against its own trace takes it — an assignment of some of `Content`'s
+  marker blocks, in order, to the trace's parts, whose words open the trace, close it and account for
+  everything between them — because the feeds around a marker pair establish no part boundary (a part of
+  the record's own text may carry feeds of its own around a pair whose words the trace holds, as a
+  substring of it as readily as the whole); where the readings disagree about the dialogue, every block
+  they disagree about stays in the dialogue as text the record carries, and the whole-content shape — a
+  record whose `Content` is nothing but a rendering — is the one reading the readers' own rule states: the
+  block's words must *be* the trace, whole.)
+- **Reversal:** make the writer refuse such a record (or drop its `Content` and count it under a loss
+  category), which is stricter about provenance and loses the record's own text with it.
+- **Settled by:** a reader that renders a trace into `Content` in a shape where the block's own words are
+  not recoverable from the message's trace field, or an operator who prefers the strict arm.
+
+## Q-0007-09 — The native check removes, in a caller's store, only what it shows to be its own
+
+- **Status:** resolved (default taken; 0007's review round 8)
+- **Question:** `--target-home` points the OpenCode native check at a store the caller owns, and the check
+  plants a session of its own in it (a fixed id, a fabricated document) to measure that "nothing else
+  moved". Measured failure: an earlier run whose *planting import* committed and whose process then failed
+  or overran its deadline left that fixture behind, so every later run met `Session already exists` and
+  ended `RESULT: FAIL` — with the fixture still there. May the check remove what blocks it?
+- **Default taken:** only what the store's own document shows to be that check's own fixture, and only
+  after asking. The id the check plants is read through the harness's own reader first (the store's own
+  `Session not found: <id>` refusal, naming that id, is the only answer that makes it free — a store that
+  could not answer is not read as empty); a session the store holds whose *whole* document is the check's
+  own fixture — compared member for member, with only the two members the harness's own importer is
+  measured to rewrite (`info.projectID`, recomputed from the session's recorded directory, and
+  `info.time.updated`, the import's own instant) normalized away — is an earlier run's leftover and is
+  removed through the harness's own `session delete` (and shown gone through its own reader); a session
+  holding anything else is left exactly as found, with the run recording the refusal and stopping. (Round 9
+  narrowed the recognition to the whole document: the earlier rule — the id, the recorded directory and a
+  matching message text — authorised deleting a leftover a caller had since continued, and the measured
+  pre-fix run deleted one, while the fixed one leaves that session resolving with the caller's own turn and
+  reports the refusal.) The planting itself is reconciled the way the route reconciles its own import —
+  the harness's own acknowledgment line, kept
+  even when the import overran its deadline, then the harness's own reader — so an import whose process
+  failed after committing is still a publication this run removes again.
+- **Reversal:** refuse to touch a store that already holds the id, leaving the operator to remove the
+  leftover by hand (the state the measured failure produced, and the reason this default was taken).
+- **Settled by:** an operator who prefers a check that never deletes in a named store, or a harness whose
+  export cannot show which session a store holds.
+
 ## Q-0002-28 — Which obligation ids a citation manifest cannot hold
 
 - **Status:** resolved (default taken; the harness increment — *a machine-checked obligation-citation
@@ -2326,3 +2535,111 @@ supersede it with a newer one and say which it supersedes.
   present state.
 - **Settled by:** nothing owner-only; the owner may ask for the python-case row form when a goal's
   acceptance surface carries enough harness rules to justify it.
+
+## Q-0007-10 — A record's dialogue the read cannot establish is not guessed at (Q-0007-08's mechanism superseded)
+
+- **Status:** resolved (the owner's decision of 2026-11-19, letter A: the root fix for this face lands
+  inside 0007, on the third consult's answer — root cause, what fixing the root means, and how to tell the
+  root is fixed)
+- **Question:** the carried readers write a record's persisted reasoning trace into `Content` verbatim
+  between their own markers, so two different native part orders — a text part followed by a thinking
+  part, and a text part that quotes the block the thinking part renders — produce the same `Content`, the
+  same trace and the same reader label, and no inverse can say which occurrence was the model's words
+  (`internal/parser/zcode.go` escapes nothing, so even the first closer need not be the reader's own; the
+  consult's arm 2 is the collision with no trimming in the shape at all). Three review rounds (13, 14, 15)
+  each found a deletion defect inside the readings machinery that inferred a removal from those bytes, and
+  two cross-family consults each improved the inverse rather than removing the dependency on it. What
+  happens to a record whose reader renders the trace into `Content` and whose read answered no dialogue
+  projection — keep the removal, carry `Content` whole, drop `Content` whole and count it, or refuse the
+  conversion?
+- **Default taken:** **no removal by inference survives.** `dialogueOf`
+  (`internal/ccc/dialogue_provenance.go`) answers the source's own projection (byte for byte, an
+  explicitly empty one included) or one of three states — the record's own bytes where the reader is not
+  one `thinkingRenderingReaders` names and the record carries no calls (carried, counted as
+  `unprojected_dialogue`); no dialogue where `Content` is byte for byte the reader's rendering of the
+  record's whole trace; nothing established where the reader renders the trace and the record carries one,
+  or the record carries calls (no text written, counted as `unresolved_dialogue`, tool evidence still
+  written, the source session keeping the bytes). The readings machinery, its candidate scan, its
+  first-closer pairing and `thinkingRenderingOnly` are deleted rather than repaired, and the list is
+  completed against the carried readers (the eight non-projecting renderers that were missing, and the
+  projecting renderers, whose entry covers a record without a projection such as a legacy archive row).
+  Partial conversion, not refusal, is the disposition: the loss is per record and disclosed, and refusing
+  a conversation over one record's text would deny every record the source did answer for. Every run's
+  report names both categories with their counts and dispositions.
+- **Reversal:** restore a removal for a reader whose own construction proves the text — the durable route
+  is upstream (a reader that projects its dialogue, docs/upstream.md's procedure), not a local recogniser
+  — or take the stricter arm: refuse the records whose dialogue cannot be established instead of omitting
+  their text and converting the rest.
+- **Settled by:** an upstream projection for the readers that render a trace and project none (then their
+  records convert exactly and both categories fall to zero), or an operator who prefers the strict arm.
+
+## Q-0007-11 — OpenCode counts a record's dialogue state after its role gate (a count moves on one route)
+
+- **Status:** resolved (the simplify round's accepted PD-2, applied by the unattended increment)
+- **Question:** the dialogue categories (`unprojected_dialogue`, `unresolved_dialogue`) describe what
+  happened to a record's *dialogue*. OpenCode asked `dialogueOf` and counted those categories for every
+  record, before its role gate, and then discarded the text of a record whose role is neither the user's
+  nor the assistant's under that role's own category — so a `tool`-role record's `Content` was reported as
+  carried-with-caveat text ("the text written for them is the reader's own Content for the record, byte for
+  byte") although no document and no report item held it, and one source record was counted differently by
+  this route than by Codex, Claude and Pi. Count before the gate (one route's current answer, with the
+  category's own sentence then false for it) or after it (the other three routes' answer, and a count that
+  moves on one route)?
+- **Default taken:** **after the gate.** `openCodeConverter.writeMessage` returns a record of any other
+  role under that role's own category (still writing its tool evidence) before `dialogueOf` is asked, so a
+  dialogue category is only ever counted for a record the writer went on to consider as dialogue. Measured
+  on one hand-built document (a projected user record, a `tool`-role record whose `Content` is text, a
+  plain assistant record): before, codex/claude/pi reported `unprojected_dialogue=1` and OpenCode `2`;
+  after, all four report `tool_role_messages=1` and `unprojected_dialogue=1`. This is the round's one
+  behavioural change — a count, for documents holding a non-dialogue role's text, that no run recorded in
+  the increment's evidence ever stated — and the evidence record names it as such
+  (`docs/evidence/0007-opencode-target-continuation.md`, the simplify round's section, PD-2). The round's
+  other two defects are not behaviour changes: PD-1 is a measured restoration of the categories `fa8da89`
+  reported (per route, both roles), and PD-3 is two report clauses corrected.
+- **Reversal:** count the dialogue categories before the role gate again — nothing in a converted document
+  depends on the count, so reversing it is one statement's position in `writeMessage`.
+- **Settled by:** nothing owner-only; an operator who wants a non-dialogue role's `Content` counted under
+  the dialogue categories (with those categories' sentences restated so they are true there, and the other
+  three routes taught the same) may ask for that split instead.
+
+## Q-0007-12 — A rendering reader whose read records no trace for the record: carry `Content` counted, or ask the read's own flag and omit
+
+- **Status:** resolved (**owner, 2026-11-19 — letter A**, the wording arm; applied by the unattended increment as
+  round 17's STD-A01, arm (a). The mechanism arm is **deferred to goal 0008**, where OpenCode as a *source*
+  makes it live)
+- **Question:** `dialogueOf`'s rendering arms ask the reader's name **and** a non-blank `Message.Thinking`
+  (`ContentRendersThinking && TrimSpace(Thinking) != ""`). A reader that renders the trace into `Content`
+  without the read recording the trace's own text — `Message.Thinking` empty for every record it produces
+  — therefore never reaches `dialogueUnestablished`: its records land in `dialogueFromContent`, the text
+  (the rendered block inside it) travels, and the conversion counts them `unprojected_dialogue`. That is
+  every record of the eight block-writing readers this increment added to `thinkingRenderingReaders`
+  (ChatGPT, Claude.ai, Copilot, Gemini, Hermes, OpenCode, Reasonix, Zencoder — none of their nine carried
+  reader files sets `ThinkingText`, re-derived by grep), measured on the shape they produce:
+  `dialogueOf` answers the record's-own-bytes state and the Codex document holds the rendering's own text
+  (`secret trace`), with `unresolved_dialogue = 0`. Two arms: carry `Content` and count it, so the entries
+  cannot act for those records and the report says so (the shipped arm); or carry the read's own existence
+  flag — `parser.ParsedMessage.HasThinking`, not carried as a `Message` field today — and treat (named
+  reader ∧ a trace was recorded as existing ∧ no trace text) as `dialogueUnestablished`, writing nothing
+  and counting the record, the partial conversion the three states already define.
+- **Default taken:** the shipped arm. Where the read answered no trace, the listing cannot act, and the
+  record's text (a rendering among it) travels and is counted — the condition every statement of the rule
+  now carries (AGENTS.md's disclosed-outcome rule (1), the `dialogueFromContent` state doc, the
+  `unprojected_dialogue` row and this increment's evidence record), so the report discloses the ambiguity
+  per run instead of claiming an exact answer for those readers. The mechanism arm cannot be a blanket
+  rule without per-reader verification: `internal/parser`'s Goose reader sets `HasThinking` from
+  `redactedThinking` with no block and no text, so "a trace was recorded as existing but its text is
+  empty" is not by itself evidence that `Content` holds a rendering, and the blanket form would omit real
+  text. Only a reader-by-reader answer (the list split by which readers render without recording, or the
+  flag carrying that distinction) can say which readers the arm may act for.
+- **Reversal:** carry `ParsedMessage.HasThinking` onto `Message` and ask the rendering arm as (reader
+  named ∧ `HasThinking` ∧ `Thinking == ""`), after verifying per reader that its empty-`HasThinking` shape
+  is the rendering one — or keep the shipped arm and revisit when an upstream reader records the trace's
+  own text (the boundary Q-0007-10's "settled by" names). Either reversal is one clause in `dialogueOf`.
+- **Settled by:** the owner's scope call — whether eight readers' renderings being carried and counted
+  (the shipped arm, disclosed per run) is acceptable for this increment, with the mechanism arm a separate
+  change verified reader by reader — or an upstream reader that records the trace's own text.
+- **Resolution:** (owner, 2026-11-19) option (**A**) confirmed on the operator's re-sent form — 0007 states the
+  condition the code implements and counts what it carries; the mechanism arm (carry `ParsedMessage.HasThinking`
+  onto `Message`; named reader ∧ a trace was recorded as existing ∧ no trace text → `dialogueUnestablished`,
+  verified reader by reader) is **not** authorized by this letter and belongs to 0008. Options (B) (do it inside
+  0007) and (C) (a new upstream pin first) were offered in the same form and not taken.

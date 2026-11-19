@@ -38,17 +38,20 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   source recorded — on that route too, where the count is the line walk's own accounting of the places it
   chose, not only of the records it left out.
 - **A target writer's claim is shown through the target harness's own loader.** Call `ccc continue …
-  --to codex`, `--to claude`, `--to pi` or `--to omp` converts, installs and reports **converted / installed /
+  --to codex`, `--to claude`, `--to pi`, `--to omp` or `--to opencode` converts, installs and reports
+  **converted / installed /
   natively resumable** as three separate states; "resumable" is only ever `verification.load` or
   `verification.resume` coming back `verified`, and every one of a conversion's omissions or narrowing
   is named in `conversion.losses[]`. The native half needs the target harness installed and, for a real
   turn, model access, so it is **not** a gate step: `scripts/codex-native-check.py`,
-  `scripts/claude-native-check.py`, `scripts/pi-native-check.py` and `scripts/omp-native-check.py`
+  `scripts/claude-native-check.py`, `scripts/pi-native-check.py`, `scripts/omp-native-check.py` and
+  `scripts/opencode-native-check.py`
   re-derive it and report each check's
   own verdict (the gate keeps deciding the offline half — round-trip through the inherited reader,
   install rules, reported losses, CLI shape). A check whose target harness is absent exits 2 naming the
-  harness it needs — the Pi and OMP checks end their run with `RESULT: INCOMPLETE` and the reason, the
-  Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a pass. The Pi and OMP
+  harness it needs — the Pi, OMP and OpenCode checks end their run with `RESULT: INCOMPLETE` and the
+  reason, the Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a
+  pass. The Pi and OMP
   checks drive their harness's own RPC loader against a **throw-away copy** of the converted bytes
   (measured on both: a load writes records of its own into the session it opens) and read the harness's
   own `get_state`/`get_messages` answers beside an unknown-id control arm; the OMP check's scratch data
@@ -58,6 +61,128 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
   turn in the second session; each prompt flag runs one turn).
+- **A record's dialogue is the source's own answer or the record's own bytes, never a reading of them.** Every
+  target writer reads its message text through one shared rule (`internal/ccc/dialogue_provenance.go`'s
+  `dialogueOf`). The source's own answer is the projection (`parser.ParsedMessage.DialogueText`, carried
+  as `Message.DialogueProjected`), and where the read made one it is the whole answer — an explicitly
+  empty projection included, which is the source's own statement that the record has no dialogue, and an
+  exact conversion of a record with none. `Content` is never read beside a projection. Two semantic
+  requirements stand on their own: a record whose `Content` is byte for byte the reader's own rendering of
+  its whole trace (`[Thinking]\n<trace>\n[/Thinking]`) has no dialogue at all — the rendering is the trace
+  the read carries as the record's reasoning — and a literal `[Thinking]…[/Thinking]` block standing in a
+  record of a reader that records `Content` as the source wrote it (Vibe's independent `content` and
+  `reasoning_content`) is the model's own words, which nothing may drop. What is *not* true, and what the
+  rules below replace, is that a record's flattened bytes can be un-mixed: the readers write the trace's
+  own text verbatim between their markers, so two different native part orders — the trace's text before
+  the record's, and a text part that quotes the block a thinking part renders — produce the same `Content`,
+  the same trace and the same reader label, and no inverse can say which occurrence was the model's.
+  `internal/parser/zcode.go` renders a thinking part's text verbatim, so a closer written inside that text
+  is not escaped and the first closer after an opener need not be the reader's own. The readings machinery
+  that inferred a removal from those bytes (rounds 11–15 each found a shape it deleted, or a rendering it
+  published, wrongly) is therefore **removed, not patched**: nothing is removed from a record's `Content`
+  by inference any more. Where the read answered no projection, what happens to a rendering reader's
+  `Content` follows the read's own answers: a record whose read recorded a trace has no text established
+  (below), and a record whose read recorded none carries its `Content` as the record's own bytes — the
+  rendering among them where the record has one — and the report counts it (`unprojected_dialogue`).
+- **Where the read answered no projection, the outcome is disclosed, never guessed.** `dialogueOf`
+  answers one of three states for a record, and every route acts on the state, never on a text alone.
+  (1) The reader is not one `thinkingRenderingReaders` names, or the read answered no trace for the
+  record, and the record carries no calls: `Content` is the record's own bytes, it travels as the
+  record's text, and the conversion counts it (`unprojected_dialogue`, carried-with-caveat) — so a reader
+  of the report can see which text rests on the read's `Content` rather than on an answer the source
+  gave. The list names both the readers that render a trace and project none and those that render one
+  *and* project (a projection answers first wherever the read made one; the entry is what covers a record
+  *without* one that carries a trace — a legacy archive row, a record a reader path keeps as the source
+  wrote it); every entry names its
+  construction site in the carried reader, and an upstream update that brings in a reader rendering a
+  trace into `Content` has to add it (docs/upstream.md's procedure), or that reader's records travel with
+  the rendering carried as dialogue. The list names **labels, not readers**: a reader that serves several
+  labels (the Pi reader serves six, the Codex reader four, the Kimi, Hermes and OpenCode readers two or
+  three each) takes one entry per label, because the table is asked by the session's own stored label —
+  a label left out leaves that label's records, a legacy archive row among them, travelling with the
+  rendering carried as dialogue. The entry acts only where the read recorded the record's trace: a
+  reader that renders a trace into `Content` without recording the trace's own text (`Message.Thinking`
+  empty for every record it produces) takes this state too, so the text — the rendering among it —
+  travels and is counted here, and the listing cannot act for that record. A label this build knows no
+  reader for is treated the same way and counted in the same category. (2) `Content` is not the record's
+  own bytes (the reader renders the trace into it and the record carries one, or the record carries calls
+  whose renderings a reader may have inlined): **nothing
+  is written and nothing is deleted**. The record's text is not published, its tool evidence still is, its
+  recorded reasoning still travels where the target has a shape for it, and the conversion counts the
+  record (`unresolved_dialogue`, omitted; the count is not a claim that the record wrote none). The source
+  session keeps the bytes, and a later route with better provenance can read them. (3) `Content` is
+  exactly the reader's rendering of the record's whole trace: the record has no dialogue, and the trace is
+  not double-carried. Partial conversion — not refusal — is the chosen disposition, and each state is
+  named on all three surfaces: the document carries the read's own per-record answers, the target holds
+  the per-message shape the state produced (a message or part with its text, or none), and the report
+  counts the category. A report that says `converted` without them would claim dialogue that cannot be
+  traced to a source-owned answer, and "the file parsed" is not evidence that its dialogue is exact.
+- **OpenCode is a target whose store only the harness writes.** A session is a row in
+  `<XDG data home>/opencode/opencode.db`, not a file, so `--to opencode` installs **through the harness's
+  own importer** (`opencode session import … --directory <the session's recorded directory> --standalone`)
+  and never writes SQL into that store: a host without the binary has no installation, and the report says
+  so instead of working around it. Three members the importer requires are rules a writer here must keep,
+  all measured on 2.2.5: an assistant message's `time.completed` (a message whose `time` carries
+  `created` alone is accepted and then **silently dropped** — no row, no export entry), a tool part's
+  `state.input`, which the store holds with the recorded key order and without the recorded whitespace,
+  so the structural comparison canonicalizes that one member's JSON on both sides and compares every
+  other member as recorded, and an assistant message's `model` member, which must be present although
+  its values need not be: a record neither the source read nor the harness answered a model for is
+  written with the member's id empty — measured: an empty id is imported, stored and exported as
+  written — rather than a name this build cannot support. A tool part's `time.completed` is the instant of
+  the record the carried result was recorded on, which the read answers per result
+  (`ToolResult.Timestamp`: a result event's own envelope instant, which may be later than the record that
+  carried its call) and only where the read holds none is the containing record's instant written — the
+  report counts that substitution (`result_completion_fallbacks`) rather than presenting it as recorded,
+  because the call's own instant stated twice turns a recorded span into one the source never recorded; and
+  where the instant the read answered — the result's own record, or that containing-record fallback —
+  precedes the part's own `created` (an out-of-order source, whose result record stands before the record
+  that carried the call), `completed` rises to the call's recorded start and the part is counted
+  (`result_completion_adjustments`): a row of its own, because an absent instant and an out-of-order one
+  are different reads and a fallback that was raised too takes both. Where a route's record for a result
+  states the containing record's instant instead of the read's answer for the result's own record, the
+  same two reads are counted beside the rows it already has — `result_completion_fallbacks` (the read
+  answered none) and `result_record_instants` (the read answered one and the file states another: the
+  Codex, Claude and Pi/OMP writers) — and every route counts a written result's recorded channel label
+  (`tool_result_sources`) and a carried call's recorded child-session link (`subagent_session_links`)
+  where its own shape has no member for them, so no recorded value is dropped unnamed. The floor a
+  message's own `created` is taken against is the messages' own records and nothing else: a part's
+  completion raises only the instant the session's `time.updated` is read for, so an earlier call's
+  result does not move a later,
+  overlapping call's recorded start up to itself (round 15's finding). A message whose own recorded
+  instant precedes the instant already written is written at that instant instead — the document's message
+  order is the read's own — and each such written instant is counted (`substituted_record_instants`),
+  because every tool part inside that message takes the substituted instant as its `created` and a recorded
+  call→result span is shortened by it. The Codex, Claude, Pi and OMP writers share that clock rule
+  (`internal/ccc/route_shared.go`'s `entryClock`) and report its substitution under the same category:
+  each written timestamp the clock stamped with the previous written record's instant is counted there,
+  and the instant written in a record's place is always another instant the read recorded — never one this
+  build invented — so a recorded instant is not silently replaced on any route.
+  The load level asks the harness's own
+  `session export`, never `run`: `run` *creates* a session for an id the store does not hold. The
+  directory a session is resolved from is the one its own document records, and the model
+  binding it runs under is the target home's own, asked of the harness (`debug agents`). Every OpenCode
+  subcommand this build prints or runs carries `--standalone`, and none leaves the flag past a `--`
+  terminator, where it hands the run to the managed service and that service answers from a store this
+  run did not grow (measured); the printed resume line names it immediately after its subcommand. The
+  printed resume line and the resume check name the data root and, beside it, the store's own database
+  file (`OPENCODE_DB`): a line a shell reads can set a variable but cannot remove one, and a caller's
+  inherited override would otherwise send the pasted command to another store, where `run --session <id>`
+  *creates* a session for an id the store does not hold (measured). An import whose process fails is
+  **reconciled, never read as an absence**: the harness's own `Imported session: <id>` line in the
+  captured output is its answer, the harness's own reader (`session export`, asked past the deadline that
+  stopped the import) is the next, and the report says `unresolved` where neither answers — a run may
+  report the installation absent only when the store itself answered that the id does not resolve, because
+  a caller who reads "nothing was published" and converts again leaves a second snapshot of one
+  conversation (measured: the harness commits the session and then exits). The route's native check keeps
+  that discipline over its own planting, in a caller's store as much as a scratch one: the id it plants is
+  read first, a session whose own document is that check's fabricated fixture is an earlier run's leftover
+  and is removed through the harness's own delete, a session holding anything else is left exactly as
+  found and the run stops there, and a planting whose import process failed or overran its deadline after
+  committing is reconciled the same way — acknowledgment, then the store's own reader — and removed again
+  as often as it is published, because a check that left its fixture behind would make every later run's
+  planting meet `Session already exists` (measured: the pre-fix check ended `RESULT: FAIL` there and the
+  fixture stayed).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
@@ -113,13 +238,15 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
   `pi_install.go`, `pi_verify.go`, `omp_target.go`, `omp_install.go`,
   `omp_verify.go` (the last three are the Pi family's second format, whose shared writer is Pi's own
-  parameterized by `piFamilyShape`); its committed
+  parameterized by `piFamilyShape`), and the OpenCode target's `opencode_target.go`, `opencode_install.go`
+  and `opencode_verify.go` (whose store a test builds through `internal/ccc/opencodefixture` — a fixture
+  package, because a real OpenCode session exists only inside the harness's own store); its committed
   native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
   (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`,
-  `scripts/omp-native-check.py`) is
+  `scripts/omp-native-check.py`, `scripts/opencode-native-check.py`) is
   registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
   loader resolves a session id through the process's working directory — Claude Code, and Pi — is
   installed under the project spelling of the source read's recorded working directory, and a source that

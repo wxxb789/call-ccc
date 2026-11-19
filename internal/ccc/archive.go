@@ -526,8 +526,9 @@ func conversationFromArchive(session db.Session, messages []db.Message) Conversa
 			ReadFrom:           "archive",
 		},
 	}
+	rendersThinkingTrace := readerRendersThinkingTrace(parser.AgentType(session.Agent))
 	for _, archived := range messages {
-		conversation.Messages = append(conversation.Messages, messageFromArchive(archived))
+		conversation.Messages = append(conversation.Messages, messageFromArchive(archived, rendersThinkingTrace))
 	}
 	conversation.Fidelity.ContentShown = contentShown(conversation.Messages)
 	return conversation
@@ -570,17 +571,22 @@ func contentShown(messages []Message) string {
 	}
 }
 
-func messageFromArchive(archived db.Message) Message {
+// messageFromArchive maps one stored row to the interchange document. rendersThinkingTrace is the
+// reader's own answer about the row's Content, resolved from the row's agent label
+// (readerRendersThinkingTrace): the store holds what the reader produced, so the label is the reader's
+// name whether or not the source file is still on this machine.
+func messageFromArchive(archived db.Message, rendersThinkingTrace bool) Message {
 	message := Message{
-		Ordinal:           archived.Ordinal,
-		Role:              archived.Role,
-		Content:           archived.Content,
-		Thinking:          archived.ThinkingText,
-		Timestamp:         parseArchiveTimestamp(archived.Timestamp),
-		Model:             archived.Model,
-		IsSystem:          archived.IsSystem,
-		IsSidechain:       archived.IsSidechain,
-		IsCompactBoundary: archived.IsCompactBoundary,
+		Ordinal:                archived.Ordinal,
+		Role:                   archived.Role,
+		Content:                archived.Content,
+		Thinking:               archived.ThinkingText,
+		Timestamp:              parseArchiveTimestamp(archived.Timestamp),
+		Model:                  archived.Model,
+		IsSystem:               archived.IsSystem,
+		IsSidechain:            archived.IsSidechain,
+		IsCompactBoundary:      archived.IsCompactBoundary,
+		ContentRendersThinking: rendersThinkingTrace,
 		// The writer stored the source record's own identity and the record it hangs off, so an archive
 		// read answers the same relation a source read does: a target writer that reproduces the
 		// source's tree (or filters to its active path) needs them, and dropping them here would make
@@ -614,6 +620,7 @@ func messageFromArchive(archived db.Message) Message {
 				ToolUseID:      event.ToolUseID,
 				Status:         event.Status,
 				Source:         event.Source,
+				Timestamp:      parseArchiveTimestamp(event.Timestamp),
 				ContentRaw:     event.Content,
 				ContentSize:    event.ContentLength,
 				ContentDecoded: true,

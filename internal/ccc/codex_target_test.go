@@ -1,7 +1,10 @@
 package ccc
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -358,8 +361,12 @@ func TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText(t *testing.T
 	}
 }
 
-// TestCodexRolloutReportsEveryCategoryItKnows pins the report's completeness: a category that is not
-// named cannot be read, and a count that is not reported looks like evidence that travelled.
+// TestCodexRolloutReportsEveryCategoryItKnows pins the report's completeness as far as a list can: every
+// category the writer reports today is named below, each with the count and disposition stated here and
+// a non-empty detail, so a category that stopped being reported, or whose count moved, fails here
+// instead of passing as a zero. The list is kept in step with the writer by hand: a category the writer
+// gained and this case did not name would pass, and the pass that walks the report itself -- catching
+// that direction -- is the Pi case's (TestPiSessionReportsEveryLossCategory).
 func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 	conversation := testConversation(
 		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
@@ -401,6 +408,8 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		disposition string
 	}{
 		"reasoning_text":                {2, DispositionOmitted},
+		"unresolved_dialogue":           {0, DispositionOmitted},
+		"unprojected_dialogue":          {1, DispositionCarriedWithCaveat},
 		"sidechain_messages":            {1, DispositionOmitted},
 		"system_records":                {1, DispositionOmitted},
 		"tool_role_messages":            {1, DispositionOmitted},
@@ -416,6 +425,10 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		"tool_result_outcomes":          {1, DispositionCarriedWithCaveat},
 		"empty_tool_inputs":             {1, DispositionCarriedWithCaveat},
 		"generated_call_ids":            {0, DispositionCarriedWithCaveat},
+		"tool_result_sources":           {0, DispositionOmitted},
+		"result_completion_fallbacks":   {2, DispositionCarriedWithCaveat},
+		"result_record_instants":        {0, DispositionOmitted},
+		"substituted_record_instants":   {0, DispositionCarriedWithCaveat},
 		"tool_name_vocabulary":          {2, DispositionCarriedWithCaveat},
 		"provider_binding":              {0, DispositionCarriedWithCaveat},
 		"inactive_branch_records":       {0, DispositionOmitted},
@@ -1201,6 +1214,76 @@ func TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue(t *testing.T) {
 	}
 }
 
+// TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader pins the semantic rule through a
+// reader that renders nothing: internal/parser's Vibe reader records a message's own content and its
+// reasoning_content independently -- Content is the recorded text, Thinking the recorded trace, no
+// dialogue projection and no rendering of either into the other (internal/parser/vibe.go's
+// convertVibeMessage) -- so a record whose content *is* a `[Thinking]…[/Thinking]` block is the model's
+// own words, and nothing may drop them: not the whole-content rendering shape, which asks the block's
+// words to *be* the record's own trace, and not the rules a reader that renders the trace would set
+// (Vibe is not named by thinkingRenderingReaders, and no projection covers the record). Both arms put a
+// trace beside the block, one of them the block's own words: a rendering is only ever a rendering
+// *of the record's own trace* by a reader known to write one, and neither holds here. The trace still
+// travels as the record's reasoning (counted here: the Codex target has no shape for a plaintext trace),
+// so nothing is lost; the words the source recorded are what the target must not state the agent never
+// said.
+func TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader(t *testing.T) {
+	const literal = "[Thinking]\nDocumentation example\n[/Thinking]"
+	cases := []struct {
+		name  string
+		trace string
+	}{
+		{"the trace holds none of the block's words", "private trace"},
+		{"the trace holds the block's words exactly", "Documentation example"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			sessionDir := filepath.Join(root, "session_20260613_123456_00000000-0000-4000-8000-000000000001")
+			if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+				t.Fatalf("creating the session directory: %v", err)
+			}
+			transcript := strings.Join([]string{
+				`{"role":"user","content":"Ask about the docs.","message_id":"m1"}`,
+				`{"role":"assistant","content":"[Thinking]\nDocumentation example\n[/Thinking]",` +
+					`"reasoning_content":"` + testCase.trace + `","message_id":"m2","model":"vibe-model"}`,
+			}, "\n") + "\n"
+			transcriptPath := filepath.Join(sessionDir, "messages.jsonl")
+			if err := os.WriteFile(transcriptPath, []byte(transcript), 0o600); err != nil {
+				t.Fatalf("writing the transcript: %v", err)
+			}
+			cfg := fixtureConfig(t)
+			cfg.AgentDirs[parser.AgentVibe] = []string{root}
+			conversation, err := NewSourceReader(cfg).Read(context.Background(),
+				Ref{Provider: "vibe", ID: transcriptPath})
+			if err != nil {
+				t.Fatalf("reading the Vibe transcript: %v", err)
+			}
+			if len(conversation.Messages) != 2 || conversation.Messages[1].Role != string(parser.RoleAssistant) {
+				t.Fatalf("the read answered %d message(s), want the transcript's two with the assistant second",
+					len(conversation.Messages))
+			}
+			dialogue := dialogueOf(conversation.Messages[1])
+			if dialogue.Text != literal || dialogue.State != dialogueFromContent {
+				t.Errorf("dialogueOf over the read's own record = (%q, %v), want the model's own words %q "+
+					"as the record's own bytes: the reader renders nothing, so nothing shows the block to "+
+					"be a rendering of the trace recorded beside it", dialogue.Text, dialogue.State, literal)
+			}
+			rollout, err := ConvertToCodexRollout(conversation, testOptions())
+			if err != nil {
+				t.Fatalf("converting: %v", err)
+			}
+			if !strings.Contains(string(rollout.Data), "Documentation example") {
+				t.Error("the rollout does not carry the record's literal block: its words were dropped as though " +
+					"they were a rendering of the trace recorded beside them")
+			}
+			if loss := lossCount(t, rollout.Losses, "reasoning_text"); loss.Count != 1 {
+				t.Errorf("reasoning_text = %+v, want the record's trace counted once", loss)
+			}
+		})
+	}
+}
+
 // TestCodexRolloutDecodesEncodedContentExactlyOnce pins which representation ContentRaw holds: the
 // provider's own content field is JSON and is decoded once, while text a read has already decoded -- a
 // result event, an archive row -- is used exactly as it stands. A tool whose own output is literally the
@@ -1396,7 +1479,13 @@ func TestCodexRolloutReportsTheSourceLinesItsReadCouldNotProduce(t *testing.T) {
 
 // TestCodexRolloutStampsRecordsInOneOrderedRun pins the envelope timestamps: a source whose messages are
 // unordered (a DAG, a replayed fork) must not produce a file whose records run backwards, because the
-// target reads the file's order.
+// target reads the file's order. The clock's substitution is also the report's: a record whose own
+// recorded instant precedes the instant already written is stamped with that instant, and the report
+// counts each written timestamp it was substituted on (substituted_record_instants), so the written
+// record cannot read as the source's own answer for its instant. The shared helper this pins is
+// entryClock (route_shared.go), which the Claude, Pi and OMP writers drive the same way; this route is
+// where the clock's own regression scenario already stands, and its writer stamps one record as several
+// entries, so the per-written-timestamp shape of the count is visible here too.
 func TestCodexRolloutStampsRecordsInOneOrderedRun(t *testing.T) {
 	conversation := testConversation(
 		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Later", Dialogue: "Later",
@@ -1419,6 +1508,174 @@ func TestCodexRolloutStampsRecordsInOneOrderedRun(t *testing.T) {
 			t.Errorf("line %d goes back in time: %s after %s", index+1, line.Timestamp, previous)
 		}
 		previous = stamp
+	}
+	// The out-of-order record's own instant (09:00:00) is not in the file: every entry the writer stamps
+	// for it carries the previous written record's instant (10:00:10) -- the response item and the view
+	// event both, because one record's stamp is one instant on all of its entries.
+	stamped := 0
+	for _, line := range lines {
+		if !strings.Contains(string(line.Payload), "Earlier") {
+			continue
+		}
+		stamped++
+		if line.Timestamp != "2026-05-05T10:00:10Z" {
+			t.Errorf("the out-of-order record's %s entry is stamped %s, want the previous written "+
+				"record's instant 2026-05-05T10:00:10Z", line.Type, line.Timestamp)
+		}
+	}
+	if stamped == 0 {
+		t.Fatal("the file holds no entry for the out-of-order record")
+	}
+	// The count is per written timestamp: the out-of-order message above is one record, but the writer
+	// stamps it as two entries (a response item and the view event), and each of those written timestamps
+	// is counted. Its detail states what the substitution did with the recorded instant.
+	loss := lossCount(t, rollout.Losses, "substituted_record_instants")
+	if loss.Count != stamped || loss.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("substituted_record_instants = %+v, want the %d written timestamp(s) of the "+
+			"out-of-order record counted as carried-with-caveat", loss, stamped)
+	}
+	if !strings.Contains(loss.Detail, "never one this build invented") {
+		t.Errorf("substituted_record_instants detail = %q, want the instant written in the recorded "+
+			"one's place named", loss.Detail)
+	}
+
+	// The control: an ordered source counts nothing, so the counter above is the order and not the
+	// clock's normal path.
+	ordered := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask",
+			Timestamp: time.Date(2026, 5, 5, 10, 0, 10, 0, time.UTC)},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "Answer", Dialogue: "Answer",
+			Timestamp: time.Date(2026, 5, 5, 10, 0, 11, 0, time.UTC)},
+	)
+	rollout, err = ConvertToCodexRollout(ordered, testOptions())
+	if err != nil {
+		t.Fatalf("converting the ordered source: %v", err)
+	}
+	if loss := lossCount(t, rollout.Losses, "substituted_record_instants"); loss.Count != 0 {
+		t.Errorf("substituted_record_instants = %+v, want zero for an ordered source", loss)
+	}
+}
+
+// TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold pins the disclosure for the one piece of
+// a `spawn_agent` call this rollout does not state: which session the call spawned. The inherited Codex
+// parser records that child session's id on the call (ToolCall.SubagentSessionID) and the reader
+// preserves it, and the rollout has a record shape that holds the attribution -- the
+// `collab_agent_spawn_end` event payload whose call_id and new_thread_id the inherited reader turns
+// into this link (internal/parser/codex.go:700-707,834-865) -- but this conversion writes no such event:
+// the function_call carries the call's id, name and arguments and nothing names the child. The omission
+// is counted rather than left silent, the child session is neither read nor converted, and the count is
+// of the calls this conversion wrote.
+func TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold(t *testing.T) {
+	const childSession = "codex:019c9c96-6ee7-77c0-ba4c-380f844289d5"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "run a child agent",
+			Dialogue: "run a child agent", DialogueProjected: true},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "spawning a child",
+			Dialogue: "spawning a child", DialogueProjected: true,
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_spawn", Name: "spawn_agent",
+					InputJSON: `{"agent_type":"awaiter"}`, SubagentSessionID: childSession},
+				{ToolUseID: "call_wait", Name: "wait", InputJSON: `{"ids":["019c9c96"]}`},
+			}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	loss := lossCount(t, rollout.Losses, "subagent_session_links")
+	if loss.Count != 1 || loss.Disposition != DispositionOmitted {
+		t.Errorf("subagent_session_links = %+v, want the one written call's link counted as omitted", loss)
+	}
+	if !strings.Contains(loss.Detail, "child session") {
+		t.Errorf("the category's reason does not name the relationship it counts: %q", loss.Detail)
+	}
+	// The route's own behaviour, pinned: the call itself is written with its id and name, and the child's
+	// id is nowhere in the log -- neither in the call record nor in the output that carries the
+	// notification summary in a real rollout's place.
+	installed := string(rollout.Data)
+	for _, want := range []string{`"call_id":"call_spawn"`, `"name":"spawn_agent"`, `"call_id":"call_wait"`} {
+		if !strings.Contains(installed, want) {
+			t.Errorf("the written rollout does not hold %s:\n%s", want, installed)
+		}
+	}
+	if strings.Contains(installed, "019c9c96-6ee7-77c0-ba4c-380f844289d5") {
+		t.Errorf("the child session's id is in the file although the report says the link is omitted:\n%s",
+			installed)
+	}
+	if rollout.Carried.ToolCalls != 2 {
+		t.Errorf("carried %d call(s), want the two written calls", rollout.Carried.ToolCalls)
+	}
+}
+
+// TestCodexRolloutCountsTheResultRecordInstantsItDoesNotWrite pins the disclosure for the instant a
+// carried result was recorded on. ToolResult.Timestamp answers the instant of the result's own record --
+// a result event's envelope instant, which may be later than the record that carried its call -- and a
+// function_call_output's envelope states the record's own instant, but this conversion stamps it with
+// the containing message's instant: the read's own answer for the result is not what the file holds, and
+// the two reads are counted apart -- the read answered an instant and the containing record's is written
+// instead (result_record_instants, omitted), or the read answered none and the containing record's
+// instant stands in (result_completion_fallbacks, carried-with-caveat). A result whose own recorded
+// instant is the containing message's is counted in neither: the file states the read's answer.
+func TestCodexRolloutCountsTheResultRecordInstantsItDoesNotWrite(t *testing.T) {
+	at := time.Date(2026, 5, 5, 9, 15, 5, 0, time.UTC)
+	late := at.Add(time.Second)
+	same := time.Date(2026, 5, 5, 9, 15, 7, 0, time.UTC)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "run it", Dialogue: "run it",
+			DialogueProjected: true},
+		Message{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "calling",
+			Dialogue: "calling", DialogueProjected: true, Timestamp: at,
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_late", Name: "shell", InputJSON: `{"command":"ls"}`},
+				{ToolUseID: "call_none", Name: "shell", InputJSON: `{"command":"pwd"}`},
+				{ToolUseID: "call_same", Name: "shell", InputJSON: `{"command":"date"}`},
+			}},
+		Message{Ordinal: 2, Role: string(parser.RoleUser), Timestamp: same, ToolResults: []ToolResult{
+			{ToolUseID: "call_late", ContentRaw: "late output", ContentDecoded: true, Timestamp: late,
+				Source: "wait_output"},
+			{ToolUseID: "call_none", ContentRaw: "no instant", ContentDecoded: true},
+			{ToolUseID: "call_same", ContentRaw: "own record", ContentDecoded: true,
+				// The read answered an instant equal to the containing record's here (a block-shaped
+				// result), so what the file states is the read's own answer.
+				Timestamp: same},
+		}},
+	)
+	rollout, err := ConvertToCodexRollout(conversation, testOptions())
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	omitted := lossCount(t, rollout.Losses, "result_record_instants")
+	if omitted.Count != 1 || omitted.Disposition != DispositionOmitted {
+		t.Errorf("result_record_instants = %+v, want the one written result whose own instant the file "+
+			"does not state", omitted)
+	}
+	if !strings.Contains(omitted.Detail, "result's own recorded instant") {
+		t.Errorf("the category's reason does not name the value it counts: %q", omitted.Detail)
+	}
+	fallbacks := lossCount(t, rollout.Losses, "result_completion_fallbacks")
+	if fallbacks.Count != 1 || fallbacks.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("result_completion_fallbacks = %+v, want the one written result the read answered no "+
+			"instant for", fallbacks)
+	}
+	sources := lossCount(t, rollout.Losses, "tool_result_sources")
+	if sources.Count != 1 || sources.Disposition != DispositionOmitted {
+		t.Errorf("tool_result_sources = %+v, want the one written result whose recorded channel label "+
+			"the output has no member for", sources)
+	}
+	// The route's own behaviour, pinned: the late result's text travels, and the instant the read
+	// answered for its own record is nowhere in the file -- the output record states the containing
+	// record's instant instead.
+	installed := string(rollout.Data)
+	if !strings.Contains(installed, "late output") {
+		t.Errorf("the written rollout does not hold the late result's text:\n%s", installed)
+	}
+	if want := late.Format(time.RFC3339Nano); strings.Contains(installed, want) {
+		t.Errorf("the file states the result's own recorded instant %s although the report says it is "+
+			"not written:\n%s", want, installed)
+	}
+	if loss := lossCount(t, rollout.Losses, "substituted_record_instants"); loss.Count != 0 {
+		t.Errorf("substituted_record_instants = %+v, want none: this document's records are ordered",
+			loss)
 	}
 }
 

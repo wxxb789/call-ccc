@@ -536,35 +536,41 @@ type piSessionBuilder struct {
 	// loader makes. Its unresolved count is what the report's unresolved_source_parents names.
 	tree sourceTree
 
-	writtenMessages        int
-	lossReasoning          int
-	lossSidechain          int
-	lossSystemRecords      int
-	lossToolRoles          int
-	lossUnclassified       int
-	lossEmptyUser          int
-	lossEmptyAssistant     int
-	lossNonDialogue        int
-	lossWhitespace         int
-	lossUnpaired           int
-	lossEmptyResults       int
-	lossWhitespaceRes      int
-	lossResultBlocks       int
-	lossUnresolved         int
-	lossStatuses           int
-	lossEmptyInputs        int
-	lossGeneratedIDs       int
-	lossCoalesced          int
-	lossSubagentLinks      int
-	lossModels             int
-	lossModelFallbacks     int
-	lossTitleSlot          int
-	lossSessionBinding     int
-	lossCarriedCallEntries int
-	lossUnrecordedUsage    int
-	lossPreBoundary        int
-	lossEmptySummary       int
-	sawBoundary            bool
+	writtenMessages           int
+	lossReasoning             int
+	lossNonAssistantReasoning int
+	lossSidechain             int
+	lossSystemRecords         int
+	lossToolRoles             int
+	lossUnclassified          int
+	lossEmptyUser             int
+	lossEmptyAssistant        int
+	lossNonDialogue           int
+	lossWhitespace            int
+	lossUnresolvedDialogue    int
+	lossUnprojectedDialogue   int
+	lossUnpaired              int
+	lossEmptyResults          int
+	lossWhitespaceRes         int
+	lossResultFallbacks       int
+	lossResultInstants        int
+	lossResultSources         int
+	lossResultBlocks          int
+	lossUnresolved            int
+	lossStatuses              int
+	lossEmptyInputs           int
+	lossGeneratedIDs          int
+	lossCoalesced             int
+	lossSubagentLinks         int
+	lossModels                int
+	lossModelFallbacks        int
+	lossTitleSlot             int
+	lossSessionBinding        int
+	lossCarriedCallEntries    int
+	lossUnrecordedUsage       int
+	lossPreBoundary           int
+	lossEmptySummary          int
+	sawBoundary               bool
 	// headerTimestamp is the session's own start instant, fixed when the builder is made: the header's
 	// timestamp is the session's identity rather than a position in the entry stream, so it must not be
 	// advanced by the entries written after it.
@@ -720,17 +726,43 @@ func (b *piSessionBuilder) writeMessage(message Message) {
 		default:
 			b.lossUnclassified++
 		}
+		if strings.TrimSpace(message.Thinking) != "" {
+			// A trace is written as the `thinking` block of an assistant message (writeAssistantMessage)
+			// and of no other role; on this record it has no shape in this format and is omitted,
+			// counted rather than claimed as carried.
+			b.lossNonAssistantReasoning++
+		}
 		b.writeCarriedCalls(message)
 		return
 	}
-	text := dialogueText(message)
+	dialogue := dialogueOf(message)
+	text := dialogue.Text
+	if dialogueLossOf(dialogue) == dialogueLossUnresolved {
+		// The read established no dialogue for this record and its Content is not the record's own bytes
+		// (dialogueOf): the reader rendered the record's persisted reasoning trace into a Content that
+		// also holds the record's text, or the record carries calls whose renderings a reader may have
+		// inlined. No text is published for it -- the rendering is not words the model wrote, and the
+		// removal of one by inference is the guess this rule refuses -- and the record is counted. Its
+		// trace still travels below, as Pi's `thinking` block, and its tool evidence with it.
+		b.lossUnresolvedDialogue++
+	} else if dialogueLossOf(dialogue) == dialogueLossUnprojected {
+		// Content, not a projection, is what travels: the report says so per record
+		// (unprojected_dialogue) rather than presenting the read's Content as the source's answer.
+		b.lossUnprojectedDialogue++
+	}
 	calls := b.distinctCalls(message)
 	hasThinking := strings.TrimSpace(message.Thinking) != ""
 	if hasThinking {
 		// Pi's `thinking` block is the format's own shape for a persisted reasoning trace and carries no
 		// signature this build would have to forge, so the source's trace travels as the source
-		// recorded it. The Claude route must omit it; this one must not pretend it did.
-		b.lossReasoning++
+		// recorded it -- on an assistant message, the only role writeAssistantMessage writes the block
+		// on. The Claude route must omit it; this one must not pretend it did, and a user record's
+		// trace, which has no shape here, is counted as the omission it is.
+		if role == parser.RoleAssistant {
+			b.lossReasoning++
+		} else {
+			b.lossNonAssistantReasoning++
+		}
 	}
 	switch {
 	case strings.TrimSpace(text) == "" && !hasThinking && len(message.ToolResults) == 0 && len(message.ToolCalls) == 0:
@@ -1014,18 +1046,14 @@ func (b *piSessionBuilder) writeToolEvidence(message Message, calls []piProjecte
 	}
 	for _, entry := range calls {
 		call := entry.call
-		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+		result, ok := derivedResultSummary(call, call.ToolUseID)
+		if !ok {
 			continue
 		}
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		b.writeToolResult(ToolResult{
-			ToolUseID:      call.ToolUseID,
-			ContentRaw:     call.ResultContent,
-			ContentSize:    call.ResultContentSize,
-			ContentDecoded: true,
-		}, message.Timestamp, toolResultCarrierRecord(message))
+		b.writeToolResult(result, message.Timestamp, toolResultCarrierRecord(message))
 	}
 }
 
@@ -1121,6 +1149,22 @@ func (b *piSessionBuilder) writeToolResult(result ToolResult, at time.Time, carr
 	if result.PersistedOutputUnresolved {
 		b.lossUnresolved++
 	}
+	// The result's entry (and the message inside it) is stamped with the instant of the record the
+	// result travelled on, not with the instant the read answered for the result's own record: the two
+	// reads are counted apart -- the read answered an instant and the containing record's is written
+	// instead, or the read answered none and the containing record's instant stands in.
+	if result.Timestamp.IsZero() {
+		b.lossResultFallbacks++
+	} else if !result.Timestamp.Equal(at) {
+		b.lossResultInstants++
+	}
+	if strings.TrimSpace(result.Source) != "" {
+		// The read named which native record carried the result's text (a result block in a message, a
+		// `function_call_output`, a wait call's output event, a subagent notification). The target's entry
+		// carries the text and no such label -- its own read answers its own for its own shapes -- so the
+		// source's label is omitted and counted rather than dropped in silence.
+		b.lossResultSources++
+	}
 	message := &piMessage{
 		Role:       piRoleToolResult,
 		Content:    []piContentBlock{{Type: piBlockText, Text: text}},
@@ -1158,6 +1202,19 @@ func piMessageMillis(at time.Time) int64 {
 	return at.UTC().UnixMilli()
 }
 
+// piFamilyUnestablishedOutcome is the Pi family's own answer for a record whose dialogue was not
+// established (dialogueUnestablished), passed to dialogueLossRows: what the writer does not write and
+// where the record's reasoning goes. This family's format persists a trace as a `thinking` content block
+// of the assistant message that produced it, so a trace travels where the record's role is the
+// assistant's -- as the block it was recorded in -- and has no shape on a record of another role, where
+// it is counted as omitted (non_assistant_reasoning). The record's text does not travel either way (this
+// is the clause the two wrong copies generalised from; round 17's PD-3).
+const piFamilyUnestablishedOutcome = "the text is not written, this count is not a claim that the " +
+	"record wrote none, and the record's own reasoning still travels as the `thinking` block it was " +
+	"recorded in where the record's role is the assistant's -- the role this format writes the block " +
+	"on alone -- while a trace on a record of another role has no shape here and is counted as omitted " +
+	"(non_assistant_reasoning)"
+
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the
 // report without knowing which categories this run happened to produce.
 func (b *piSessionBuilder) losses() []Loss {
@@ -1174,7 +1231,7 @@ func (b *piSessionBuilder) losses() []Loss {
 	if b.modelAttributionCount() > 0 {
 		modelDetail = piModelDetail(b.shape.Name)
 	}
-	return append([]Loss{
+	losses := append([]Loss{
 		{
 			Category:    "reasoning_text",
 			Disposition: DispositionCarriedWithCaveat,
@@ -1182,7 +1239,19 @@ func (b *piSessionBuilder) losses() []Loss {
 			Detail: "Pi persists a reasoning trace as a `thinking` content block of the assistant " +
 				"message that produced it, and that block is the shape the source's own trace is " +
 				"written into: the trace travels as the source recorded it, with no signature forged " +
-				"for it. A resumed turn reads it as history rather than replaying it",
+				"for it. A trace recorded on a record of another role has no such block; that " +
+				"omission is counted separately (non_assistant_reasoning). A resumed turn reads the " +
+				"trace it reads as history rather than replaying it",
+		},
+		{
+			Category:    "non_assistant_reasoning",
+			Disposition: DispositionOmitted,
+			Count:       b.lossNonAssistantReasoning,
+			Detail: "Pi writes a reasoning trace as a `thinking` block of the assistant message that " +
+				"produced it and of no other role, so a trace recorded on a record whose role is not " +
+				"the assistant's -- a user prompt carrying one, or a record of a role this format " +
+				"has no message for -- has no shape here and is omitted. The record's own text is " +
+				"governed by its own category; this count names the trace alone",
 		},
 		{
 			Category:    "sidechain_messages",
@@ -1250,6 +1319,9 @@ func (b *piSessionBuilder) losses() []Loss {
 			Detail: "the source itself classified these records as carrying no dialogue, and their " +
 				"content is a rendering this writer must not put in the user's mouth",
 		},
+	}, dialogueLossRows(b.lossUnresolvedDialogue, b.lossUnprojectedDialogue,
+		piFamilyUnestablishedOutcome)...)
+	return append(append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1352,6 +1424,47 @@ func (b *piSessionBuilder) losses() []Loss {
 				"conversion's unit is the selected session",
 		},
 		{
+			Category:    "tool_result_sources",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultSources,
+			Detail: "the read names which native record carried each result's text (a result block " +
+				"inside a message, a `function_call_output`, a wait call's own output event, a " +
+				"subagent notification: internal/parser's readers answer this per shape). The " +
+				"target's toolResult entry carries the text and no such label -- its own read " +
+				"answers the analogous question for its own shapes -- so the source's label is " +
+				"omitted, counted per result this conversion wrote that recorded one",
+		},
+		{
+			Category:    "result_completion_fallbacks",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossResultFallbacks,
+			Detail: "a toolResult message entry carries the result's text, and its own timestamp is " +
+				"stamped with the instant of the record the result travelled on. Where the read " +
+				"holds no instant of the result's own record -- a provider-recorded event with no " +
+				"timestamp, or the archive's derived summary, which is stored on the call's own row " +
+				"and has no record of its own -- that containing record's instant is written, an " +
+				"instant the read answered for that record rather than one this build invented; " +
+				"only results this conversion wrote are counted here",
+		},
+		{
+			Category:    "result_record_instants",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultInstants,
+			Detail: "the source recorded the instant the result itself was recorded on (a result " +
+				"event's own envelope instant, which may be later than the record that carried its " +
+				"call, and which the archive read answers from the stored event's own column). A " +
+				"toolResult entry carries its own timestamp and this conversion stamps it with the " +
+				"containing record's instant, not with the result's own: the result's own recorded " +
+				"instant is not what the file holds. Counted per result this conversion wrote and " +
+				"only where the read answered one",
+		},
+		{
+			Category:    "substituted_record_instants",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.clock.substituted,
+			Detail:      substitutedRecordInstantsDetail(),
+		},
+		{
 			Category:    "tool_name_vocabulary",
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       len(b.toolNameOrder),
@@ -1402,7 +1515,7 @@ func (b *piSessionBuilder) losses() []Loss {
 			Count:       flagCount(b.sourceFidelity.NeedsRetry),
 			Detail:      needsRetryLossDetail(b.sourceFidelity),
 		},
-	}, b.familyLosses()...)
+	}...), b.familyLosses()...)
 }
 
 // modelAttributionCount is what the message_model_attribution caveat counts: the assistant records whose

@@ -81,11 +81,22 @@ type ToolCall struct {
 // provider's own raw content field for a tool-result block, or the content text of a result event the
 // provider attached to its call; Source says which kind it is, and both reads map it the same way.
 type ToolResult struct {
-	ToolUseID   string `json:"tool_use_id,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Source      string `json:"source,omitempty"`
-	ContentRaw  string `json:"content_raw,omitempty"`
-	ContentSize int    `json:"content_size,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Source    string `json:"source,omitempty"`
+	// Timestamp is the instant of the record the result itself was recorded on, where the read holds
+	// one: a result event the provider attached to its call carries the event's own timestamp
+	// (parser.ParsedToolResultEvent.Timestamp), which may be later than the call's own record, and a
+	// result block recorded inside a message carries that message's own instant (messageFromParsed). It
+	// is distinct from the call's instant: a writer that states a call's span needs both, and taking the
+	// call's record for the completion turns a recorded span into one the source never recorded (round
+	// 12's finding). Zero means the read holds no instant of the result's own record -- an event the
+	// provider recorded without one, an archive row whose stored event carries none -- and a writer then
+	// falls back to the containing record's instant and says so rather than presenting the fallback as
+	// the recorded one.
+	Timestamp   time.Time `json:"timestamp,omitempty"`
+	ContentRaw  string    `json:"content_raw,omitempty"`
+	ContentSize int       `json:"content_size,omitempty"`
 	// ContentDecoded says which representation ContentRaw holds. False (the zero value) means the
 	// provider's own content field as it recorded it -- JSON, a string or an array of blocks -- which a
 	// writer decodes once through the inherited reader. True means text a read has already decoded (a
@@ -110,18 +121,38 @@ type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content,omitempty"`
 	// Dialogue is what the provider said, without the renderings of the blocks that are not dialogue.
+	// It is the read's own per-record answer where the read made one (parser.ParsedMessage.DialogueText,
+	// carried as DialogueProjected below) and the text a caller recorded directly otherwise, which is
+	// what dialogueOf answers from: this field is the authority for a record's dialogue, and Content is
+	// never consulted beside it.
 	Dialogue string `json:"dialogue,omitempty"`
-	// DialogueProjected says whether the source answered that question for this message at all. A
-	// provider that classifies its own dialogue answered it, an empty projection included: its Content
-	// then renders blocks that are not dialogue (a persisted reasoning trace, a tool call), and a
-	// writer that fell back to that rendering would state words the source never recorded as spoken.
-	// False means the source classified nothing here and Content is the message's text.
-	DialogueProjected bool         `json:"dialogue_projected,omitempty"`
-	Thinking          string       `json:"thinking,omitempty"`
-	Timestamp         time.Time    `json:"timestamp,omitempty"`
-	Model             string       `json:"model,omitempty"`
-	ToolCalls         []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults       []ToolResult `json:"tool_results,omitempty"`
+	// DialogueProjected says whether the source answered the dialogue question for this message at all.
+	// True means Dialogue is the source's own projection, an explicitly empty one included -- the
+	// source's own statement that the record has no dialogue to carry, which is an exact conversion of a
+	// record with none. False means the read answered nothing, and the text is then decided by the
+	// record's own evidence (dialogueOf): Content where the reader records Content as the source wrote
+	// it, no dialogue where Content is exactly the reader's rendering of the record's whole trace, and
+	// nothing established where Content is not the record's own bytes at all. "Explicitly empty" and
+	// "unanswered" are different states and are never collapsed into one.
+	DialogueProjected bool `json:"dialogue_projected,omitempty"`
+	// ContentRendersThinking says whether the reader that produced Content builds the record's persisted
+	// reasoning trace into it as a `[Thinking]…[/Thinking]` block (readerRendersThinkingTrace, held
+	// against the carried readers). It is the one reader-level fact the dialogue question needs: a record
+	// this reader produced that carries a trace has no text the read can establish, because the reader's
+	// rendering is written from the trace's own text and the record's own words are one flattened string
+	// with it -- two different native part orders produce the same Content and the same trace. The flag
+	// acts only through that trace: a record whose read answered none for it (Thinking empty) is not
+	// shown to hold a rendering at all, so it takes the answer below. False
+	// means no such rendering is established for this reader: either it records Content as the source
+	// wrote it (internal/parser's Vibe reader copies the record's content and reasoning_content
+	// independently) or this build knows no reader for its label, and in both cases Content travels as
+	// the record's text while the report says that is what it is (unprojected_dialogue).
+	ContentRendersThinking bool         `json:"content_renders_thinking,omitempty"`
+	Thinking               string       `json:"thinking,omitempty"`
+	Timestamp              time.Time    `json:"timestamp,omitempty"`
+	Model                  string       `json:"model,omitempty"`
+	ToolCalls              []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults            []ToolResult `json:"tool_results,omitempty"`
 	// IsSystem marks a record the provider itself flagged as system-injected (a compaction summary,
 	// a notice). It is independent of Role: a compaction summary is recorded as an assistant record.
 	IsSystem          bool `json:"is_system,omitempty"`

@@ -77,6 +77,7 @@ func VerifyOMPSessionStructure(
 	return verifyStructure(ctx, sessionsDir, parser.AgentOMP, structureMethodOMP,
 		structureReaderOMP, structureReaderOMP,
 		filepath.Join(sessionsDir, session.Directory, session.FileName),
+		os.ReadFile,
 		func(readBack Conversation, installed []byte) roundTripComparison {
 			return comparePiRoundTrip(session, readBack, installed)
 		}, cfg)

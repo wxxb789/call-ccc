@@ -1,7 +1,9 @@
 package ccc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -43,9 +45,22 @@ const (
 // otherwise write a file whose order contradicts its own times. The layout is the route's own: the Codex
 // and Claude routes write `time.RFC3339Nano`, and Pi writes milliseconds, always three digits, always
 // UTC (`2026-11-10T02:07:01.784Z`, piEntryTimestampLayout).
+//
+// A record whose own *recorded* instant precedes the instant already written is stamped with that
+// instant instead, and counted (`substituted`): the document then carries an instant the read did not
+// answer for that record, and the report names the substitution (`substituted_record_instants`) rather
+// than letting the written record read as the source's own answer. A record the read answered no
+// instant for at all is not counted as a substitution: there is no recorded instant to replace, and the
+// conversion instant the options document ("used for identities and for a source that recorded no
+// times") is what such a record is stamped with.
 type entryClock struct {
 	last   time.Time
 	layout string
+	// substituted counts the written timestamps whose recorded instant the document does not carry: each
+	// call with a record's own earlier instant replaces one written timestamp, so a record the writer
+	// stamps as several entries (Codex writes a turn context, a response item and a view event for one
+	// message) is counted on each of its entries rather than once for the record.
+	substituted int
 }
 
 func newEntryClock(start time.Time, layout string) *entryClock {
@@ -54,11 +69,31 @@ func newEntryClock(start time.Time, layout string) *entryClock {
 
 func (c *entryClock) next(at time.Time) string {
 	at = at.UTC()
-	if at.IsZero() || at.Before(c.last) {
+	if at.IsZero() {
+		at = c.last
+	} else if at.Before(c.last) {
+		c.substituted++
 		at = c.last
 	}
 	c.last = at
 	return at.Format(c.layout)
+}
+
+// substitutedRecordInstantsDetail words the caveat the clock-bearing writers report for a record whose
+// own recorded instant the document does not carry. The instant written in the recorded one's place is
+// always another instant the read recorded -- the previous written record's, the highest the document
+// already holds -- never one this build invented, and the entries and their order are unaffected; only
+// the one instant is. The text is the same for every writer that shares the clock, and keeping one copy
+// is what stops the routes from drifting apart.
+func substitutedRecordInstantsDetail() string {
+	return "the read recorded an instant for each of these records, and the document does not hold " +
+		"it: the target orders its records by the timestamp it writes, so a record whose own instant " +
+		"precedes the instant already written is stamped with the previous written record's instant " +
+		"instead -- an instant the read recorded for a record, never one this build invented -- and " +
+		"the record's own instant is in the source session alone. The count is per written timestamp, " +
+		"not per source record: a record the writer stamps as several entries (a turn context, a " +
+		"response item and a view event for one message) carries the substituted instant on each of " +
+		"them, and each of those written timestamps is counted"
 }
 
 // ledger accumulates the bookkeeping the three writers share while they walk a document: the calls
@@ -689,8 +724,11 @@ func installFile(home, subdir, projectDir, fileName string, data []byte, mode os
 // verifyStructure reads an installed session back through the inherited AgentsView reader the route
 // names and compares it, item by item, with what the writer intended to carry. sessionsDir is the
 // target's own directory; targetPath is the file the conversion published (or the dry run's copy of the
-// same bytes); cfg supplies the provider configuration (its roots for the route's agent are replaced,
-// never mutated: the map is copied); compare walks the read-back against the file's own bytes with the
+// same bytes), or -- for a target whose artifact is a row inside a database rather than a file -- the
+// reader's own reference to it; installedBytes answers the bytes of the artifact that was published
+// (the file at targetPath for every file-backed route, and the document the importer was handed for the
+// database-backed one); cfg supplies the provider configuration (its roots for the route's agent are
+// replaced, never mutated: the map is copied); compare walks the read-back against those bytes with the
 // route's reader rules.
 //
 // The read-back is the file this call names, read through the inherited reader's own path reference, so
@@ -703,6 +741,7 @@ func verifyStructure(
 	sessionsDir string,
 	agent parser.AgentType,
 	method, readerMessage, readerLabel, targetPath string,
+	installedBytes func(targetPath string) ([]byte, error),
 	compare func(readBack Conversation, installed []byte) roundTripComparison,
 	cfg config.Config,
 ) (StructureVerification, error) {
@@ -727,7 +766,7 @@ func verifyStructure(
 		return verification, nil
 	}
 	verification.ReadBack = readBackCounts(conversation)
-	installed, err := os.ReadFile(verification.TargetPath)
+	installed, err := installedBytes(verification.TargetPath)
 	if err != nil {
 		verification.Detail = "the installed session could not be read back for comparison: " + err.Error()
 		return verification, nil
@@ -858,6 +897,36 @@ func runRouteTurn(
 	ctx context.Context, executable, cwd string, args []string, environment []string,
 	timeout time.Duration, stderr io.Writer,
 ) (string, string, error) {
+	answer := newBoundedBuffer(harnessOutputMax)
+	diagnostics, err := runHarnessInvocation(ctx, executable, cwd, args, environment, timeout, stderr, answer)
+	return answer.String(), diagnostics, err
+}
+
+// runRouteDocument runs one non-interactive harness invocation whose stdout is a *protocol document*
+// rather than a turn's answer, and returns it whole. The command, its working directory, its environment,
+// its deadline and its bounded diagnostics are a turn's; what is not applied is the turn-output bound:
+// a session export is a document, and an excerpt of one is not an answer to a check that must read the
+// session it names (the same rule the Pi-family load reader applies to its own protocol answers, which it
+// reads incrementally). The bytes are the harness's own, so a caller that has to report the harness's
+// words for a failed run -- a refusal naming the id it could not resolve is the expected answer to the
+// load check's control arm -- still holds them; the caller walks them and keeps only what it asks about.
+func runRouteDocument(
+	ctx context.Context, executable, cwd string, args []string, environment []string,
+	timeout time.Duration, stderr io.Writer,
+) (string, string, error) {
+	answer := new(bytes.Buffer)
+	diagnostics, err := runHarnessInvocation(ctx, executable, cwd, args, environment, timeout, stderr, answer)
+	return answer.String(), diagnostics, err
+}
+
+// runHarnessInvocation is the process plumbing a route turn and a route document share: the deadline, the
+// working directory the harness's own lookup resolves through, the environment, the bounded diagnostics
+// channel, and stdout into the caller's own buffer -- the one thing the two callers differ in, because a
+// turn's answer is bounded and a protocol document is not.
+func runHarnessInvocation(
+	ctx context.Context, executable, cwd string, args []string, environment []string,
+	timeout time.Duration, stderr io.Writer, answer io.Writer,
+) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(runCtx, executable, args...)
@@ -869,7 +938,6 @@ func runRouteTurn(
 		}
 	}
 	command.Env = environment
-	answer := newBoundedBuffer(harnessOutputMax)
 	diagnostics := newBoundedBuffer(harnessDiagnosticsMax)
 	command.Stdout = answer
 	if stderr != nil {
@@ -879,9 +947,43 @@ func runRouteTurn(
 	}
 	err := command.Run()
 	if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return answer.String(), diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
+		return diagnostics.String(), fmt.Errorf("timed out after %s", timeout)
 	}
-	return answer.String(), diagnostics.String(), err
+	return diagnostics.String(), err
+}
+
+// skipJSONValue consumes one JSON value token by token, holding no more than the token in hand: a
+// container is walked by depth and every scalar is read and dropped. It is what keeps an unnamed member's
+// value -- a message's content, an event's payload -- from being held as one value, which is what both
+// encoding/json's Decoder.Decode and jsontext's own SkipValue do with it (SkipValue validates the skipped
+// bytes and keeps them in the decoder's buffer until the value ends: measured at twice the value's size
+// over a 16 MiB member). The Pi-family load reader and the OpenCode export reader both walk their
+// harness's own protocol answers with it, for the same reason: an answer carrying a whole conversation is
+// read for the fields the check asks about, not held whole.
+func skipJSONValue(dec *jsontext.Decoder) error {
+	token, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	switch token.Kind() {
+	case '{', '[':
+	default:
+		return nil
+	}
+	depth := 1
+	for depth > 0 {
+		token, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		switch token.Kind() {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+	}
+	return nil
 }
 
 // resolveRouteHome answers the data directory a route's conversion installs into: the caller's explicit

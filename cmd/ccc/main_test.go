@@ -147,6 +147,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv(stubCodexEnv) != "" {
 		os.Exit(stubCodex(os.Args[1:]))
 	}
+	if os.Getenv(openCodeStubEnv) != "" {
+		os.Exit(stubOpenCode(os.Args[1:]))
+	}
 	os.Exit(m.Run())
 }
 
@@ -2036,6 +2039,97 @@ func TestContinueHumanOutputReportsAPrePublicationFailure(t *testing.T) {
 	if document.TargetSession.SessionID == "" || document.TargetSession.Path != "" {
 		t.Errorf("target session = %+v, want the proposed identity with no installed path",
 			document.TargetSession)
+	}
+}
+
+// TestContinueHumanOutputReportsAnUnresolvedInstallation pins the block and the document for the one
+// installation outcome that is neither answer: the run's installer could not establish whether the store
+// holds the session (the harness's own importer failed after it may have committed, and its reader could
+// not say either). The line must not borrow `not-installed`'s words -- a reader who takes "nothing was
+// published" at face value may convert the same conversation again and leave a second snapshot -- and the
+// identity lines must carry the same fact, so no reader copies a resume command believing the session is
+// certainly there or certainly absent.
+func TestContinueHumanOutputReportsAnUnresolvedInstallation(t *testing.T) {
+	_, targetHome := continueEnvironment(t)
+	sessionID, _ := claudeFixture(t)
+	const targetID = "01a1e000-0000-7000-8000-000000000002"
+	failure := fmt.Errorf("%w: the harness's own importer failed (it answered nothing) and the store "+
+		"could not answer whether it holds this session (unable to open database file)", ccc.ErrInstallationUnresolved)
+	report := ccc.ContinueResult{
+		Ref:        ccc.Ref{Provider: "claude", ID: sessionID},
+		Target:     ccc.TargetOpenCode,
+		Conversion: ccc.ConversionReport{State: ccc.ConversionStateConverted, Format: ccc.OpenCodeTargetFormat},
+		TargetSession: ccc.TargetReport{
+			Provider:          ccc.TargetOpenCode,
+			Home:              targetHome,
+			SessionID:         targetID,
+			ResumeCommand:     "XDG_DATA_HOME=" + filepath.Dir(targetHome) + " opencode run --standalone --session " + targetID,
+			ExecResumeCommand: "XDG_DATA_HOME=" + filepath.Dir(targetHome) + " opencode run --standalone --session " + targetID + " \"<prompt>\"",
+		},
+		Installation: ccc.InstallationReport{
+			State:            ccc.InstallationStateUnresolved,
+			SourceCheckState: ccc.SourceCheckNotVerified,
+			Detail:           "the run stopped before this check ran: " + failure.Error(),
+		},
+		Verification: ccc.VerificationReport{
+			Structure: ccc.StructureVerification{State: ccc.VerificationStateNotVerified, Detail: "the run stopped"},
+			Load:      ccc.LoadVerification{State: ccc.VerificationStateNotVerified, Detail: "the run stopped"},
+			Resume: ccc.ResumeVerification{
+				State: ccc.VerificationStateNotRequested, Detail: "not requested (--verify load)"},
+		},
+		Warnings: []string{"the run stopped after the conversion: " + failure.Error()},
+	}
+	run := continueRun
+	continueRun = func(context.Context, ccc.ContinueOptions) (ccc.ContinueResult, error) {
+		return report, failure
+	}
+	defer func() { continueRun = run }()
+
+	code, stdout, stderr := runCLI(t, continueArgs(sessionID)...)
+	if code != exitFailure {
+		t.Fatalf("exit %d, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	for _, want := range []string{
+		"installed:    " + ccc.InstallationStateUnresolved + " (whether the store under " + targetHome +
+			" holds this session could not be established)",
+		"resume:       XDG_DATA_HOME=" + filepath.Dir(targetHome) +
+			" opencode run --standalone --session " + targetID + " (proposed; installation unresolved)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the human block is missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "nothing was published") ||
+		strings.Contains(stdout, "(proposed; nothing was installed)") {
+		t.Errorf("the block claims nothing was published about an outcome nobody established:\n%s", stdout)
+	}
+	if got := strings.Count(stdout, "(proposed; installation unresolved)"); got != 3 {
+		t.Errorf("identity lines marked with the unresolved outcome = %d, want 3 (target id, resume, "+
+			"non-interactive resume):\n%s", got, stdout)
+	}
+
+	code, stdout, stderr = runCLI(t, append(continueArgs(sessionID), "--json")...)
+	if code != exitFailure {
+		t.Fatalf("exit %d for the JSON spelling, want %d (stderr %q)", code, exitFailure, stderr)
+	}
+	var document struct {
+		TargetSession struct {
+			SessionID string `json:"session_id"`
+			Path      string `json:"path"`
+		} `json:"target_session"`
+		Installation struct {
+			State string `json:"state"`
+			Path  string `json:"path"`
+		} `json:"installation"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	if document.Installation.State != ccc.InstallationStateUnresolved || document.Installation.Path != "" {
+		t.Errorf("installation = %+v, want unresolved with no path", document.Installation)
+	}
+	if document.TargetSession.SessionID != targetID || document.TargetSession.Path != "" {
+		t.Errorf("target session = %+v, want the minted identity with no installed path", document.TargetSession)
 	}
 }
 

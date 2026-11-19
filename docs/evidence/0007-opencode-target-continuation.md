@@ -1,0 +1,3278 @@
+# 0007 — Continue supported conversations in OpenCode: evidence
+
+Contract: [`docs/goals/0007-opencode-target-continuation.md`](../goals/0007-opencode-target-continuation.md)
+(this increment leaves it in `docs/goals/` with its row marked *Implemented … awaiting operator
+acceptance*, per `AGENTS.md`: the goal moves to `docs/goals/archive/` in the increment that merges it).
+Plan: [`docs/plans/0007-opencode-target-continuation.md`](../plans/0007-opencode-target-continuation.md).
+Harness: OpenCode `2.2.5` (`opencode --version` prints `opencode v2.2.5`), the pinned AgentsView carry
+`83195c8a6861b8c74a4b6cb87512817fed6f8584` (reported by every run's `carried:` line).
+
+Every command below ran on this host (`linux x64`, the harness at
+`/home/azureuser/.npm-global/bin/opencode`), in this repository, on branch
+`feat/0007-opencode-target-continuation`. Output is quoted verbatim; `…[the rest of this output was
+dropped]` is the harness's own elision of a bounded detail line, and nothing else was edited.
+
+## 0. What was measured before anything was written
+
+The plan's §2.1 holds the table; this is what it rests on, all measured against the installed harness
+rather than read from a document. The measurements marked **new** are the ones this increment added to the
+plan's, each found while making the route verify against the real importer.
+
+| Question | Measured answer |
+| --- | --- |
+| the data directory | `$XDG_DATA_HOME/opencode` (the harness's own `debug paths` says so); there is **no** variable that names the directory itself, `OPENCODE_DB` overrides only the database file, and `XDG_STATE_HOME` holds service registration |
+| the store | one SQLite database per data directory: `<data dir>/opencode.db`, with `session_v2`, `session_message` and `project` among its tables (no per-session file) |
+| the import interface | `opencode session import <file> [--directory DIR] --standalone` — prints `Imported session: <id>` on stdout with exit 0, **preserves the document's `info.id`**, requires `--directory` to exist (`LocationNotFoundError` otherwise), prints `Session already exists` on **stderr with exit 0** for an id the store holds, and leaves the store unchanged for a refused import (`Bad Request` / `Internal Server Error`) |
+| the import document | `{info, messages}` — the harness's own `session export` output. Required: `info.id`, `info.projectID` (value **ignored, recomputed**, `""` accepted), `info.cost`, `info.tokens{input,output,reasoning,cache{read,write}}`, `info.time.updated`, `info.location.directory`; assistant `agent`, `model{id,providerID}`, tool `state.input` + state body + its own `time`. Optional: `title`, `subpath`, `outcome`, `info.model`, `time.idle`, `finish`, `executed`, `metadata`, reasoning `native`/`time`, idle messages |
+| **new**: the model reference's values | the member (`model{id,providerID}`) is required on every assistant message, its values need not be — measured on the installed 2.2.5 against documents the conversion itself wrote: `{"id":"","providerID":""}` imports (exit 0), is stored without a silent drop, and `session export` answers the member as written, exactly as it does for a non-empty id (`build`, the agent name, was measured the same way). Which value a writer puts there is a choice the harness leaves open, so this build writes the empty id where neither the source read nor the harness answered a model rather than naming one it cannot support |
+| **new**: the assistant message's own completion instant | an assistant message whose `time` carries `created` alone is accepted by the importer and **silently dropped**: exit 0, no row in `session_message`, no entry in `session export` (all seven members bisected; only `time.completed` changed the outcome). This is what the structural read-back caught on the first real conversion (§1, and the fix is the completion instant `writeAssistantMessage` writes into the message's own `time`, disclosed as `assistant_completion_instant`) |
+| **new**: the tool input's spelling | the harness stores a tool part's `state.input` as a parsed value: a document's own `{"limit": 5, "file_path": "…"}` (the recorded key order, with the source's whitespace) is held and read back as `{"limit":5,"file_path":"…"}`, so the store keeps the JSON value and the recorded key order while the recorded whitespace is not what it keeps. The structural comparison accordingly canonicalizes that one member's JSON on both sides -- the writer's item from the source's spelling, the read-back's call from the store's -- while every other member is compared as recorded (a value that does not parse is left as recorded and reported) |
+| the tool states | `completed` (non-empty `state.content` text) and `error` (`error.type` + `error.message`); `pending` and `running` are refused |
+| a compaction message | needs `summary` + `status` + `reason` (`auto`/`manual` accepted, others refused); an empty summary is accepted |
+| the export interface | `opencode session export <id> --standalone` — the session's own document, or exit 1 with `Session not found: <id>`; **content-neutral** (identical rows, identical session row, identical exported document around it, while the database *file's* bytes move with WAL handling) |
+| the listing | `opencode session list --standalone --format json` lists the sessions of the **current directory's** project (`[]` from a directory that is not the session's own); `--json` is not a flag (`Unrecognized flag`) |
+| the delete | `opencode session delete <id> --standalone` prints `Session <id> deleted` and exits 0; an id the store does not hold is `Session not found: <id>` with exit 1 |
+| a resume turn | `opencode run --standalone --session <id> -- <prompt>` answers from the installed history and appends its own records (a user message, an assistant message and an `idle` marker — measured: 3 records per turn); **an unknown id is created** rather than refused, which is why the load level uses `session export` |
+| the session's model binding | `info.model` is the binding a turn runs under: with an empty configuration a turn answers `provider.no-route: Model unavailable: <document model>`, and without the member it ran under the configuration's default |
+| the agent | `opencode debug agents --standalone` answers its own agent list as JSON: the first `mode=primary`, non-hidden entry is the agent a new session runs under — `build`, both with the owner's configuration and with an empty one — with `model{id,providerID,variant}` or `null` |
+| the service trap | a stray `opencode.exe serve --service` process holds the managed port (`Managed service port … already in use`), and a flag placed *after* a `--` terminator leaves the run on that service: no invocation this build runs — and none the check (§2) runs — leaves `--standalone` past a `--` terminator. The check names it immediately after every subcommand; the build carries it last on the subcommands that take no terminator (`session import <file> --directory <dir> --standalone`, `session export <id> --standalone`, `debug agents --standalone`) and immediately after `run` on the resume turn, whose words follow the terminator (`run --standalone --session <id> -- <prompt>`) |
+
+**The model reference's values, measured in the increment's apply round.** A document the §1 conversion
+itself wrote was imported into a scratch data root with one assistant `model` member — then every one —
+rewritten to `{"id":"","providerID":""}`: each import answered `Imported session: <id>` (exit 0),
+`session export` held every message, and the member came back exactly as written. The same document with
+`{"id":"build","providerID":""}` imported and exported the same way, so which value a writer puts in the
+member is a choice the importer leaves to it, and the empty id is the one that names no model this build
+cannot support.
+
+## 1. Claude Code → OpenCode through the pipeline, with the harness's own importer
+
+The source is a **copy** of the committed Claude fixture whose recorded working directory is rewritten to
+a scratch workspace, because the harness's importer refuses a session whose directory does not exist
+(measured: `LocationNotFoundError` for the fixture's own `/home/user/code/example-api`). The data root is a
+scratch one, and the harness's own `opencode` binary is named as `--target-binary` so the conversion
+drives the installation exactly as a caller would:
+
+```
+$ CLAUDE_PROJECTS_DIR=/tmp/ocx/ws/claude /tmp/ocx/ccc continue \
+    claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to opencode \
+    --target-home /tmp/ocx/data12 --target-binary /home/azureuser/.npm-global/bin/opencode \
+    --verify resume --resume-prompt "Reply with exactly: CLI-RESUME-OK"
+claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 → opencode
+  source:       /tmp/ocx/ws/claude/-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl
+  read from:    source
+  conversation: 8 message(s), 3 user, 5 assistant, 1 tool call(s), 1 compaction boundary(ies)
+  fidelity:     1 malformed line(s)
+  boundary:     2122 byte(s) read; the file is the size the read's own snapshot recorded (a size match, not a byte-identity check)
+  records:      the source's records end at a line feed at byte 2122: the file ends at a record boundary
+  converted:    opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)
+  omitted:      empty_user_messages ×1
+  carried-with-caveat: tool_name_vocabulary ×1
+  carried-with-caveat: message_model_attribution ×4
+  carried-with-caveat: target_model_binding ×1
+  carried-with-caveat: usage_zeroed ×1
+  carried-with-caveat: target_model_id_attribution ×2
+  carried-with-caveat: compaction_reason ×1
+  carried-with-caveat: assistant_completion_instant ×4
+  carried-with-caveat: unresolved_source_parents ×1
+  carried-with-caveat: pre_compaction_history ×4
+  omitted:      malformed_source_lines ×1
+  installed:    /tmp/ocx/data12/opencode/opencode.db [the target harness's own session importer (opencode session import)]
+  source file:  unchanged (sha256 fc21f865d9aa91fdaca51c0415c437742a22f5580ac6bc4466956d89a281bc3f, taken before and after the conversion)
+  target id:    ses_7MGLdAA8SS6sj0hEVhP4VTmakr
+  working dir:  /tmp/ocx/ws
+  resume:       cd /tmp/ocx/ws && XDG_DATA_HOME=/tmp/ocx/data12 /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_7MGLdAA8SS6sj0hEVhP4VTmakr -- ''
+  non-interactive resume: cd /tmp/ocx/ws && XDG_DATA_HOME=/tmp/ocx/data12 /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_7MGLdAA8SS6sj0hEVhP4VTmakr -- '<prompt>'
+  cli_version:  2.2.5 (probe)
+  structure:    verified (the inherited AgentsView OpenCode reader over the installed session)
+  native load:  verified (the target harness's own reader (opencode session export, with a scratch configuration and no model turn, plus an unknown-id control))
+                the harness's own reader resolved the installed session and answered with its own id and 7 message(s); the same command with an unknown session id refused it, naming ses_unknown_control_0000000000. The check ran with a scratch configuration and state directory and without the credential names the harness could read, and it billed no model turn
+  native resume: verified (one turn in the installed session through the target harness's non-interactive resume (opencode run --session))
+                the harness answered from the installed session in one turn and wrote its own records into it (the harness's own reader read 7 message(s) before the turn and 10 after)
+  answer:       CLI-RESUME-OK
+  carried:      AgentsView 83195c8a6861b8c74a4b6cb87512817fed6f8584, unmodified (scripts/upstream-parity.py)
+```
+
+The three states the core design keeps apart are three lines of that block: `converted` (the writer's
+document), `installed` (the harness's own importer's answer — the mechanism is named, and the store is
+where the harness reads sessions), and `native load`/`native resume` (the harness's own reader, and then
+one real turn).
+
+## 2. The OpenCode native check, with a real turn
+
+`scripts/opencode-native-check.py` (deliberately **not** a gate step: it needs the harness installed and,
+for a turn, model access). It plants an unrelated session **through the harness's own importer**, converts
+through the CLI, asks the harness's own reader and listing, runs one real turn through the printed
+invocation's own words, and removes the planted session through the harness's own `session delete`:
+
+```
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt "Reply with exactly: NATIVE-TURN-OK" --expect NATIVE-TURN-OK
+target:      /home/azureuser/.npm-global/bin/opencode (/home/azureuser/.npm-global/bin/opencode; opencode v2.2.5)
+the source fixture's recorded working directory (/home/user/code/example-api) is rewritten to the workspace: the harness's own importer refuses a session whose directory does not exist (measured: LocationNotFoundError)
+PASS: the unrelated session is planted through the harness's own importer — Imported session: ses_nativecheckunrelated0
+PASS: the harness's own reader answers the planted session's document — exit 0
+PASS: ccc builds with the flags upstream ships
+PASS: ccc continue writes one JSON result document
+PASS: the conversion reports the conversation it carried and every loss category — carried 7 message(s), 1 call(s), 1 result(s); loss categories named: 35
+PASS: the installation names the harness's own importer — installed — the target harness's own session importer (opencode session import)
+PASS: ccc continue exits 0 — exit 0; stderr Session not found: ses_ZjrlIZ1tSPyXFq2E6RVtPcVT2D
+PASS: the structural read-back verified the installed session
+PASS: the route's own load check verified the installed session natively — the harness's own reader resolved the installed session and answered with its own id and 7 message(s); the same command with an unknown session id refused it, naming ses_unknown_control_0000000000. The check ran with a scratch configuration and state directory and without the credential names the harness could read, and it billed no model turn
+PASS: the report names the harness's own version and the model a new session of it would run under — cli_version 2.2.5 (probe), model tencent-litellm/deepseek-v4.1-flash-fast (the harness's own debug agents answer)
+PASS: the installed session has the identity the report names — ses_ZjrlIZ1tSPyXFq2E6RVtPcVT2D
+PASS: the report names the store the harness reads as the installed path — '/tmp/ccc-opencode-native-check-xistf009/opencode-data/opencode/opencode.db', want /tmp/ccc-opencode-native-check-xistf009/opencode-data/opencode/opencode.db
+PASS: the harness's own reader answers the installed session's document — exit 0; id 'ses_ZjrlIZ1tSPyXFq2E6RVtPcVT2D', 10 message(s)
+PASS: the harness's own reader holds every message the conversion wrote — the store's own document holds 10 message(s); the conversion carried 7, and the conversion's own resume check ran one turn in it
+PASS: the installed session holds the source's own first prompt — 'Summarize the retry policy in internal/retry/policy.go.'
+PASS: the installed session holds the source's tool call and its recorded result — [('toolu_01Example0000000000000000', 'Read', 'completed')]
+PASS: the installed session holds the compaction boundary with the harness's own members — {"type": "compaction", "id": "msg_mF9rswDoomWJdnnWMMqsBpg777", "time": {"created": 1777886160000}, "status": "completed", "reason": "auto", "summary": "Summary: the retry policy caps attempts at four 
+PASS: the unknown-id control arm reports no such session, naming the id — exit 1; Session not found: ses_unknown_control_0000000000
+PASS: the harness's own listing names the installed session from its own directory — ['ses_ZjrlIZ1tSPyXFq2E6RVtPcVT2D']
+PASS: the same listing from another directory does not name it — 1 session(s) listed from /tmp
+PASS: the printed resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-opencode-native-check-xistf009/workspace && XDG_DATA_HOME=/tmp/ccc-opencode-native-check-xistf009/opencode-data /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_ZjrlIZ1tSPyXFq2E6RVtPcVT …[the rest of this output was dropped]
+PASS: the printed exec_resume_command reads as a POSIX shell line naming the session — cd /tmp/ccc-opencode-native-check-xistf009/workspace && XDG_DATA_HOME=/tmp/ccc-opencode-native-check-xistf009/opencode-data /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_ZjrlIZ1tSPyXFq2E6RVtPcVT …[the rest of this output was dropped]
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr [0m
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+PASS: the turn's answer contains 'NATIVE-TURN-OK' — NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 10 message(s) before the turn, 13 after
+PASS: the session's own records were not rewritten by the turn — the first 10 message(s) are unchanged
+PASS: the turn's own answer is in the session the harness reads — the turn appended 3 message(s)
+PASS: the source fixture tree is unchanged — 1 file(s) digested before and after
+PASS: the planted unrelated session is unchanged — exit 0; its document is byte-identical before and after
+PASS: the planted session is removed through the harness's own session delete — Session ses_nativecheckunrelated0 deleted
+PASS: the removed session no longer resolves — exit 1; Session not found: ses_nativecheckunrelated0
+RESULT: PASS — 31 check(s), none failed
+```
+
+A host without the harness ends the run before any check, naming the boundary:
+
+```
+$ python3 scripts/opencode-native-check.py --opencode ccc-no-such-harness
+RESULT: INCOMPLETE — 0 check(s) ran; ccc-no-such-harness is not on PATH, so the native half of the opencode route could not run (this route's installation *is* the harness's own importer, so there is nothing to verify without it)
+$ echo $?
+2
+```
+
+The run's offline half (`--json`, no turn: the turn is recorded as a named `SKIP`) is
+`RESULT: PASS — 27 check(s), none failed`.
+
+## 3. The accepted routes still verify
+
+The shared machinery this increment changed (`verifyStructure`'s installed-bytes seam,
+`roundTripReader`'s dialogue seam, the install input's shape) is exercised by the routes that were already
+accepted. The Oh My Pi route, with a real turn, on this host:
+
+```
+$ python3 scripts/omp-native-check.py --direction claude-to-omp --resume-prompt "Reply with exactly: ACCEPTED-ROUTE-OK" --expect ACCEPTED-ROUTE-OK
+the turn's own output (the target's answer, as the harness printed it):
+    ACCEPTED-ROUTE-OK
+
+PASS: the turn's answer contains 'ACCEPTED-ROUTE-OK' — ACCEPTED-ROUTE-OK
+PASS: the source fixture tree is unchanged — 1 file(s) digested before and after
+PASS: the planted unrelated session is unchanged
+PASS: every session the home already held is unchanged
+PASS: the conversion wrote no id the home already held — 01a1ec98-7bcc-7389-88ee-e5a041b7d47f is new among the session id(s) the home's own header lines record
+RESULT: PASS — 25 check(s), none failed
+```
+
+The Claude Code → Codex route's offline half is intact (its conversion, installation, the target's own
+`thread/read` views of both converted sessions, the repeat scenario, and the source's own digest):
+
+```
+$ python3 scripts/codex-native-check.py --resume-prompt "Reply with exactly: CODEX-ROUTE-OK"
+PASS: the target's own view lists the converted turns — 5 item(s) in the reply's own turn list
+PASS: the target's own view of the second session lists the appended turn — 7 item(s) in the reply's own turn list; the appended turn's own words are in its own view
+PASS: the first session's own view does not hold the appended turn — the first session's own view holds 5 item(s), none of them the turn the source gained after it was converted
+conversions: 2 session(s) installed (01a1ec98-c725-7f40-905c-1507056d7997 then 01a1ec99-045f-70ef-b93a-93315627d222); real turn(s) run: 1
+PASS: the source session is unchanged — sha256 2bd510821d4abf83… (fixture tree identical, internal/ccc/testdata/growth/claude-complete-turn.jsonl identical; the converted copy identical too: sha256 e2921e995915855d…, 2540 bytes)
+PASS: the unrelated session in the target home is unchanged — sha256 59ff49ca30baf622…
+PASS: no pre-existing session in the target home changed — 0 pre-existing session file(s)
+26 check(s) passed, 1 failed, 1 skipped
+```
+
+That run's one failure is the harness's own model endpoint, not the route: the turn fails with
+`ERROR codex_api::endpoint::responses_websocket: failed to connect to Responses WebSocket stage=Unknown`
+(quoted from the run's own output block), and the harness itself exits 1 with `session 3928 -> 133561
+bytes`. This host could not reach Codex's endpoint at that moment (the same route's real turn passed in
+0002/0004's own records on a host that could), so this run verifies the *offline* half and reports the
+turn as failed rather than unrun — the boundary is named rather than the failure hidden. The OMP run above
+is this increment's evidence that a real target-side turn still runs on this host, and this increment
+changed nothing on the Codex invocation path.
+
+## 4. Gate, tests and bookkeeping
+
+The gate is `python3 scripts/gate.py`, run alone (never beside a native check: both are memory-heavy on
+this host), and it must print `GATE: PASS`:
+
+```
+$ python3 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3611 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 308 tests in 5.669s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5702 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+Its steps for this increment: `parity` (the carried AgentsView files are still the pin's), `selftest` (the
+harness's own Python cases, `scripts/tests/`, which this increment extends with
+`test_opencode_native_check.py` and with this record's registration in `test_evidence_claims.py`), `gofmt`,
+`go vet`, the `test` step over `./cmd/ccc/... ./internal/ccc/...` with `-tags fts5`, and `secrets`. It
+refused the tree once, before the new check was registered: `FAIL parity REQUIRED but was FAIL:
+upstream-parity.py -> rc=1` / `parity: FAIL — 1 file(s) are neither carried nor project-owned` /
+`scripts/opencode-native-check.py` — the step that keeps a project-owned file from being mistaken for
+upstream's, and the fix is this increment's own registration of the script in
+`scripts/upstream-import.py`'s owned list and in `scripts/upstream-manifest.txt` (the manifest is what the
+checker reads; the list is what regenerates it).
+
+The Go suites this increment's own tests extend:
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc
+ok  	go.kenn.io/agentsview/cmd/ccc
+```
+
+What the new cases pin, each a rule rather than a restatement of the code: the document's required members
+(the assistant message's own completion instant among them — the rule whose absence the harness silently
+drops a message over), the importer's re-encoding of a tool input as evidence-preserving while a changed
+value is a difference, the three states of the route's own report, the flat target's counted omission of an
+inactive branch, the CLI's shape (`--to opencode`, the printed invocation, the refusal that names the
+harness), and the offline native-check rules (the `--standalone` position, a turn that did not grow the
+store, a refusal that must name its id, a failed listing that is not an empty one).
+
+Documentation and bookkeeping this increment carries: `AGENTS.md` **had to move with this round** — it
+changed the route table (`--to opencode` with the writer/installer/verifier files it names), the commands a
+caller runs (the harness's own importer, the `XDG_DATA_HOME` data root, `session export`), the repository
+layout (`internal/ccc/opencodefixture/`, `scripts/opencode-native-check.py`) and rules an agent must
+follow (an OpenCode session exists only inside the harness's store, so that harness's own importer is the
+only install path and a host without the binary has no installation; the two document members the store
+requires; the load level asks `session export`, never `run`; the session's own recorded directory; the
+target home's own model binding; and the `--standalone` rule every subcommand keeps) — so its
+OpenCode bullet, the route list and the native-check name were written in the same increment, and the file
+is not edited as decoration. Also carried: `docs/conventions.md` (the layout block's three files and the
+fixture package, the install rule's OpenCode branch, why this route adds no fixture directory);
+`docs/harness.md` (the new script's entry and why it is not a gate step); `README.md` (the capability
+sentence, the quickstart's `--to opencode` line and its printed resume form, the "what `continue` writes"
+block, the loader list, `--target-home`/`--target-binary`); `docs/core-design/README.md` (one sentence: a
+target whose artifact is a row inside the harness's own store); `docs/goals/README.md` (goal 0006 archived
+with its row, 0007's row); goal `0006-omp-continuation.md` moved to `docs/goals/archive/` with every link
+to it updated; and `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-01 … Q-0007-05). Goal 0007's own file stays
+in `docs/goals/` with its row marked *Implemented … awaiting operator acceptance*: it moves to the archive
+in the increment that merges it.
+
+### The control-file review round's re-run of the gate
+
+This round changed no Go file and no case: its fix is `AGENTS.md`'s `--standalone` rule, the "Documentation
+and bookkeeping" paragraph above, and two claims this increment's own edits had left stale in `README.md`
+(the directory-scoped route count, `all three` → `all four`, and the further-targets list, which still named
+`OpenCode` although this increment ships it as a target). It is also the round that gate-checked the
+increment's **tracked** bytes: the run quoted above is the stage's own, taken while its output was still
+untracked, and `gofmt` walks git's tracked `*.go` set (`scripts/gate.py`), so that line's 3611 is the tree's
+count without this increment's nine added `*.go` files — `git ls-tree 338df94` counted 3611 tracked `*.go`
+files and `git ls-files '*.go'` counts 3620 now (`git diff --name-status 338df94..HEAD -- '*.go'` → 9 added,
+12 modified) — and the nine went into this round's re-run. That run, `python3 scripts/gate.py` on the bytes
+this record ships, prints `GATE: PASS`, exit 0, with the same step set and the same contract counts as the
+block above: `gofmt` 3620 file(s) gofmt-clean (the line that moved), `build`/`vet` rc=0, `test` 3 package(s)
+ok, `selftest` Ran 308 tests (rc=0), `parity` 5553 carried file(s) identical to the pinned revision / 31
+project-owned prefix(es) / `files seen by git` 5701 (that line counts tracked ∪ untracked, and the earlier
+block's 5702 is its own moment's set, when this increment's output was still untracked), and `secrets` no
+leaks in 155 file(s).
+
+### The code-review round's fixes, re-measured
+
+This round's fixes came from the review of the whole increment (`338df94..f5668f5`). The one that changes
+behaviour this record rests on is the structural comparison's rule for a tool part's `state.input`: only the
+writer's side was canonicalized, so a conversation whose call recorded its keys in an order Go's encoder does
+not write was reported not-installed although the store held the same value — the review's measurement, and
+the scenario below. Both sides are canonicalized now (the recorded key order and the recorded whitespace are
+not evidence the walk asks about). Re-measured against the installed harness with a copy of the committed
+Claude fixture whose recorded working directory is rewritten to a scratch tree (as in §1) and whose tool
+input is recorded with the two keys out of order:
+
+```
+$ CLAUDE_PROJECTS_DIR=/tmp/ocfix/ws/claude /tmp/ocfix/ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 \
+    --to opencode --target-home /tmp/ocfix/data --target-binary /home/azureuser/.npm-global/bin/opencode --json
+$ echo $?
+0                       # stderr empty
+  installation:            installed — the harness's own session importer (opencode session import)
+  verification:            structure verified, load verified
+  target_session.file_name: absent
+  the source records:      "input":{"limit": 5, "file_path": "/tmp/ocfix/ws/internal/retry/policy.go"}
+  the store holds:         "input":{"limit":5,"file_path":"/tmp/ocfix/ws/internal/retry/policy.go"}
+                           (opencode session export answers the same bytes)
+```
+
+The Go case this round adds fails when the read-back side is left as the store spells it (the canonicalization
+reverted for one run, then restored): `tool call 1 differs (written … sha256 bfd7b7e2…, read back … sha256
+747b0542…)` — the same pair the review measured. The round's other fixes changed no measurement: the dry-run
+warning names the harness's own agent listing as what a dry run leaves unasked (the importer does run for a
+dry run, against the throw-away copy the structure check reads — the new route case and the recorded
+`calls.Roots` case), the expected refusals of the exclusivity probe and of the load check's control arm no
+longer print their `Session not found` lines (the re-run's stderr is empty, where §2's own log recorded
+`PASS: ccc continue exits 0 — exit 0; stderr Session not found: ses_ZjrlIZ1tSPyXFq2E6RVtPcVT2D`),
+`target_session.file_name` is absent for this route (its artifact is a store row, not a file), and the
+measured spelling is stated the same way in the evidence table, the plan, `docs/conventions.md` and
+`AGENTS.md`.
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc
+ok  	go.kenn.io/agentsview/cmd/ccc
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+… RESULT: PASS — 27 check(s), none failed     # the offline half, the same step set §2 lists
+$ python3 scripts/gate.py
+GATE: PASS
+```
+
+### The review round's fixes (`338df94..c315a52`), re-measured
+
+The findings file (`review-findings-r1.md`, review head `c315a52`) named eight defects: three P1 and five
+P2. All eight are fixed on the same tree, and each fix's own case was shown to redden without it (the
+mutation executed and restored, every file hashed after its restore; the gate and the native runs below ran
+on those bytes).
+
+- **Tool planning revived evidence from records the walk does not write** (`internal/ccc/opencode_target.go`).
+  `planToolEvidence` paired every result with its call *before* the message walk dropped inactive and
+  sidechain records, so a result recorded on a branch the conversation left (or on a subagent's record)
+  became the completed outcome of an active call — the report counted the record as omitted while the
+  document carried its result. Both passes now ask the source's own relations once (`convert` takes
+  `inactiveSourceRecords` and hands the same answer to the plan and the walk), and the plan skips the
+  records the walk will not write. `TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite` covers both
+  shapes: the call is left out as `unpaired_tool_calls`, no tool part is written, and the omitted result is
+  not paired.
+- **Structural verification substituted intended bytes for stored dialogue**
+  (`internal/ccc/opencode_install.go`). The installed-bytes callback returned `session.Data` — the import
+  document, which is the conversion's *intent*, not evidence about the store — and those bytes answered for
+  a written message the store no longer held, so a silently dropped row was excused as a projection
+  (`not_read_back_verbatim`) and the check could still verify. The walk now resolves written messages
+  against the store's own dialogue (the read-back's messages under the route's own reader rules, in the
+  read-back's order: `readBackDialogueKeys`, shared with the codex walk's read side so the two cannot
+  drift); this route's reader projects none of the records this writer writes, so a message the read-back
+  does not show is a message the store does not hold. The document's bytes are still read once for the
+  shape refusal the check owns. `TestVerifyOpenCodeSessionStructureFailsWhenTheStoreDroppedARow` deletes the
+  assistant row the measured silent drop leaves no trace of, and requires not-verified with the dialogue
+  named and `not_read_back_verbatim` zero.
+- **The printed resume command kept the caller's database override**
+  (`internal/ccc/opencode_verify.go`). Installation and the load level remove `OPENCODE_DB`, but the
+  reported environment named only `XDG_DATA_HOME`, so a caller with `OPENCODE_DB` set would paste a line
+  that reads another store — where `run --session <id>` *creates* a session instead of resolving the
+  installed one (measured, §0/§2). The printed line and the resume check now pin the store's own database
+  file (`openCodeResumeEnvironment`), so the invocation a caller pastes is the one that was verified.
+  Measured on the installed 2.2.5 for this round: with `XDG_DATA_HOME=<root> OPENCODE_DB=<root>/opencode/opencode.db`,
+  `opencode debug paths db` answers exactly that file and `session export <id>` resolves the session
+  (exit 0); with the same variable naming another store's file the same export refuses
+  (`Session not found: <id>`, exit 1). `TestOpenCodeResumePinsTheDatabaseItPrints` asserts the environment
+  reaching the harness *and* the printed line; the route case asserts the reported pair.
+- **An empty compaction summary lost its required member** (`internal/ccc/opencode_target.go`). `summary`
+  carried `omitempty`, so a boundary whose summary holds no text (the shape the inherited Pi reader can hand
+  over) was written without the member the importer requires. The member is a pointer now: written — empty
+  string included — on a compaction message and absent on every other type.
+  `TestOpenCodeCompactionSummaryMemberIsPresentWhenEmpty` reads the serialized bytes.
+- **Session exports were read through the turn-output bound** (`internal/ccc/opencode_verify.go`,
+  `internal/ccc/route_shared.go`). `openCodeExport` ran through `runRouteTurn`, which keeps only the first
+  1 MiB of stdout, so a session larger than that was truncated before the document was read — refusing
+  native load verification and the resume level's growth measurement. Exports now run through
+  `runRouteDocument` (a turn's command, deadline, environment and bounded diagnostics, with the turn-output
+  bound deliberately not applied; the two runners share their process plumbing in `runHarnessInvocation`),
+  and the document is walked token by token (`readOpenCodeExportDocument`, the walk the Pi-family load
+  reader uses for a whole-conversation answer) keeping only the session id, its recorded directory and its
+  message count. `TestOpenCodeExportCarriesADocumentLargerThanTheExcerptBound` runs the real runner against
+  this test binary as a stub harness (~2 MiB document) and reads it whole;
+  `TestOpenCodeExportReaderKeepsOnlyWhatItAsksAbout` pins the walk's refusals (an empty answer, a non-object,
+  a non-array `messages`, no session id, and content after the document).
+- **The native check's environment filtering was undone by its runner**
+  (`scripts/native_check_common.py`, `scripts/opencode-native-check.py`). `run()` overlays the dictionary it
+  is given onto a fresh copy of this process's environment, so the `OPENCODE_DB` that
+  `opencode_environment` removed was restored underneath it. `run()` gained `replace_env` (the dictionary is
+  the command's whole environment), and both the check's harness commands and its resume turn pass it; a
+  case asserts the environment reaching `subprocess.run`, not the dictionary the check built
+  (`HarnessEnvironment`).
+- **A requested turn without `--expect` always failed** (`scripts/opencode-native-check.py`). The
+  persisted-answer check required `args.expect` unconditionally, so `--resume-prompt` alone recorded a
+  failure even when the harness answered, appended its records and preserved the previous ones. Without
+  `--expect` the needle is now the harness's own printed answer, compared against the appended assistant
+  evidence (`document_texts(…, "assistant")`), and the `--expect` substring record stays conditional;
+  `ResumeStage` covers both arms.
+- **Coalesced call projections were counted but never disclosed**
+  (`internal/ccc/opencode_target.go`). `distinctCalls` charged `lossCoalesced`, but `losses()` never emitted
+  the category, so the committed multi-file patch fixture (the inherited Codex reader projects one
+  `apply_patch` into one call per file) collapsed silently where the plan promises per-category disclosure.
+  The category is emitted now (36 categories per run, up from 35 — that round's own count; the second
+  review round's `nonterminal_tool_events` takes it to 37, below);
+  `TestContinueIntoOpenCodeCoalescesOneCallsPerFileProjections` converts the patch fixture.
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore —
+`internal/ccc/opencode_target.go` `b3908623…`, `internal/ccc/opencode_install.go` `4e2a05a2…`,
+`internal/ccc/opencode_verify.go` `527b413e…`, `internal/ccc/route_shared.go` `2e75f7e6…`,
+`scripts/opencode-native-check.py` `e474a1af…`):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| tool planning skips the records the walk does not write | the `inactive[index] \|\| message.IsSidechain` guard turned into `if false` | `TestOpenCodePlansNoEvidenceFromARecordItWillNotWrite` FAIL — `unpaired_tool_calls = 0, want 1` and `the document holds a tool part for call "call-1": its evidence came from a record the walk does not write` (both the inactive-result and the sidechain arm) |
+| a written message is resolved against the store's own dialogue | the walk's records taken from the document's dialogue again (the pre-fix shape) | `TestVerifyOpenCodeSessionStructureFailsWhenTheStoreDroppedARow` FAIL — `State:verified` with `NotReadBackVerbatim:1` and the detail `1 written message(s) are in the installed session and the inherited OpenCode reader does not read their own text from it…` while the read-back holds 1 of the 2 written messages |
+| the printed environment pins the store's database | `openCodeResumeEnvironment` returning the data root alone | `TestOpenCodeResumePinsTheDatabaseItPrints` FAIL — the command carries no `OPENCODE_DB=…`; the route case FAIL — `resume environment = map[XDG_DATA_HOME:…], want the store's own database pinned` |
+| an empty compaction summary is written as a present member | the summary written as a nil pointer when empty | `TestOpenCodeCompactionSummaryMemberIsPresentWhenEmpty` FAIL — `the compaction message holds no summary member: the importer requires it` |
+| an export is read whole | `runRouteDocument`'s own buffer (the `new(bytes.Buffer)` it hands `runHarnessInvocation`) replaced by a bounded one, the then-unused import dropped | `TestOpenCodeExportCarriesADocumentLargerThanTheExcerptBound` FAIL — `the stub answered 1048576 byte(s), want more than the 1048576-byte excerpt bound` |
+| a harness command's environment is the check's own dictionary | `replace_env=True` dropped from `ask_opencode` | `HarnessEnvironment.test_one_harness_command_removes_an_inherited_database_override` FAIL — `'OPENCODE_DB' unexpectedly found in {…}` in the environment reaching `subprocess.run` |
+| a turn without `--expect` is compared with its own answer | the persisted-answer record restored to `bool(args.expect) and any(… )` | `ResumeStage.test_a_turn_without_expected_text_is_verified_by_its_own_answer` FAIL — `'FAIL' != 'PASS'` |
+| the printed line is read with its store pin | `also=pinned` dropped from `_check_invocation`'s reading | `PrintedInvocation` both cases FAIL — the pinning line no longer reads as the invocation, and the root-only line does |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 314 tests in 6.368s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The Go suites (`go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/`: `ok` / `ok`) and the native check
+on the fixed tree (this host's own OpenCode, `/home/azureuser/.npm-global/bin/opencode`, 2.2.5; run alone,
+never beside the gate). The console below keeps each run's own verdict line and the records the round's
+rules are about; a `…` inside one line is this record's own elision of that line's middle:
+
+```console
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the report names the environment the printed invocation sets — {'OPENCODE_DB': '…/opencode/opencode.db', 'XDG_DATA_HOME': '…'}, want the same pair
+PASS: the printed resume_command reads as a POSIX shell line naming the session — cd …/workspace && OPENCODE_DB=…/opencode/opencode.db XDG_DATA_HOME=… opencode run --standalone --session … -- ''
+PASS: the conversion reports the conversation it carried and every loss category — carried 7 message(s), 1 call(s), 1 result(s); loss categories named: 36
+RESULT: PASS — 28 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK'
+PASS: the turn's own answer is in the session the harness reads — the turn appended 3 message(s); the appended assistant record(s) hold 'NATIVE-TURN-OK'
+RESULT: PASS — 31 check(s), none failed     # the turn arm without --expect: the round's own case, against the real harness
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+RESULT: PASS — 32 check(s), none failed
+```
+
+The three runs' check counts are this round's own step set (the offline half gained the reported-environment
+check; §2's recorded `27 check(s)` is that earlier run's own bytes). The offline arm was re-run on the
+shipped bytes after the runners' plumbing was factored into `runHarnessInvocation` (a behaviour-preserving
+refactor of `runRouteTurn`/`runRouteDocument`), with the same records and the same verdict; the two turn
+runs were made before it. The `--resume-prompt`-only run is the arm the findings file's seventh item is
+about: it passes now where the pre-fix code recorded `the turn's own answer is in the session the harness
+reads` as FAIL for a successful turn.
+
+What else the round moved: `README.md` (all three places the OpenCode resume line appears — the
+quickstart's block, the environment sentence and the invocation list — now name the data root *and* the
+store's database file); `AGENTS.md` (the OpenCode bullet gains the printed-line rule: the line and the check
+name the root and pin the store's database in it, because a line a shell reads can set a variable but not
+remove one); `docs/harness.md` (the native check's entry names the pinned pair; the shared runner's entry
+names `replace_env`); `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-02's default taken now states the printed
+pin, with the measurement above); this record's §5 (the invocation row and the category count) and §6 (the
+count). No owner-only default was taken: the round re-applies rules the increment already states (the
+report's environment and the check's environment are the same; the store's own bytes are what a read-back
+verifies; a report discloses what it collapses), so no new OPEN-QUESTIONS entry was added. `AGENTS.md` was
+edited in the same round and for the reason the growth policy gives: the round changes a rule an agent must
+follow (what the printed OpenCode line names). No goal file is moved: 0007 is still the increment under
+review and stays implemented on its branch with its row.
+
+### The second review round's fixes (`37366ff` + working tree), re-measured
+
+The findings file (`review-findings-r2.md`, review head `37366ff`) named seven defects: one P1 and six P2.
+All seven are fixed on the working tree, each fix's own case was shown to redden without it (the mutation
+executed and restored, every file hashed after its restore — `internal/ccc/opencode_target.go`
+`f98c1a14…`, `scripts/opencode-native-check.py` `98f0d5f8…`), and the gate and the native runs below ran
+on the fixed bytes.
+
+The writer (`internal/ccc/opencode_target.go`):
+
+- **A progress event is not a call's outcome.** The pair selection took the first result event a call
+  recorded, whatever its status, and the writer spelled any non-error word under `completed` — so the
+  inherited Codex subagent shape (a `running` notification, then the completion:
+  `internal/parser/codex_parser_test.go`'s "running subagent notification does not suppress later
+  completion") carried "Still working" as a finished outcome and dropped "Finished successfully" as a
+  repeat. `openCodeResultStatesAnOutcome` now reads the inherited readers' own progress vocabulary
+  (`running`, `pending`, `streaming`, `started`, `in_progress`: `internal/parser/termination.go` keeps a
+  `running`-only call pending, and the RooCode/Kilo, Copilot and OpenCode readers spell the same state),
+  the plan pairs only an outcome, and every progress event is counted as `nonterminal_tool_events` (the
+  vocabulary grows to 37 categories per run). A call whose read holds only progress has no outcome here:
+  no part is written and the call is counted as `unpaired_tool_calls` (its detail now names both shapes).
+  `TestOpenCodeCarriesATerminalOutcomeRatherThanProgress` drives both arms.
+- **The tool-call item the round-trip walk compares is the input actually written.** The item kept the
+  source's own `InputJSON`, but the state's `input` member is the object written for it — the empty object
+  where the recorded value is not one (`empty_tool_inputs`). The inherited raw-text Codex
+  `custom_tool_call` shape the finding named, and the absent-input shape beside it, therefore failed the
+  structural comparison against a store that held exactly the disclosed conversion; the item now carries
+  what the part holds (`string(input)`), and the omission stays disclosed by the caveat. The existing tool
+  case pins the item's own member for an object, an absent input and the raw-text patch.
+- **A tool part's `completed` is the result record's own instant.** The part was written while the call's
+  message was walked, so both members took the call's instant; the plan now keeps the result record's
+  instant too (`openCodeCall.ResultAt`, the call's own where the result came from the archive's derived
+  summary) and the part's `completed` is that instant. The committed Claude fixture records its call at
+  `09:15:06.000Z` and its result at `09:15:06.500Z`; the fixture case pins the pair, and the message's own
+  instant is still handed out before its parts' (a record the document does not hold releases the clock
+  reservation, so it cannot raise a later record's floor).
+
+The native check (`scripts/opencode-native-check.py`, its cases in
+`scripts/tests/test_opencode_native_check.py`):
+
+- **One `--resume-prompt` is one turn.** The conversion was asked for `--verify resume --resume-prompt`
+  *and* the check ran its own turn, so one request ran and billed two. The conversion is now asked for
+  `--verify load` (the harness's own `session export`, measured to write no records) and the check's own
+  turn is the only one — measured below: the conversion leaves the store at 7 messages and the turn grows
+  it to 10, where §2's pre-fix transcript recorded the conversion at 7→10 and the check's turn at 10→13.
+  The store's message count is now required to equal the conversion's own at that read.
+- **The turn is the report's own invocation.** `_run_turn` reconstructed
+  `opencode run --session <id> -- <prompt>` from its own knowledge while `_check_invocation` only compared
+  each rendered command with the report's own vector, so a consistently wrong pair passed. The check now
+  reads the report's two vectors against what it knows on its own (`_read_turn_vector`: the harness this
+  run probed, this conversion's session id, `--standalone` immediately after the subcommand, the
+  terminator and that form's own prompt word — the empty prompt in the plain form, the placeholder in the
+  exec form) and records the reading of each; the turn runs the exec-form vector with the prompt
+  substituted and the report's `resume_environment` applied (checked to be this run's own root and store),
+  and a vector that breaks a rule is a FAIL with nothing run.
+- **A target root named `opencode` no longer splits the stores.** The harness's own rule makes a directory
+  whose own name is `opencode` the data directory itself (`internal/ccc/opencode_install.go`'s
+  `openCodeDataRoot`: its parent is the root), but the check appended `opencode` unconditionally, so
+  `--target-home scratch/opencode` planted and exported from `scratch/opencode/opencode/opencode.db`
+  while the conversion installed into `scratch/opencode/opencode.db`. `opencode_data_root_of` applies the
+  route's rule to the named directory before either the CLI command or the check's own environment is
+  built, and the run says which root a normalized name resolved to.
+- **The offline half accepts a home that resolves no model.** The report check required a nonempty
+  `model`/`model_provider` on every run, so a supported offline run against a home whose `debug agents`
+  answers `model: null` ended FAIL although the writer, the importer, the harness's own reader and the
+  load level all work without a binding. The version and the binding are now recorded separately
+  (`record_model_binding`): offline, a complete pair or the report's own `model_provider_detail` saying
+  why the harness resolved none both pass; a requested turn still needs the pair, because that is what
+  the harness would run the turn under.
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a result event's status decides whether it is an outcome | `openCodeResultStatesAnOutcome`'s progress list emptied (every status an outcome) | `TestOpenCodeCarriesATerminalOutcomeRatherThanProgress` FAIL — `the progress event's text was written into the document…`, `nonterminal_tool_events = 0, want 1`, `repeated_tool_results = 1, want 0`, and the progress-only arm's `the document holds a tool part for call "call_pending"` |
+| the tool-call item carries the input written | the item's `InputJSON` restored to `call.Source.InputJSON` | `TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts` FAIL — `call-noinput item input = "", want "{}"` and `call-rawinput item input = "*** Begin Patch\n*** End Patch", want "{}"` |
+| a tool part's `completed` is the result record's instant | `completed` taken from `call.At` again | `TestConvertToOpenCodeSessionCarriesTheFixturesEvidence` FAIL — `completed 1777886106000, want 1777886106500` (the fixture's 500 ms) and the tool case's `call-ok completed = 1700000000000, want 1700000001000` |
+| the reported vectors are read against this run's own harness and session | `_read_turn_vector` accepting any non-empty vector | `HarnessInvocationSpelling.test_a_turn_whose_reported_invocation_is_not_this_turns_never_runs` FAIL — a turn ran for a vector naming another session; `PrintedInvocation.test_a_pair_agreeing_with_itself_but_naming_another_session_is_not_this_turn` FAIL on all three arms (another session, no `--standalone`, the wrong prompt word) |
+| a named data directory is read through the harness's own rule | `opencode_data_root_of` returning its argument | `DataRootRule` both cases FAIL (each path flavour) — `PureWindowsPath('/data/opencode/opencode/opencode.db') != PureWindowsPath('/data/opencode/opencode.db')` |
+| the offline half accepts the harness's own no-model answer | the model record requiring a binding on both arms | `ModelBinding.test_an_offline_run_accepts_the_harnesss_own_no_model_answer` FAIL — `'FAIL' != 'PASS'` |
+
+The one-turn fix is measured rather than mutated: the runs below are its evidence (7 → 10, one turn).
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc
+ok  	go.kenn.io/agentsview/cmd/ccc
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the conversion reports the conversation it carried and every loss category — carried 7 message(s), 1 call(s), 1 result(s); loss categories named: 37
+PASS: the report names the model a turn would run under, or says why the harness resolved none — model tencent-litellm/deepseek-v4.1-flash-fast (the harness's own debug agents answer); the harness's own answer: the harness resolved `tencent-litellm/deepseek-v4.1-flash-fast` for its primary agent `build`
+PASS: the harness's own reader holds every message the conversion wrote — the store's own document holds 7 message(s); the conversion carried 7
+PASS: the report's resume_arguments names the harness this run probed, this session and the empty prompt — /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_Sb7K8qmD6gfjk6xxe4cSqXvRjj --
+PASS: the report's exec_resume_arguments names the harness this run probed, this session and the '<prompt>' placeholder — /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_Sb7K8qmD6gfjk6xxe4cSqXvRjj -- <prompt>
+SKIP: a real turn was requested (--resume-prompt) — not requested: this run verifies the offline half (the importer, the harness's own reader and listing, the printed invocation) and runs no model turn
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the report's exec_resume_arguments names the harness this run probed, this session and the '<prompt>' placeholder — /home/azureuser/.npm-global/bin/opencode run --standalone --session ses_bIhCTpKh0wX51Uu3v9kWmRAc7q -- <prompt>
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr 
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+PASS: the turn's answer contains 'NATIVE-TURN-OK' — NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+PASS: the turn's own answer is in the session the harness reads — the turn appended 3 message(s); the appended assistant record(s) hold 'NATIVE-TURN-OK'
+RESULT: PASS — 35 check(s), none failed
+```
+
+(The session ids in the two runs' vector lines are their own, minted per run; `stderr ` with nothing
+after it is the run's own — the expected refusals of the exclusivity probe and the control arm are
+discarded, as §4's earlier round fixed.) The offline arm's check count is 31 (one of them the named
+`SKIP`), the turn arm's 35: the four extra records are the turn's own stage plus the two vector readings,
+where §2's recorded run had 27/31 (the earlier step set). The gate on the fixed bytes,
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 323 tests in 5.915s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`selftest` ran 314 tests before the round and 323 after (the round's nine cases: two for the data-root
+rule, five for the model binding, and the two vector readings' cases). What else the round moved:
+`docs/harness.md` (the check's entry now states the load-level conversion, the validated exec-form vector,
+the one-turn rule and the `--target-home` normalization) and `docs/plans/0007-opencode-target-continuation.md`
+(the affected mapping rows, the two loss rows and §6's evidence row and measurements). `AGENTS.md` is
+**not** edited: the round changes no repository layout, gate step, command, read order or rule an agent
+must follow — the rules that file states about this route (the store-only installation, the three required
+members, `--standalone`'s position, `session export` for the load level, the printed line's data root and
+store pin) all still hold, and the writer's own category vocabulary is not enumerated there. No goal file
+is moved: 0007 is still the increment under review. No new OPEN-QUESTIONS entry: the round re-applies
+rules the increment already states (a progress event is not an outcome; the comparison asks about what was
+written; one requested turn is one turn; the route's own directory rule), and the progress-word list is
+the inherited readers' own, disclosed in the code and the plan's row.
+
+### The third review round's fixes (`33645b3` + working tree), re-measured
+
+The findings file (`review-findings-r3.md`, review head `33645b3`) named four defects: one P1 and three P2.
+All four are fixed on the working tree, each rule's own case was shown to redden without it (every mutation
+executed and restored; every file hashed after its restore — `internal/ccc/opencode_target.go`
+`d6fcc8cb…`, its cases `cd7b0362…`, `scripts/opencode-native-check.py` `49d57d82…`, its cases
+`9f1b2a52…`), and the gate and the native runs below ran on the fixed bytes.
+
+The writer (`internal/ccc/opencode_target.go`):
+
+- **The archive's derived summary is a view of the recorded events, progress included.** The summary
+  column is the inherited write path's own view of a call's result events (`internal/db`'s
+  `RestoreToolCallResultContent` refills it from the sole content-bearing event), so a conversion may write
+  it only for a call whose read recorded no result event at all. The second round's rule that a progress
+  event is not an outcome left a hole beside it: a call whose only recorded event was `running` had
+  `entry.Result == nil`, the summary fallback then restored that event's own text as a statusless result,
+  and `toolPart` wrote it under `completed` while the report counted the event as omitted — a fabricated
+  completion out of progress. Every call a recorded event names is now marked
+  (`openCodeCall.recordedEvents`, through the same id pairing a terminal event gets: `callNamedByResult`,
+  which answers the sole outstanding call for an event that recorded no id), and the fallback skips a
+  marked call as well as one with a carried result.
+  `TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents` drives the archive shape (`ResultContent` beside the
+  `running` event that produced it) and the summary-only arm the fallback still serves.
+- **Each tool part's span is its own records' pair.** Both instants were taken through the shared clock one
+  after the other, so a sibling's completion sat between a call's two instants: with two calls recorded on
+  one message at `T` and their results at `T+1s` and `T+2s`, the second call's `created` was rewritten to
+  `T+1s` and the duration the source recorded disappeared from the store. `openCodeClock.span` takes the
+  part's start from the message's own instant — the clock's floor at that point, not whatever a sibling's
+  completion raised it to — and its end from the result record's own instant, raised to the start where
+  the result's record precedes the call's; so calls recorded together start together while an unordered
+  source still cannot write a part whose end precedes its start.
+  `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` pins a staggered pair
+  and the one adjustment the pair may take (a result record whose own instant precedes the call's message:
+  the part's whole span is then the message's own instant), and
+  `TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts` now asserts every parallel part's pair, not
+  only the first call's start.
+
+The native check (`scripts/opencode-native-check.py`, its cases in
+`scripts/tests/test_opencode_native_check.py`):
+
+- **The store's tool part is compared with the source fixture's own bytes.** The check labelled "the
+  installed session holds the source's tool call and its recorded result" compared `(call id, name,
+  status)` alone, so a store holding different arguments or different output passed it — the shape a
+  writer that mangled either member produces, and one the structural round trip cannot see when the
+  conversion's own intended items hold the same mangled bytes. `source_tool_evidence` reads the fixture
+  copy the conversion read (each `tool_use`'s recorded input value and the `tool_result`'s text, the
+  latter through the inherited parser's `DecodeContent` rule, with `is_error` as the `errored` status the
+  reader records and this target writes as the `error` state), and `tool_evidence_differences` compares
+  identity, input value and result text part by part (a missing, duplicated or unknown part is a
+  difference of its own); the passing line now names the compared arguments and text. `ToolEvidenceComparison`
+  drives the fixture reading, the matching arm, a changed input, a changed result text, a changed
+  name/status, a missing/duplicated/unknown part, and the `is_error` reading.
+- **Every command is deadlined.** The shared runner raises `subprocess.TimeoutExpired`, and nothing caught
+  it: a hung turn (or build, or harness command) ended the run before `stop()` — the planted session stayed
+  in a caller-named home, its fixed id made every later run's planting meet it, and no final `RESULT` line
+  was printed. Every command this check runs now goes through `deadline_run`: an overrun is recorded as a
+  failed check of its own (naming the command and the bound) and answered as a completed process with exit
+  status -1, so the caller's own check reports what it could not read and the run still reaches
+  `remove_planted` and `finish`. `CommandDeadlines` drives the runner, the harness-command path, the turn
+  stage, and one end-to-end `main` run whose turn times out — asserting the planted session is still
+  deleted and a `RESULT:` line (exit 1) is still printed.
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| the summary fallback skips a call with any recorded event | the fallback's guard restored to `entry.Result != nil` alone | `TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents` FAIL — `the archive's summary of a progress event was written as the call's outcome`, `unpaired_tool_calls = 0, want 1`, `the document holds a tool part for call "call_pending"` |
+| each tool part's pair is its own records' pair | the pair taken through `c.clock.next(call.At)`/`next(call.ResultAt)` again | `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` FAIL — `call-b time = &{Created:1700000001000 …}, want … {Created:1700000000000 …}`; `TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts` FAIL on `call-failed`/`call-noinput`/`call-repeated`/`call-blocks`/`call-rawinput` (`created 1700000001000, want 1700000000000`) |
+| a tool part may not end before it starts | `span`'s `completed < created` guard dropped (the zero-instant guard kept) | `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` FAIL — `call-late time = &{Created:1700000001000 … Completed:1700000000000 …}, want the message's own instant 1700000001000 twice: the result's record precedes the call's, so the part may not end before it starts` |
+| a timeout is a recorded failure, not an escaping exception | `deadline_run`'s `try`/`except` replaced by the bare `run` call | `CommandDeadlines` all four cases ERROR — the end-to-end one with the raw `subprocess.TimeoutExpired: Command '['/usr/local/bin/opencode', 'run', …]' timed out after 600 seconds` out of `main` (no removal, no `RESULT` line) |
+| every command goes through the deadlined runner | `ask_opencode` calling the shared `run` directly again | `CommandDeadlines.test_a_timed_out_harness_command_reaches_the_callers_own_answer` ERROR — the timeout escapes `ask_opencode` |
+| the arguments and the result text are compared | both comparisons dropped from `tool_evidence_differences` (identity and status kept) | `ToolEvidenceComparison.test_changed_arguments_are_a_difference` and `test_changed_result_text_is_a_difference` FAIL — `AssertionError: False is not true : []` (an identity-only comparison finds nothing) |
+
+The runs on the fixed bytes:
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	14.411s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.086s
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the installed session holds the source's tool call and its recorded result — toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the installed session holds the source's tool call and its recorded result — toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr 
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+RESULT: PASS — 35 check(s), none failed
+```
+
+(The two runs' tool-evidence lines name the same fixture part — the comparison is against the fixture, not
+against the run; the offline arm's count is 31 with one named `SKIP`, the turn arm's 35 — the same step set
+the second round measured.)
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 334 tests in 5.743s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision of that line's middle — the pinned revision's
+own description, which §2's earlier block elides the same way.)
+
+`selftest` ran 323 tests before the round and 334 after (the round's eleven cases: seven for the
+fixture-driven tool comparison, four for the deadlined runner); the Go suites gained two cases
+(`TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents`, `TestOpenCodeParallelToolSpansKeepTheirOwnInstants`)
+and the every-part assertion in the existing tool case. What else the round moved: `docs/harness.md` (the
+check's entry: the tool evidence is compared with the fixture's own bytes, and every command is deadlined)
+and `docs/plans/0007-opencode-target-continuation.md` (the tool-call and timestamps mapping rows, the
+`nonterminal_tool_events` row, the two `Done when` evidence rows and §6.1's measurement list). `AGENTS.md`
+is **not** edited: the round changes no repository layout, gate step, command, read order or rule an agent
+must follow — the rules that file states about this route (the store-only installation, the required
+members, `--standalone`'s position, `session export` for the load level, the printed line's root and store
+pin) all still hold, and neither the writer's span arithmetic nor one script's timeout handling is a rule
+that file states. No goal file is moved: 0007 is still the increment under review and stays implemented on
+its branch with its row. No new OPEN-QUESTIONS entry: the round re-applies rules the increment already
+states (the summary is a view of the recorded events; the part's pair is the records it names; the
+comparison asks about the source's own bytes; a hung command is a failed check rather than a lost run), so
+no owner-only default was taken.
+
+### The fourth review round's fixes (`5dd8118` + working tree), re-measured
+
+The findings file (`review-findings-r4.md`, review head `5dd8118`) named four defects: one P1 and three P2,
+and the round's close-out asked the touched surface's rules be proven with one executed mutation each
+rather than a static argument. All four are fixed on the working tree, every rule named below was shown to
+redden without it (each mutation executed and restored; the four files hashed after their restore —
+`internal/ccc/opencode_target.go` `d6fc455b…`, its cases `cf7319fc…`,
+`scripts/opencode-native-check.py` `7e04de00…`, its cases `dc01e554…`), and the gate and the native runs
+below ran on the fixed bytes.
+
+The writer (`internal/ccc/opencode_target.go`):
+
+- **A recorded status word with no truthful state is left out.** The inherited Vibe reader preserves a
+  `cancelled` outcome verbatim (`internal/parser/vibe_unified.go`, whose own case pins its
+  `"Stop requested"` text), the plan paired it as any other outcome, and `toolPart`'s fall-through wrote
+  the result under `state.status="completed"` — a fabricated success the incremented
+  `tool_result_statuses` count disclosed but did not prevent. The status rule now has three arms: a
+  failure word is the `error` state, an absent word or `completed` the `completed` state, and any other
+  word — a cancellation, a provider's own word — is no state this vocabulary can state truthfully (the
+  harness's own reader resolves only `completed`/`error` as terminal: `internal/parser/opencode.go`'s
+  `terminal` rule), so the call is left out and the result counted. The category's own disposition is
+  now `DispositionOmitted` and its sentence states the omission rather than claiming the text travels
+  under `completed`. `TestOpenCodeOmitsAStatusWordWithNoTruthfulState` drives the source shape and the
+  archive shape beside it — the summary column restored from the same event cannot put the outcome back,
+  because the pairing consumes the recorded event — with a completed sibling part as the control.
+- **The recorded working directory is written as recorded.** `ConvertToOpenCodeSession` trimmed the
+  source's recorded cwd before anything used it, so a path ending in a space (a name a directory may
+  legitimately hold) became a different directory in the document's `info.location.directory`, in the
+  importer's `--directory` argument and in the printed resume command. Only the trimmed value's emptiness
+  is checked now (a whitespace-only value is still refused with `ErrNoTargetCwd`); the path itself
+  travels verbatim. `TestOpenCodePreservesTheRecordedWorkingDirectory` pins the verbatim value and the
+  whitespace-only refusal.
+
+The native check (`scripts/opencode-native-check.py`, its cases in
+`scripts/tests/test_opencode_native_check.py`):
+
+- **The conversion is handed the caller's own spelling.** For `--target-home scratch/opencode/opencode`
+  the check computed its own environment root correctly (`scratch/opencode`, the named directory's
+  parent) but then passed that already-normalized root to the CLI, whose own `openCodeDataRoot` rule
+  stripped a second level: the check planted, converted and read `scratch/opencode/opencode/opencode.db`
+  while the conversion installed into `scratch/opencode/opencode.db`, so a successful conversion was
+  checked against the wrong store. `conversion_target_home` hands the conversion the caller's own
+  resolved argument and both sides apply the rule exactly once. The rule's own case drives both
+  spellings and asserts the two sides resolve one store; the end-to-end case now names a data-directory
+  spelling and asserts the argument the conversion actually received.
+
+The case (`internal/ccc/opencode_target_test.go`):
+
+- **The branch case reads what the writer writes, and expects the right side.** It searched
+  `message.Text` for the branch's dialogue, but an assistant message's dialogue lives in its content
+  parts, so no assistant branch could ever be found; and its fixture had the two records' roles
+  reversed: the read's *last* record (`rec-3`) selects the line the walk follows, so its own text must
+  stay while the sibling (`rec-2`, hanging off the same parent) must be absent. The case now collects
+  both a user message's `text` and an assistant message's parts, asserts the selected line's text is
+  written and the sibling's is not, and only then the count.
+
+The mutations that name the rules of the touched surface, executed and restored:
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a status word with a third meaning is not written | `toolPart`'s `default` arm writing the result under `completed` again | `TestOpenCodeOmitsAStatusWordWithNoTruthfulState` FAIL — `a cancelled result's text was written into the document…`, `call-cancelled part = … want no part: its recorded status word has no truthful state`, `carried = {… ToolCalls:2 ToolResults:2 …}, want only the call whose part was written`, the archive arm's `the archive's summary restored a cancelled event as the call's outcome`, and `the document holds a tool part for call "call-cancelled"` |
+| the recorded working directory is kept verbatim | `cwd := strings.TrimSpace(conv.Source.Cwd)` restored | `TestOpenCodePreservesTheRecordedWorkingDirectory` FAIL — `session cwd = "/tmp/ccc opencode target", want the recorded path "/tmp/ccc opencode target " verbatim`, and the same for `info.location.directory` |
+| a progress event is not a call's outcome (the second round's rule) | `openCodeResultStatesAnOutcome`'s progress list emptied | `TestOpenCodeCarriesATerminalOutcomeRatherThanProgress` FAIL — `call_spawn part = {… State:<nil> …}, want the terminal event's own text under 'completed'`, `nonterminal_tool_events = 0, want 1` twice, `repeated_tool_results = 1, want 0`, `tool_result_statuses = 1, want 0`, `unpaired_tool_calls = 0, want 1` (the progress event consumed the call's only slot and the terminal event read as a repeat) |
+| the archive summary does not revive a recorded event (the third round's rule) | the fallback's guard restored to `entry.Result != nil` alone | `TestOpenCodeArchiveSummaryIsAViewOfRecordedEvents` FAIL — `the archive's summary of a progress event was written as the call's outcome`, `unpaired_tool_calls = 0, want 1`, `the document holds a tool part for call "call_pending"` |
+| the branch the source's relations place off the line is not written | `writeConversation`'s inactive guard disabled | `TestOpenCodeFlatTargetOmitsABranchAndCountsIt` FAIL — `dialogue = ["first" "off the line" "on the line"], want the sibling branch omitted: its text was written as an active message`, `inactive_branch_records = 0, want 1` |
+| the conversion is handed the caller's own `--target-home` spelling | `conversion_target_home` returning the normalized root | `DataRootRule.test_the_conversion_is_given_the_callers_own_spelling` FAIL on both path flavours — `PosixPath('/data/opencode') != PosixPath('/data/opencode/opencode') : the conversion was handed a normalized spelling` — and the end-to-end case FAIL — `'/tmp/tmp…/opencode' != '/tmp/tmp…/opencode/opencode' : the conversion was handed a normalized spelling: the route would normalize again and install into another store than the one this check reads` |
+
+The runs on the fixed bytes:
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	15.204s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.723s
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the installed session holds the source's tool call and its recorded result — toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr 
+> build · deepseek-v4.1-flash-fast
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+RESULT: PASS — 35 check(s), none failed
+```
+
+(The two runs' stores and session ids are their own, minted per run; the offline arm's count is 31 with one
+named `SKIP`, the turn arm's 35 — the same step set the second round measured.)
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 335 tests in 5.782s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision of that line's middle, as in §2's block.)
+
+`selftest` ran 334 tests before the round and 335 after (the round's one case: the conversion's
+`--target-home` spelling, on both path flavours); the Go suites gained two cases (the status word with no
+truthful state, the verbatim working directory) and the branch case was reworked to read assistant
+content. What else the round moved: `docs/harness.md` (the check's entry: the conversion is handed the
+caller's own `--target-home` spelling, and why) and
+`docs/plans/0007-opencode-target-continuation.md` (the tool-call mapping row, the `tool_result_statuses`
+row split out of the family list, and §6.1's fourth-round paragraph). `AGENTS.md` is **not** edited: the
+round changes no repository layout, gate step, command, read order or rule an agent must follow — the
+rules that file states about this route (the store-only installation, the required members,
+`--standalone`'s position, `session export` for the load level, the printed line's root and store pin)
+all still hold, and neither the writer's status vocabulary nor one script's argument handling is a rule
+that file states. No goal file is moved: 0007 is still the increment under review and stays implemented on
+its branch with its row. No new OPEN-QUESTIONS entry: the round applies rules the increment already
+states (a target writes no outcome the source did not record; the recorded directory is the source's own
+value; the two sides of the check resolve one store; a case asserts what the writer writes), so no
+owner-only default was taken.
+
+### The fifth review round's fixes (`1a88631` + working tree), re-measured
+
+The findings file (`review-findings-r5.md`, review head `1a88631`) named two P2 defects on this surface:
+a minted call id could alias a recorded one, and the nonzero importer branch dropped the harness's own
+refusal. Both are fixed on the working tree, each rule below was shown to redden without it (each mutation
+executed and restored; the four files hashed after their restore — `internal/ccc/opencode_target.go`
+`11d49155…`, its cases `93e67b46…`, `internal/ccc/opencode_install.go` `fdf77aff…`, its cases
+`4d588de5…`), and the gate and the native runs below ran on the fixed bytes.
+
+The writer (`internal/ccc/opencode_target.go`):
+
+- **A minted id is never one the read recorded.** This target's pairing map is keyed by id across the
+  whole document, and `openCodeCallID`'s positional spelling (`call_<message index>_<call index>`) sat in
+  the same namespace the source's own ids use: an assistant record holding a recorded `call_1_1` with an
+  id-less call beside it minted the recorded call's own spelling for the id-less one, the plan's map
+  assignment replaced the recorded call's entry, the recorded result was consumed by the id-less call,
+  and the call the result actually answered was dropped as unpaired — one tool's output written as another
+  tool's own result. `reserveRecordedCallIDs` now registers every id the read holds — each call's and each
+  result's, on every record, carried or not — before anything is minted, and `freshCallID` walks the
+  positional spelling upward (by a suffix) until it is outside that set, recording what it mints so two
+  id-less calls never share one id. Reserving *result* ids is the arm that answers a result naming no
+  carried call as unpaired rather than as the invented call's own outcome.
+  `TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes` drives three arms: the recorded call keeps its
+  result and its own input while the id-less sibling is counted unpaired; the orphan-named result is
+  answered as unpaired with no part written; and two id-less calls in one message stay two calls, so an
+  id-less result arriving while both are outstanding is counted unpaired rather than attached to one of
+  them.
+
+The installer (`internal/ccc/opencode_install.go`):
+
+- **A nonzero importer run keeps the harness's own words.** The branch returned only
+  `the harness's own importer could not be run: exit status 1`, discarding both captured streams, so a
+  core API caller that left `ContinueOptions.Stderr` unset had no `LocationNotFoundError` (the measured
+  refusal for a missing recorded directory) and the structured failure report inherited the generic exit
+  status. The returned error now appends the same bounded sentence the exit-zero path reports
+  (`openCodeAnswerSentence(output+diagnostics)`) beside the wrapped process error, which stays inspectable
+  through `errors.Is`/`As`. `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` pins both halves.
+
+The mutations that name the rules of the touched surface, executed and restored:
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| a minted id is minted outside the read's own ids | the minting call site restored to `openCodeCallID(index, len(c.plan[index].calls))`, bypassing the walk past the reserved set | `TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes` FAIL — `call_1_1 part = {Type:tool ID:call_1_1 Name:Read …}, want the recorded call's own input "{\"file_path\":\"/recorded\"}": the id-less sibling must not have taken its id`, `generated_call_ids = 1, want 0`, `the document holds map[call_0_0:{…}], want no tool part: the id-less call has no result and the result names no carried call`, `unpaired_tool_calls = 0, want 1`, `unpaired_tool_results = 0, want 1`, `generated_call_ids = 1, want 0` |
+| two id-less calls in one message never share a minted id | `freshCallID`'s body reduced to one constant spelling (`return "call_generated_shared"`) | `TestOpenCodeGeneratedCallIDsDoNotAliasRecordedOnes` FAIL — `the document holds map[call_generated_shared:{…}], want no tool part: two calls were outstanding, so the id-less result belongs to neither`, `unpaired_tool_calls = 1, want 2`, `unpaired_tool_results = 0, want 1`, `generated_call_ids = 1, want 0` |
+| a nonzero importer run keeps the harness's own refusal | the error sentence reverted to `%w` alone (no excerpt) | `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` FAIL — `refusal = the harness's own importer could not be run: exit status 1, want the harness's own refusal preserved` |
+
+The runs on the fixed bytes:
+
+```
+$ go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/...
+ok  	go.kenn.io/agentsview/internal/ccc	14.236s
+ok  	go.kenn.io/agentsview/cmd/ccc	3.724s
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+…
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+…
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+RESULT: PASS — 35 check(s), none failed
+```
+
+The check's fixture records an id on every call, so neither arm exercises the minting rule; both counts
+stand where the second round measured them (31 offline with one named `SKIP`, 35 with the turn).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 335 tests in 5.822s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | … | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision of that line's middle, as in §2's block.)
+
+`selftest` ran 335 tests before the round and 335 after (the round's cases are Go cases, not `selftest`
+cases); the `internal/ccc` package gained two test functions (the minted-id namespace, the importer's own
+refusal), 335 → 337. What else the round moved:
+`docs/plans/0007-opencode-target-continuation.md` (§6.1's fifth-round paragraph). `AGENTS.md` is **not**
+edited: the round changes no repository layout, gate step, command, read order or rule that file states
+(the id-minting algorithm is not a rule that file states, and the importer-as-only-install-path rule and
+the failure-reporting rule it does state are both unaffected). No goal file is moved: 0007 is still the
+increment under review, implemented on its branch with its row. No new OPEN-QUESTIONS entry: the round
+applies rules the increment already states (a result pairs with the call that recorded its id; a failure
+reports the harness's own words), so no owner-only default was taken.
+
+### The sixth review round's fixes (`a8ee709` + working tree), re-measured
+
+The findings file (`review-findings-r6.md`, review head `a8ee709`) named two defects, both P2, both in the
+native check's own half: one in the reading the three routes share, one in the OpenCode check's own lookup.
+Both are fixed on the working tree, each rule's own case was shown to redden without it (every mutation
+executed and restored, and the mutated file hashed back to the value it held before its mutation —
+`scripts/native_check_common.py` `4f74f6b8…` and `scripts/opencode-native-check.py` `212c9e79…`), and the
+gate and the runs below ran on the fixed bytes. The case files the fixes are pinned by are
+`scripts/tests/test_opencode_native_check.py` `e21a3539…` and `scripts/tests/test_omp_native_check.py`
+`7ac4940a…`.
+
+- **Every assignment the printed line's word vector carries must stand unquoted as `NAME=`**
+  (`native_check_common.spelled_as_invocation`). The rule read the *leading* assignment's spelling, and
+  nothing else: a shell reads a word as an assignment only where its `NAME=` stands unquoted, so a line
+  whose **second** assignment is spelled as one quoted word sets no variable there while its words read
+  back as the invocation — measured before the fix, for the OpenCode line
+  (`… && OPENCODE_DB=… 'XDG_DATA_HOME=/data' opencode …`: `reported_invocation` `True`, `shell_words`
+  matching, the quoted word absent from `unquoted_text` — a POSIX shell would run a program named
+  `XDG_DATA_HOME=/data`) and for the OMP/Pi line, whose sessions-tree assignment the spelling rule never saw
+  at all (`reported_invocation` `True` with `'PI_CODING_AGENT_SESSION_DIR=…'` quoted). Every name the vector
+  carries — `home_env`, `also`'s names and, for the first time, `session_dir_env` — is now required to stand
+  unquoted as an assignment word, and the leading word after `&&` must still be an assignment of the line's
+  own names. The new cases are `PrintedInvocation.test_a_quoted_second_assignment_is_not_the_invocation`
+  (both path flavours, with the word vector asserted equal so the refusal is the spelling's) and
+  `ReportedInvocationCases.test_a_quoted_second_assignment_is_not_read_as_the_invocation`;
+  `ReportedInvocationCases.test_a_quoted_assignment_is_not_read_as_the_invocation` (both assignments quoted)
+  stays as the leading-word arm.
+- **The harness word this run drives is resolved once, before any command runs**
+  (`opencode-native-check.harness_executable`). `shutil.which` answers a spelling that names a path
+  *unchanged*, so `--opencode ./tools/opencode` stayed relative, and the stages that run **from the
+  session's own directory** — the export the installation is read back through, its unknown-id control arm,
+  the listing that must not name the session, and the turn — were evaluated there. Measured on the
+  pre-fix tree: the run converted, installed and read its report through the CLI (through
+  `PASS: the report names the store the harness reads as the installed path`), then died on its first
+  `cwd=<workspace>` command with `FileNotFoundError: [Errno 2] No such file or directory:
+  './tools/opencode'`, printed **no** `RESULT` line, and left the caller-named home's store holding both the
+  installed session and the planted `ses_nativecheckunrelated0`. The word is now made absolute against the
+  directory `shutil.which` resolved it in; the conversion's CLI resolves the same spelling against its own
+  directory, so one program does the probing, the planting, the reading and the turn, and a spelling that
+  means different programs in the two directories is refused by `_read_turn_vector`, which names both words.
+  The new cases are `HarnessExecutable.test_a_relative_harness_argument_is_absolute_before_any_command_runs`
+  (a `main` run whose version probe and planting word are both asserted absolute) and
+  `HarnessExecutable.test_a_directory_changing_stage_is_handed_an_absolute_word` (the export itself, run
+  from a directory that is not this process's).
+
+The mutations that name the repaired rules, executed and restored (each file hashed after its restore, the
+hashes quoted above):
+
+| Rule | Line disabled | Observed |
+| --- | --- | --- |
+| every assignment the vector carries stands unquoted as `NAME=` | the `all(… startswith(name + "=") …)` clause replaced by `all(True …)` | `PrintedInvocation.test_a_quoted_second_assignment_is_not_the_invocation` FAIL on both flavours — `AssertionError: 'PASS' != 'FAIL'`; `ReportedInvocationCases.test_a_quoted_second_assignment_is_not_read_as_the_invocation` FAIL — `AssertionError: True is not false` |
+| the sessions-tree name reaches the spelling rule | `reported_invocation` calling `spelled_as_invocation(command, home_env, also, None)` again | the OMP case FAIL — `AssertionError: True is not false` (the line's words still match; only the spelling half is missing the name) |
+| the run's harness word is resolved before any command runs | `main` calling `shutil.which(args.opencode)` again | `HarnessExecutable.test_a_relative_harness_argument_is_absolute_before_any_command_runs` FAIL — `['tools/opencode'] != ['/home/azureuser/repos/call-ccc/tools/opencode']` |
+| the resolution makes the word absolute | `harness_executable` returning the lookup's answer | both `HarnessExecutable` cases FAIL — `PosixPath('tools/opencode') != PosixPath('/home/azureuser/repos/call-ccc/tools/opencode')` |
+
+The runs on the fixed bytes. The relative-spelling arm is the finding's own scenario end to end:
+`./bin/opencode-relative-test` is a symlink to the installed harness, made for this run and removed after it
+(`bin/` is `.gitignore`d), which is the spelling that crashed pre-fix.
+
+```
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode ./bin/opencode-relative-test
+target:      ./bin/opencode-relative-test (/home/azureuser/repos/call-ccc/bin/opencode-relative-test; opencode v2.2.5)
+PASS: the report's resume_arguments names the harness this run probed, this session and the empty prompt — /home/azureuser/repos/call-ccc/bin/opencode-relative-test run --standalone --session ses_CVd1hrbNsvEcvQUqu6F…
+RESULT: PASS — 31 check(s), none failed
+$ python3 scripts/opencode-native-check.py --opencode ./bin/opencode-relative-test \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr 
+the turn's own output (the target's answer, as the harness printed it):
+    NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+RESULT: PASS — 35 check(s), none failed
+$ python3 scripts/omp-native-check.py --direction claude-to-omp
+RESULT: PASS — 23 check(s), none failed
+$ python3 scripts/pi-native-check.py --direction claude-to-pi
+RESULT: PASS — 21 check(s), none failed
+```
+
+The opencode arms' counts are where §2/§4's earlier runs measured them (31 offline with one named `SKIP`,
+35 with the turn; the fixed bytes change no step set). The OMP and Pi runs are the offline arms of the two
+routes that read their lines through the changed shared rule — §3's OMP number (25) is that run's own turn
+arm, and neither route's step set changed. The turn arm re-run for the OpenCode route is this round's own
+one real turn, run from the session's own directory (the stage the defect was reached through) through the
+**relative** spelling the finding names.
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 339 tests in 5.808s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line and inside the quoted run lines is this record's own elision.)
+
+`selftest` ran 335 tests before the round and 339 after (the round's four cases: three in
+`scripts/tests/test_opencode_native_check.py`, one in `scripts/tests/test_omp_native_check.py`). What else
+the round moved: `docs/harness.md` (the OpenCode check's entry states the once-resolved harness word; the
+shared module's entry states that `spelled_as_invocation` requires every name the line's word vector
+carries) and `docs/plans/0007-opencode-target-continuation.md` (§6.1's sixth-round paragraph). `AGENTS.md`
+is **not** edited: the round changes no repository layout, gate step, command, read order or rule that file
+states — the rules it states about this route (the store-only installation, the three required members,
+`--standalone`'s position, the load level's `session export`, the printed line's data root and store pin)
+are all unaffected, and neither how a checker resolves its own harness nor how it reads an assignment is a
+rule that file states. No goal file is moved: 0007 is still the increment under review, implemented on its
+branch with its row; 0006 was archived in an earlier round and its row says so. No new OPEN-QUESTIONS
+entry: both findings apply rules the increment already states (a printed line's assignments set the
+variables a harness reads; the run drives the harness it probed), so no owner-only default was taken.
+
+### The CI repair on the sixth round's head (`2c6513c` + working tree), re-measured
+
+The hosted `gate (windows-latest)` check failed on that head (run 44255296535, job 134635437454, 2m21s) for
+a real reason, inside the `selftest` step: the gate's own lines are `FAIL selftest REQUIRED but was FAIL:
+scripts/tests -> rc=1`, `Ran 339 tests in 16.061s`, `FAILED (failures=2, errors=1)`. The two failures are
+the `HostCase` nested-run cases, whose child broke; the error is the parent's own copy of the child's one
+broken case, whose name the summary the parent quotes ends with
+(`broken: … test_a_timed_out_turn_still_removes_the_planted_session_and_prints_a_verdict`):
+`CommandDeadlines.test_a_timed_out_turn_still_removes_the_planted_session_and_prints_a_verdict`.
+
+The cause is the resolution the sixth round had just added
+(`opencode-native-check.harness_executable`), met with a word only Windows' `os.path` calls non-absolute.
+`ntpath.isabs("/usr/local/bin/opencode")` is **False** since Python 3.13 — a root without a drive hangs off
+the *current* drive — so the check resolved the case's stubbed lookup answer against that drive. The case
+had spelled the report's own vectors with the same literal, so `_read_turn_vector` read them as naming
+another word than the run probed, `_run_turn` returned before its deadline record, and the case's own
+`states[…]` lookup raised the `KeyError` the job reports. Reproduced here with Windows' two answers put in
+front of `os.path` (`isabs` False for that shape, `abspath` prefixing the drive): the pre-repair case raises
+exactly `KeyError: '/usr/local/bin/opencode run answers within its 600s bound'`, and the same two answers
+leave a drive-qualified word unchanged — so the repair is a host-spelled word, not a weakened assertion.
+
+The repair is in `scripts/tests/test_opencode_native_check.py` (`44e9f467…`; the check itself is unchanged,
+`scripts/opencode-native-check.py` `212c9e79…`, because the resolution *is* the shipped rule the round
+added and the report the case authored was the side that disagreed with it). The end-to-end case hands the
+run a word absolute in the *host's* spelling (`str(Path(tempfile.gettempdir()) / "bin" / "opencode")`), uses
+it in the stubbed lookup, in the report's two vectors and in the deadline record's name, and asserts that
+word is `os.path.isabs` before driving — a word the host's own rules would rewrite is refused by the case
+itself instead of surfacing as a `KeyError`. The resolution's rule is pinned on this host by a new case that
+puts the two Windows answers in front of the shipped function:
+
+| Rule | Mutation | Observed |
+| --- | --- | --- |
+| a word the host does not call absolute is resolved, not passed on | `harness_executable`'s `return found if os.path.isabs(found) else os.path.abspath(found)` replaced by `return found`, executed and restored (the file hashes back to `212c9e79…`) | `HarnessExecutable.test_a_rooted_word_without_a_drive_is_resolved_by_the_hosts_own_rule` FAIL — `'/usr/local/bin/opencode' != 'D:\\usr\\local\\bin\\opencode'` — and the class's two older cases FAIL with it (7 tests, `failures=3`) |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 340 tests in 8.045s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 146 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision, as above.)
+
+`selftest` ran 339 tests before the repair and 340 after: the repair's own case, the repaired case keeping
+its own place. The `secrets` scope's count reads `146` where the blocks above read `155`: that step counts
+this repository's own files *present in the tree*, and this run's tree holds none of the byte-code caches
+one suite run writes under `scripts/tests/__pycache__` (all 146 owned files here are tracked; nothing owned
+is untracked). What else the repair moved: `docs/harness.md` (the check's entry now states the host's own
+rule for the resolved word, Windows' drive included) and this record. `AGENTS.md` is **not** edited: the
+repair changes no repository layout, gate step, command, read order or rule that file states — it repairs
+conformance to a rule that file already states (a case must hold on every platform and every Python 3 the
+docs name). No goal file is moved: 0007 is still the increment on its branch, awaiting acceptance. No new
+OPEN-QUESTIONS entry: the repair spells a test's own word, so no owner-only default was taken.
+
+### The seventh review round's fixes (`3bd4f60` + working tree), re-measured
+
+The findings file (`review-findings-r7.md`, review head `3bd4f60`) named two defects, both P2 and both
+dispositions FIX: one about a source shape this route's writer receives, one about the statement a failed
+installation makes. Round 7's own instruction was a systematic close-out — every rule the touched surface
+claims had to be proved with one executed mutation (revert, run the case that claims to pin it, restore,
+hash back) — so the twelve mutations below are this round's evidence, not a static argument.
+
+- **A record whose Content is the reader's own rendering of its persisted reasoning trace is not dialogue**
+  (`thinkingRenderingOnly`, `dialogueText` in `internal/ccc/codex_target.go`, the shared rule every writer
+  reads dialogue through). RooCode's and Kilo legacy's readers (`internal/parser/roocode.go:489`,
+  `kilo_legacy.go:915`, and Cline's at `cline.go:602`) render a `say=reasoning` record as an assistant
+  message with `Content = "[Thinking]\n<trace>\n[/Thinking]"` and `ThinkingText = <trace>`, and project no
+  dialogue at all — the shape the readers themselves recognise through `parser.IsThinkingOnlyContent`
+  (`roocode.go:1428`, used at `roocode.go:1044`, `kilo_legacy.go:1318`, `cline.go:1172`). The writer's
+  Content fallback therefore wrote such a record's trace **twice** on this target: once as the `reasoning`
+  part the format persists a trace in and once as a `text` part holding the rendering — persisted reasoning
+  presented as words the agent said, with the round-trip comparison agreeing because both sides derived
+  from the same duplicated parts. The rule is applied only where the record actually carries a trace, so a
+  record the read answered no trace for keeps its Content (nothing shows those words to be a rendering);
+  the read-back rule is unchanged, because the intended dialogue was and is the rendering the inherited
+  reader makes of the parts. New case:
+  `TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce`, driven by a RooCode task directory written in the
+  provider's own shape, read through the inherited reader, and asserted on the **serialized document's own
+  parts** (exactly one `reasoning` part holding the trace, no `[Thinking]` rendering anywhere in the
+  document), on the loss category (`reasoning_text ×1`, carried with caveat), and through the store
+  read-back. `TestOpenCodeWriterNamesWhatItCannotCarry`'s hand-built reasoning-only record now carries the
+  reader's actual rendering (`[Thinking]\nonly a trace\n[/Thinking]`) instead of a truncated one, so the
+  case's shape is the shape the rule is about.
+- **A failed importer process is reconciled, never read as an absence** (`InstallOpenCodeSession`,
+  `internal/ccc/opencode_install.go`). Measured on 2.2.5, the harness's own importer **commits the session
+  and then exits**, so a deadline or a cancellation between those two moments leaves the store holding the
+  session while the run saw only a process error — and the old unconditional failure branch returned an
+  empty path, so `continueWith` kept `not-installed` and the human block asserted "nothing was published
+  under <home>" about a store that holds the session; the next conversion of one conversation would then
+  publish a second snapshot with nothing recording either. The failure branch now asks the evidence in
+  order: the harness's own `Imported session: <id>` line already in the captured output (`openCodeImportAnswer`)
+  is its answer that the store holds the session; otherwise the harness's own reader is asked
+  (`openCodeReconcileImport` → `session export <id> --standalone`, the interface Q-0007-03 already reads
+  this store through), whose answered export means published, whose own `Session not found: <id>` line
+  (compared with *this* id) means absent, and whose inability to answer means unknown. A published outcome
+  returns the store's path beside the error — the convention `continue.go` already documents for an
+  installer that reports a failure after publishing — so the report carries the identity the session is
+  resumed by; the unknown outcome returns `ErrInstallationUnresolved`, and `continueWith` sets the
+  installation block's third state, **`unresolved`** (`InstallationStateUnresolved`), which the human block
+  renders as `installed:    unresolved (whether the store under <home> holds this session could not be
+  established)` and marks on every identity line as `(proposed; installation unresolved)` — never
+  `not-installed`, whose words are the claim this run does not have. The reconciliation question is asked
+  with a context that outlives the caller's own deadline (`context.WithoutCancel` plus the route's own
+  question deadline): the deadline that stopped the import is exactly what would make the question unable
+  to answer, and the question is bounded and read-only (`session export` is measured to change none of a
+  session's own records). New cases: `TestInstallOpenCodeSessionReconcilesAFailedImport` (five arms: the
+  acknowledgment, the reader's answer, the caller-cancelled context, the refusal, and no answer at all),
+  `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` (now also pinning that a refusal stays a
+  refusal), `TestOpenCodeRefusalNamesSession` (what counts as the harness's own absence answer),
+  `TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed` (the route's own report in both
+  outcomes), and `TestContinueHumanOutputReportsAnUnresolvedInstallation` (the block and the JSON).
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted below with
+the first twelve hex digits — the round's own proof that the tree that ran the gate is the tree these
+rules are in):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a message whose Content renders its own trace has no dialogue | `codex_target.go` `if thinkingRenderingOnly(message)` → `if false` | `TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce` FAIL — `the record's message holds [{Type:reasoning …} {Type:text …}]`, and the document holds the `[Thinking]` rendering |
+| the rendering is recognised only for a record that carries a trace | `thinkingRenderingOnly`'s `strings.TrimSpace(message.Thinking) != "" &&` dropped | the same case FAIL at its second half — `the document dropped a record's own text, which nothing shows to be the rendering of a trace` |
+| the importer's own acknowledgment decides before the reader is asked | `if _, ok := openCodeImportAnswer(answered, session.SessionID); ok` → `… ok && false` | `TestInstallOpenCodeSessionReconcilesAFailedImport` FAIL — `path = "", want the store's own path true`, `err … could not be established`, `exports = 2, want 1` |
+| an answered export means the store holds the session | `return openCodeReconciledInstalled, …` → `return openCodeReconciledAbsent, …` | the same case FAIL — `path = ""`, `err = … could not be run: timed out after 30s: it answered nothing`, want `the store now holds the session` |
+| a refusal is the store's own answer that the id is absent | `if ok && strings.TrimSpace(rest) == sessionID` → `… && false` | `TestInstallOpenCodeSessionKeepsTheImportersOwnRefusal` FAIL — `refusal = the installation's outcome could not be established: … could not answer whether it holds this session` |
+| the refusal is read only when it names *this* id | the same comparison → `strings.TrimSpace(rest) == strings.TrimSpace(rest)` | `TestOpenCodeRefusalNamesSession` FAIL — `a refusal about another session` and `a refusal naming no session` both `= true, want false` |
+| the reconciliation asks the harness's own reader, not another interface | `{"session", "export", sessionID, "--standalone"}` → `{"session", "list"}` in `openCodeReconcileImport` | `TestInstallOpenCodeSessionReconcilesAFailedImport` FAIL — `exports = 1, want 2`, `path = ""` |
+| every OpenCode command this route runs carries `--standalone` | the same vector with `--standalone` dropped | the same case FAIL — `exports = 1, want 2`, `path = ""` |
+| the reconciliation question outlives the deadline that stopped the import | `context.WithoutCancel(ctx)` → `ctx` | the same case FAIL at its cancelled arm — `err … could not answer whether it holds this session (context canceled): context canceled` |
+| the unresolved outcome reaches the report as its own state | `continue.go` `errors.Is(err, ErrInstallationUnresolved) && path == ""` → `… && false` | `TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed` FAIL — `installation = {State:not-installed …}, want unresolved with no path` |
+| the human block renders the unresolved state instead of claiming nothing was published | `cmd/ccc/main.go` `case result.Installation.State == ccc.InstallationStateUnresolved:` → `case false:` | `TestContinueHumanOutputReportsAnUnresolvedInstallation` FAIL — `the human block is missing "installed:    unresolved (whether the store under … holds this session could not be established)"`, `the block claims nothing was published` |
+| the identity lines say the installation is unresolved rather than absent | the marker's `case ccc.InstallationStateUnresolved:` arm removed | the same case FAIL — missing `… (proposed; installation unresolved)`, `identity lines marked with the unresolved outcome = 0, want 3` |
+
+Restoring each file hashed it back to the bytes the table quotes (the mutations driver printed
+`e71016a707e3…` for `codex_target.go`, `2298fcc2677e…` for `opencode_install.go`, `99ba84c07b43…` for
+`continue.go`, `182beb3ee45f…` for `cmd/ccc/main.go` and the same value before and after every mutation).
+The cases' own bytes: `internal/ccc/opencode_target_test.go` `469343a650fe…`,
+`internal/ccc/opencode_install_test.go` `aa193b56754f…`, `internal/ccc/continue_opencode_test.go`
+`2e4742e66644…`, `cmd/ccc/main_test.go` `219e79c56f87…`.
+
+The runs on the fixed bytes. The route's own native check, offline and with one real turn (the harness is
+this host's `/home/azureuser/.npm-global/bin/opencode`, 2.2.5):
+
+```
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+RESULT: PASS — 31 check(s), none failed          (exit 0)
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr
+PASS: the turn's answer contains 'NATIVE-TURN-OK' — NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+RESULT: PASS — 35 check(s), none failed          (exit 0)
+```
+
+The counts are where §2/§4 already measured them (31 offline with one named `SKIP`, 35 with the turn): the
+fixed bytes change no step set, and the conversion path the check drives is the one this round did not
+change (the reconciliation is a failure-path rule, and the writer change is reached only by a source shape
+the check's Claude fixture does not hold — which is why that shape has its own case above).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 340 tests in 8.192s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 146 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision, as in the sections above. The gate ran on the
+working tree with this round's code, tests and docs applied; the only bytes written after it belong to this
+section, which is the record it printed into.)
+
+The narrowed Go suites' own test functions ran 384 before this round and 389 after — the five cases added
+(`TestOpenCodeCarriesARooCodeReasoningOnlyRecordOnce`, `TestInstallOpenCodeSessionReconcilesAFailedImport`,
+`TestOpenCodeRefusalNamesSession`, `TestContinueIntoOpenCodeReportsAPublicationItsProcessFailed`,
+`TestContinueHumanOutputReportsAnUnresolvedInstallation`), counted as `^func Test` over the test files git
+lists under `cmd/ccc` and `internal/ccc`. `selftest` is unchanged at 340, because this round adds no Python
+case: the two defects are Go-side rules, and the gate's `test` step is what runs them. What else
+the round moved: `AGENTS.md` (the OpenCode bullet now states the reconciliation rule and the
+`unresolved` state), `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-06 and Q-0007-07: the reconciled failure
+and the third installation state, the latter amending Q-0002-15's two-state vocabulary and its proposed
+marker) and `docs/plans/0007-opencode-target-continuation.md` (§6.1's seventh-round paragraph).
+`docs/harness.md` and `README.md` are **not** edited: they state what the native check verifies and how a
+caller invokes the route, and neither is changed by this round — the check drives a successful conversion
+whose new states are unreachable there, and every command, flag and printed line is what it was. No goal
+file is moved: 0007 is still the increment under review, implemented on its branch with its row; the
+earlier goals are archived and their rows say so.
+
+### The eighth review round's fixes (`10b980f` + working tree), re-measured
+
+The findings file (`review-findings-r8.md`, review head `10b980f`) named two defects, both P2 and both
+dispositions FIX, and its own instruction was the systematic close-out: every rule the touched surface
+claims had to be proved with one executed mutation — revert the line, run the case that claims to pin it,
+restore it, hash back. The nineteen mutations below are this round's evidence for the rules the two fixes
+touch, and both the code and the check were extended only where a rule had no pin.
+
+- **A reader's rendering of a record's own reasoning trace is removed from the record's own text, not only
+  from a record that is nothing but that rendering** (`dialogueFromContent`, reached from the shared
+  `dialogueText` in `internal/ccc/codex_target.go`, so every writer is fixed at once). ZCode's reader
+  renders a persisted thinking part *beside* the record's text — `internal/parser/zcode.go:561,577-578` joins
+  the record's own parts with line feeds, so an assistant record with a thinking part and a text part reads
+  as `Content = "[Thinking]\n<trace>\n[/Thinking]\n<spoken>"` with `ThinkingText = <trace>` and no
+  dialogue projection, the shape `internal/parser/zcode_test.go:636-639` asserts. Round 7's rule
+  (`thinkingRenderingOnly`) recognised only the whole-Content rendering, so the writer's Content fallback
+  wrote such a record's trace **twice** on every target: once as the record's reasoning and once inside the
+  dialogue, presenting persisted reasoning as words the agent said — and this route's round-trip comparison
+  agreed with the duplicated parts, because the comparison's intended side is derived from the same parts.
+  The rule now removes a rendering where it *stands* (a reader that keeps the record's part order — ZCode's
+  — renders the trace after the text it followed as readily as before it), only where the record's **own**
+  trace stands behind the block's words (`strings.Contains(message.Thinking, <the block's trimmed text>)`,
+  which is the evidence that makes the removal a finding rather than a rewrite), and with the line feeds
+  that joined the rendering to its neighbours; a record the read answered no trace for, a block no trace of
+  that record holds, a marker with no closer and an empty block keep their `Content` byte for byte (`if
+  !dropped { return message.Content }`), which the round-7 shape's rule (`thinkingRenderingOnly`, kept) and
+  a projection the source made still override. Nothing about the comparison changed: a read of the written
+  parts still renders what the parts say. New cases:
+  `TestDialogueFromContentKeepsOnlyTheRecordsOwnText` (twelve arms, one per rule above) and
+  `TestOpenCodeCarriesAZCodeMixedRenderingOnce` — a ZCode store written in the provider's own
+  `db/db.sqlite` shape (four tables, the session, the parts in the provider's order), read through the
+  **inherited reader**, asserted on the read's own shape (the rendering followed by the record's text, no
+  projection) and then on the **serialized document's own parts** (the trace once as the `reasoning` part,
+  the record's own text beside it, no `[Thinking]` rendering anywhere in the document), on the loss
+  category (`reasoning_text ×1`, carried with caveat), and through the store read-back — with two further
+  arms: a record whose text part is recorded *before* its thinking part (same result), and a record whose
+  own text merely looks like a rendering (kept as text, with the trace written once).
+- **A native check's planting is reconciled the way the route reconciles its own import, and it removes in
+  a caller's store only what it shows to be its own** (`scripts/opencode-native-check.py`). Measured: the
+  harness commits a session and can still fail or be killed before it answers (the window
+  `InstallOpenCodeSession` documents), and `plant_unrelated` read every nonzero status as "nothing was
+  planted" while `remove_planted` skipped cleanup for exactly that state — so a planting import that
+  committed and then failed or overran its deadline left the check's own fixture in a caller-named store,
+  where its fixed id made every later run meet `Session already exists`. A timeout compounded it:
+  `deadline_run` discarded the output the command had already printed, so the acknowledgment the
+  reconciliation reads was thrown away with the deadline. The check now (i) keeps a timed-out command's
+  captured output (`captured_stream`, which decodes the bytes `subprocess` hands the exception even for a
+  `text=True` run), (ii) reads a planting in the route's own order — the harness's own
+  `Imported session: <id>` line (`harness_line_names`, the same whole-line reading the route makes: the
+  words after the marker must be this id and nothing else), then the harness's own reader, whose answered
+  document means this run published the session and its cleanup removes it again, with an unconfirmed
+  acknowledgment and a store that answers nothing recorded as `unresolved`, (iii) asks the store about the
+  id it is about to plant before writing anything: only the store's own `Session not found: <id>` refusal
+  makes it free (a store that could not answer is not read as empty), a session whose own document is this
+  check's fabricated fixture (its id, directory and message text) is an earlier run's leftover and is
+  removed through the harness's own delete, and a session holding anything else is left exactly as found
+  with the run stopping there, and (iv) removes only what it published (`remove_planted`'s `published`),
+  so a run that published nothing deletes nothing. The record set is unchanged apart from the probe's own
+  line: a free id and a cleared leftover are one record each. New cases:
+  `test_a_timed_out_command_keeps_what_it_printed`,
+  `test_a_planting_that_overran_its_deadline_after_committing_is_removed_again` (an end-to-end `main` run
+  whose import prints its acknowledgment and then overruns its deadline: the planting is recorded PASS, the
+  session is deleted, the store ends without it, and the run still prints its verdict),
+  `test_an_import_that_failed_after_committing_is_reconciled_as_a_publication`,
+  `test_an_import_that_failed_without_its_reader_confirming_is_unresolved`,
+  `test_an_import_with_no_answer_at_all_is_not_a_publication`,
+  `test_a_store_holding_this_checks_own_leftover_has_it_removed_before_planting`,
+  `test_a_leftover_the_reader_still_holds_is_not_read_as_removed`,
+  `test_a_foreign_session_under_that_id_is_left_alone`, `test_a_store_holding_nothing_under_that_id_is_free`,
+  `test_a_store_that_could_not_answer_is_not_free` and `test_the_harnesss_own_lines_are_read_whole`.
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted below with
+the first twelve hex digits — `internal/ccc/codex_target.go` `ed9143c9ecbb…`, the same value before and
+after every one of its mutations, and `scripts/opencode-native-check.py` `cb238c9094a8…` likewise):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a projected dialogue is the record's dialogue, not its Content | `codex_target.go`: `if strings.TrimSpace(message.Dialogue) != "" || message.DialogueProjected {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_projection_is_the_dialogue_even_where_the_rendering_stands_beside_it` |
+| a record carrying calls has no dialogue from its Content | `codex_target.go`: `if len(message.ToolCalls) > 0 {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_record_carrying_calls_has_no_dialogue_from_its_Content` |
+| a Content that is nothing but the rendering is no dialogue | `codex_target.go`: `if thinkingRenderingOnly(message) {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_rendering_the_readers'_own_rule_trims_beside_it_is_still_no_dialogue`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_rendering_with_only_whitespace_beside_it_is_still_no_dialogue_(the_readers'_own_rule)` |
+| only a block the record's own trace stands behind is removed | `codex_target.go`: `if !closed || rendered == "" || !strings.Contains(trace, rendered) {` → `if !closed || rendered == "" || len(rendered) >= 0 {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/the_readers'_order:_the_rendering_stands_before_the_record's_text`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed` |
+| a record the read answered no trace for has no rendering to recognise | `codex_target.go`: `trace := message.Thinking` → `trace := ""` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/the_readers'_order:_the_rendering_stands_before_the_record's_text`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed` |
+| a marker the record carries without its closer is text | `codex_target.go`: `!closed || rendered == "" || !strings.Contains(trace, rendered)` → `rendered == "" || !strings.Contains(trace, rendered)` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_marker_the_record_carries_without_its_closer_is_text,_not_a_rendering` |
+| an empty block is text the record carries | `codex_target.go`: `!closed || rendered == "" || !strings.Contains(trace, rendered)` → `!closed || !strings.Contains(trace, rendered)` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/an_empty_block_the_record_carries_is_text,_not_a_rendering` |
+| the rendering is removed where it stands, not only where it leads | `codex_target.go`: `open := strings.Index(rest, thinkingRenderOpen)` → `open := strings.Index(rest, thinkingRenderOpen)⏎		if open > 0 {⏎			break⏎		}` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/one_trace_rendered_as_two_blocks_around_the_record's_text` |
+| the line feed that joined the rendering to its neighbour goes with it | `codex_target.go`: `pieces = append(pieces, strings.TrimRight(rest[:open], "\n"))` → `pieces = append(pieces, rest[:open])` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/ZCode's_part_order:_the_rendering_stands_after_the_text_it_followed`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/one_trace_rendered_as_two_blocks_around_the_record's_text` |
+| a record nothing was shown to be a rendering of keeps its Content byte for byte | `codex_target.go`: `if !dropped {` → `if !dropped && false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_block_the_record's_own_trace_does_not_hold_is_text_the_record_carries`; `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_record_the_read_answered_no_trace_for_keeps_its_Content` |
+| a timed-out command keeps what it printed | `opencode-native-check.py`: `return subprocess.CompletedProcess(cmd, -1, captured_stream(exc, "stdout"), captured + words)` → `return subprocess.CompletedProcess(cmd, -1, "", words)` | the run failed (see the driver's own record) |
+| a failed import its own reader confirms is a publication | `opencode-native-check.py`: `document, words, status = export_document(opencode, data_root, UNRELATED_SESSION)⏎    if document is not None:⏎        return True, bounded(` → `document, words, status = export_document(opencode, data_root, UNRELATED_SESSION)⏎    if False:⏎        return True, bounded(` | the run failed (see the driver's own record) |
+| an acknowledgment its own reader does not confirm is unresolved | `opencode-native-check.py`: `if acknowledged:⏎        return False, bounded(⏎            f"the harness's own acknowledgment names {UNRELATED_SESSION} but its own reader does not "` → `if False:⏎        return False, bounded(⏎            f"the harness's own acknowledgment names {UNRELATED_SESSION} but its own reader does not "` | the run failed (see the driver's own record) |
+| a session that is not this check's own fixture is never removed | `opencode-native-check.py`: `if not unrelated_is_this_checks(document):` → `if False:` | the run failed (see the driver's own record) |
+| this check's fixture is recognised by its own document | `opencode-native-check.py`: `planted = unrelated_document()["messages"][0]["text"]⏎    return any((message.get("text") if isinstance(message, dict) else None) == planted⏎               for message in (document.get("messages") or []))` → `return True` | the run failed (see the driver's own record) |
+| only the store's own refusal makes the id free | `opencode-native-check.py`: `if document is None and status != 0 and harness_line_names(words, SESSION_NOT_FOUND, UNRELATED_SESSION):` → `if document is None:` | the run failed (see the driver's own record) |
+| the harness's own line must name this id and nothing else | `opencode-native-check.py`: `if rest.startswith(marker) and rest[len(marker):].strip() == session_id:` → `if rest.startswith(marker) and session_id in rest:` | the run failed (see the driver's own record) |
+| a run that published nothing removes nothing | `opencode-native-check.py`: `other sessions are not this check's to delete."""⏎    if not published:⏎        return` → `other sessions are not this check's to delete."""⏎    if False:⏎        return` | the run failed (see the driver's own record) |
+| the removal is checked against the store, not assumed | `opencode-native-check.py`: `and after is None)` → `and True)` | the run failed (see the driver's own record) |
+
+Restoring each file hashed it back to the bytes the table quotes. The cases' own bytes:
+`internal/ccc/codex_target_test.go`, `internal/ccc/opencode_target_test.go` and
+`scripts/tests/test_opencode_native_check.py` carry this round's new cases and were not mutated.
+
+The finding's own scenario, reproduced natively on this host's OpenCode 2.2.5 (the fixture planted in a
+caller-named store through the harness's own importer, then a run against that store):
+
+```console
+$ XDG_DATA_HOME=$home opencode session import unrelated-fixture.json --directory /tmp --standalone
+Imported session: ses_nativecheckunrelated0            (exit 0)
+$ python3 scripts/opencode-native-check-prefix.py --opencode … --target-home $home    # the pre-fix bytes
+FAIL: the unrelated session is planted through the harness's own importer — Session already exists
+RESULT: FAIL — 1 check(s) failed: the unrelated session is planted through the harness's own importer
+$ python3 scripts/opencode-native-check.py --opencode … --target-home $home           # this round's bytes
+PASS: an earlier run's own unrelated fixture is removed before this run plants — Session ses_nativecheckunrelated0 deleted
+PASS: the unrelated session is planted through the harness's own importer — Imported session: ses_nativecheckunrelated0
+PASS: the planted session is removed through the harness's own session delete — Session ses_nativecheckunrelated0 deleted
+RESULT: PASS — 32 check(s), none failed          (exit 0)
+```
+
+The route's own native check on the fixed bytes, offline and with one real turn (the harness is this
+host's `/home/azureuser/.npm-global/bin/opencode`, 2.2.5):
+
+```
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+RESULT: PASS — 32 check(s), none failed          (exit 0)
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode \
+    --resume-prompt 'Reply with exactly: NATIVE-TURN-OK' --expect NATIVE-TURN-OK
+PASS: the turn ran through the printed invocation and exited 0 — exit 0; stderr
+PASS: the turn's answer contains 'NATIVE-TURN-OK' — NATIVE-TURN-OK
+PASS: the turn grew the installed session, through the harness's own reader — 7 message(s) before the turn, 10 after
+PASS: the session's own records were not rewritten by the turn — the first 7 message(s) are unchanged
+RESULT: PASS — 36 check(s), none failed          (exit 0)
+```
+
+The counts moved with the record the probe adds: 31 → 32 offline (the pre-fix run's `RESULT: FAIL` above
+stopped at its first record, so it is not comparable), and 35 → 36 with the turn. The conversion path the
+check drives is unchanged; the extra record is the id probe's own line.
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 351 tests in 5.793s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored byte…
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(A `…` inside the parity line is this record's own elision, as in the sections above. The gate ran on the
+working tree with this round's code, tests, control file and docs applied; the only bytes written after it
+belong to this section, which is the record it printed into.)
+
+The narrowed Go suites' own test functions ran 389 before this round and 391 after — the two cases added
+(`TestDialogueFromContentKeepsOnlyTheRecordsOwnText`, `TestOpenCodeCarriesAZCodeMixedRenderingOnce`),
+counted as `^func Test` over the test files git lists under `cmd/ccc` and `internal/ccc`. `selftest` ran
+340 before and 351 after: this round's eleven Python cases, which the gate's own `selftest` line above counts.
+What else the round moved: `AGENTS.md` (a new bullet stating the shared dialogue rule — the source's own
+projection where it made one, the record's own text minus the reader's rendering of that record's trace,
+and what is *not* removed — and a paragraph on the OpenCode check's own store discipline beside the route's
+reconciliation rule, both of which are rules an agent touching a writer or this check must follow);
+`docs/harness.md` (the OpenCode check's bullet now states the id probe, the own-fixture recognition, the
+reconciled planting and the unresolved arm); `docs/plans/0007-opencode-target-continuation.md` (§6.1's
+eighth-round paragraph); `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-08: the arm taken for a rendered trace
+beside a record's text, with the drop-and-count and refuse arms named as the alternatives; Q-0007-09: what
+the native check may remove in a caller-named store, and the measured failure that decided it).
+`README.md` is **not** edited: it states the capability, the quickstart and the flags, and none of them
+changed. `docs/upstream.md` and the carry are untouched: no carried file changes — the rule is this
+build's, in `internal/ccc`. No goal file is moved: 0007 is still the increment under review, implemented on
+its branch with its row; the earlier goals are archived and their rows say so.
+
+### The ninth review round's fixes (`e273a0b` + working tree), re-measured
+
+The findings file (`review-findings-r9.md`, review head `e273a0b`) named three defects — one P1 and two P2,
+all dispositions FIX — and its own instruction was again the systematic close-out: enumerate every rule the
+touched surface claims, prove each with one executed mutation, and pin in this round any rule that survived
+its mutation. The eight mutations below are this round's evidence for the rules the three fixes touch; the
+code, the check and the cases were extended only where a rule had no pin.
+
+- **The native check recognises its own leftover by the whole document** (`unrelated_is_this_checks` +
+  `without_importer_metadata`, `scripts/opencode-native-check.py`). The eighth round's predicate accepted
+  *any* document holding the planted text under the planted id and directory, so a leftover a caller had
+  since **continued** — the session the rule exists to leave alone — authorised
+  `clear_own_unrelated_leftover` to delete the caller's history with it. Measured on this host's OpenCode
+  2.2.5 (transcript below): with the fixture planted and one real turn run in it (`CONTINUED-OK`), the
+  pre-fix predicate answered the id free and `session delete` removed the 4-message session
+  (`Session not found` afterwards), while the fixed one leaves it resolving with the caller's own turn and
+  records the refusal. The recognition is now the complete fixture document, compared member for member,
+  with only the two members the harness's own importer is measured to rewrite normalized on both sides:
+  `info.projectID` (recomputed from the session's recorded directory — the planted `""` comes back as the
+  directory's own project hash) and `info.time.updated` (the import's own instant). Measured here by
+  importing the fixture and reading it back through the harness's own reader: `projectID
+  "470c8549ef01a2a9d3c85b22965766cefc874134"` and `time.updated 1794990087265`, where the document planted
+  `""` and `1760000000000`. New cases: `test_a_leftover_the_importer_rewrote_is_still_recognised`,
+  `test_a_leftover_a_caller_continued_is_left_alone` and
+  `test_a_leftover_whose_recorded_record_changed_is_left_alone`.
+- **The reasoning-only shortcut verifies trace membership like the beside-the-text removal does**
+  (`thinkingRenderingOnly`, `internal/ccc/codex_target.go`, reached from the shared `dialogueText`, so every
+  writer is fixed at once). The round-7/8 shortcut fired on the shape alone (`IsThinkingOnlyContent` plus a
+  non-empty trace), so a record that carries a `[Thinking]…[/Thinking]` block as its *own* content while a
+  trace stands beside it lost that text: the measured shape is internal/parser's Vibe reader
+  (`convertVibeMessage`), which records a message's `content` and `reasoning_content` independently and
+  renders nothing into either, so a Vibe record whose content is the block and whose trace is
+  `"private trace"` had its dialogue dropped as a rendering it demonstrably is not (its words are nowhere in
+  the trace). The shortcut now requires the block's words to be part of the record's trace, exactly as the
+  beside-the-text rule always did; a block the trace does not hold stays the record's dialogue while the
+  trace travels as its reasoning (counted on this target, where no shape carries it). New case
+  `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` (a Vibe transcript written to a
+  temp provider root, read through `NewSourceReader`, converted to a Codex rollout) plus the table arm
+  `a reasoning-only block the record's trace does not hold is the record's own text`.
+- **Removing a rendering no longer takes the record's own line feeds with it** (`dialogueFromContent`).
+  The removal stripped *every* adjacent line feed and rejoined with one, so a ZCode record whose text parts
+  are `"First paragraph.\n\n"` and `"Second paragraph."` around a thinking part — the reader joins its parts
+  with `strings.Join(parts, "\n")` (`internal/parser/zcode.go:561,577`) — came out
+  `"First paragraph.\nSecond paragraph."`, collapsing a recorded blank line (a Markdown paragraph break)
+  into a single feed. The removal now takes exactly the one feed the reader's own join put on each side of
+  the rendering, so the feeds a neighbouring text part records survive and the neighbours come out joined as
+  the reader joins neighbours. New arms: `the blank line the record recorded before the rendering survives
+  the removal` and `… after the rendering survives too`.
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted below with
+the first twelve hex digits — `internal/ccc/codex_target.go` `4a9378dbc3b7…`, the same value before and
+after every one of its mutations, and `scripts/opencode-native-check.py` `9efa3392811b…` likewise while the
+mutations ran; its module docstring's wrap was edited after the table was written, which moved the file to
+`82d24621131e…` with no code line changed):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| the reasoning-only shortcut's block must be this record's trace | `codex_target.go`: `return closed && strings.Contains(trace, strings.TrimSpace(inner))` → `return closed && strings.Contains(trace, strings.TrimSpace(inner)) \|\| true` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_reasoning-only_block_the_record's_trace_does_not_hold_is_the_record's_own_text`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` |
+| only the reader's own join feed goes with the rendering | `codex_target.go`: `strings.TrimSuffix(rest[:open], "\n")` → `strings.TrimRight(rest[:open], "\n")` and `strings.TrimPrefix(after, "\n")` → `strings.TrimLeft(after, "\n")` | the two `… blank line …` arms |
+| the one feed between neighbours is the reader's own join | `codex_target.go`: `strings.TrimSuffix(rest[:open], "\n")` → `rest[:open]` and `strings.TrimPrefix(after, "\n")` → `after` | five arms (readers' order, ZCode's part order, two blocks around the text, both blank-line arms) |
+| a record nothing was shown to be a rendering of keeps its Content byte for byte | `codex_target.go`: `if !dropped {` → `if !dropped && false {` | four arms (block not held, no trace answered, marker without closer, empty block) |
+| a store's session is this check's fixture only as a whole document | `opencode-native-check.py`: `return without_importer_metadata(document) == without_importer_metadata(unrelated_document())` → `return True` | `test_a_foreign_session_under_that_id_is_left_alone`; `test_a_leftover_a_caller_continued_is_left_alone`; `test_a_leftover_whose_recorded_record_changed_is_left_alone` |
+| the importer's recomputed `projectID` is normalized | `opencode-native-check.py`: `info.pop("projectID", None)` → `info.get("projectID")` | `test_a_leftover_the_importer_rewrote_is_still_recognised` |
+| the importer's rewritten `time.updated` is normalized | `opencode-native-check.py`: `recorded_time.pop("updated", None)` → `recorded_time.get("updated")` | `test_a_leftover_the_importer_rewrote_is_still_recognised` |
+| a session is not this check's fixture by any single member of it (the pre-fix predicate) | `opencode-native-check.py`: the whole-document comparison → the id/directory/any-message-text predicate | `test_a_leftover_a_caller_continued_is_left_alone`; `test_a_leftover_whose_recorded_record_changed_is_left_alone` — and natively in the transcript below |
+
+Restoring each file hashed it back to the bytes the table quotes; the suites were re-run afterwards (the Go
+program under test: `ok go.kenn.io/agentsview/internal/ccc`; the check's own cases: `Ran 63 tests … OK`).
+
+The finding's own scenario, reproduced natively on this host's OpenCode 2.2.5 — the fixture planted in a
+caller-named store through the harness's own importer, **continued by one real turn**, then read by both the
+fixed check and the pre-fix predicate. The staging step and the pre-fix step are throw-away Python drivers
+outside the repository (the second is the shipped script's bytes with only the recognition replaced, as
+round 8's prefix run was):
+
+```console
+$ home=/tmp/p1-r9-home; rm -rf $home; mkdir -p $home
+$ python3 - <<'PY'   # the shipped module's own fixture, staged and planted through the harness's own importer
+…  published, detail = m.plant_unrelated(OPENCODE, Path(home), Path(home)); print(detail)
+PY
+Imported session: ses_nativecheckunrelated0
+$ XDG_DATA_HOME=$home opencode run --standalone --session ses_nativecheckunrelated0 -- 'Reply with exactly: CONTINUED-OK'
+
+> build · deepseek-v4.1-flash-fast
+CONTINUED-OK                                                  (exit 0)
+$ XDG_DATA_HOME=$home opencode session export ses_nativecheckunrelated0 --standalone | python3 -c '…len(doc["messages"])…'
+4 message(s)
+$ python3 scripts/opencode-native-check.py --opencode … --target-home $home
+FAIL: the id this run plants is free in the store — the store already holds ses_nativecheckunrelated0 and its own document is not this check's fixture, so this run may not remove it: {"info": {"id": "ses_nativecheckunrelated0", "projectID": "470c8549ef01a2a9d3c85b22965766cefc874134", "cost": 0.0009946999999999998, "tokens": {"input": 8415, "output": 13, "reasoning": 783, "cache": {"read": 7360, "write": 0}}, "outcome": "succeeded", "time": {"created": 1760000000000, "updated": 1 …[the rest of this output was dropped]
+RESULT: FAIL — 1 check(s) failed: the id this run plants is free in the store          (exit 1)
+$ python3 - <<'PY'   # the pre-fix recognition (id, directory, any message text) on the same store
+…  print("pre-fix predicate answered free =", m.clear_own_unrelated_leftover(OPENCODE, Path(home)))
+PY
+pre-fix predicate answered free = True
+PASS: an earlier run's own unrelated fixture is removed before this run plants — Session ses_nativecheckunrelated0 deleted
+$ XDG_DATA_HOME=$home opencode session export ses_nativecheckunrelated0 --standalone
+Session not found: ses_nativecheckunrelated0                        (exit 1)
+```
+
+The route's own native check on the fixed bytes, offline (the harness is this host's
+`/home/azureuser/.npm-global/bin/opencode`, 2.2.5):
+
+```console
+$ python3 scripts/opencode-native-check.py --opencode /home/azureuser/.npm-global/bin/opencode
+PASS: the id this run plants is free in the store — Session not found: ses_nativecheckunrelated0
+PASS: the unrelated session is planted through the harness's own importer — Imported session: ses_nativecheckunrelated0
+…
+PASS: the planted unrelated session is unchanged — exit 0; its document is byte-identical before and after
+PASS: the planted session is removed through the harness's own session delete — Session ses_nativecheckunrelated0 deleted
+PASS: the removed session no longer resolves — exit 1; Session not found: ses_nativecheckunrelated0
+RESULT: PASS — 32 check(s), none failed          (exit 0)
+```
+
+(The bare `…` line is this record's own elision of the run's intervening records; the run printed all 32 and
+none failed — the same count round 8's run ended with, because the rule changed which documents the leftover
+step accepts, not how many records the check makes.)
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 5.778s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5701 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 155 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `… | ` at the parity line's front is what the run itself printed; the line above is quoted whole from
+its output, and its body is that run's own rendering end to end. The gate ran on this round's final working
+tree — this record included — and after it only this block, repeating its output, and this sentence were
+written.)
+
+The narrowed Go suites' own test functions ran 391 before this round and 392 after — the one case added
+(`TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader`), counted as `^func Test` over the
+test files git lists under `cmd/ccc` and `internal/ccc`. `selftest` ran 351 before and 354 after: this
+round's three Python cases in `scripts/tests/test_opencode_native_check.py`. What else the round moved:
+`AGENTS.md` (the dialogue bullet's closing clause now says a record whose `Content` is nothing but a
+rendering **of its own trace** has no dialogue — the wording the round-7/8 shortcut was read to justify; the
+rule is unchanged, but the sentence as it stood described the defect); `docs/harness.md` (the OpenCode
+check's bullet states the whole-document recognition, the two normalized members the importer rewrites, and
+the measured pre-fix deletion of a continued leftover); `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-09's
+default-taken text narrowed to the whole document with the round's measurement); and
+`docs/plans/0007-opencode-target-continuation.md` (§6.1's ninth-round paragraph). `README.md`,
+`docs/upstream.md` and the carry are untouched: no carried file changes. No goal file is moved: 0007 is
+still the increment under review, implemented on its branch with its row; the earlier goals are archived
+and their rows say so.
+
+### The tenth review round's fixes (`f7ea753` + working tree), re-measured
+
+The findings file (`review-findings-r10.md`, review head `f7ea753`) named two defects, both P2 and both
+dispositions FIX, and its own instruction was again the systematic close-out: enumerate every rule the
+touched surface claims and prove each with one executed mutation, pinning in this round any rule that
+survived its mutation. The eight mutations below are this round's evidence for the rules the two fixes
+touch.
+
+- **The rendering removal is authorised by the reader, not by a matching trace** (`dialogueFromContent`;
+  the new `internal/ccc/dialogue_provenance.go`). The ninth round's rule removed a
+  `[Thinking]…[/Thinking]` block whenever the record's trace held its words, and a transcript that records
+  an answer and a reasoning trace independently can carry such a block as its *own* content whose words a
+  trace happens to hold: measured through the inherited Vibe reader (a temp-root `messages.jsonl`, read
+  through `NewSourceReader`) with `content` exactly the block and `reasoning_content` exactly its words,
+  the pre-fix rule answered an empty dialogue and the converted rollout lost the message's words, while
+  the fixed one keeps the block as the record's dialogue with the trace traveling beside it (counted as
+  `reasoning_text` on this target, which has no shape for a plaintext trace). The read now answers the
+  provenance per record (`Message.ContentRendersThinking`): a source read asks the parsed session's agent,
+  an archive read asks the stored row's agent label — resolving a stored label to its provider the way the
+  archive's own lookups do (`readerRendersThinkingTrace`, `storedAgentOwner`) — and the table names the
+  thirteen readers that build the trace into `Content` with no dialogue projection of their own (Cline,
+  Codebuff, Crush, DeepSeek TUI, Evener, Forge, Goose, legacy Kilo, Kimi, Muse, RooCode, Tau, ZCode; each
+  entry carries its construction site in the carried reader). A reader that also projects a dialogue is
+  answered by its projection before this rule is reached, and a reader the table does not name keeps its
+  `Content` byte for byte whatever its trace holds — the answer that keeps the source's own words, with the
+  table's completeness a step of the carry's own update procedure rather than a guess about text. New and
+  updated cases: `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` now runs both traces
+  (the nonmatching one and one holding the block's words exactly — the finding's own scenario);
+  `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` reads a Cline session through
+  `NewSourceReader` (a temp-root `data/sessions/<id>/` metadata and transcript), asserts the reasoning-only
+  record's dialogue is empty and the mixed record's rendering is removed while its own text stays, and then
+  reads the same session back from a SQLite archive the ingestor wrote, to prove the archive read's label is
+  the reader's name too; the shared table gains arms for a raw-content reader's matching block (the
+  whole-content shape and one beside text).
+- **A block the removal does not take keeps the bytes that follow it** (`dialogueFromContent`). The scan
+  kept a carried marker block as a piece of its own and the join put a line feed between that piece and the
+  bytes after it, so a record carrying `A[Thinking]literal[/Thinking]B` beside a real rendering came out
+  with a feed inserted before `B` — bytes the source never recorded, inserted by the translation. The kept
+  bytes now continue one run (`atPartStart`), and only a *removed* rendering's own join feeds are dropped;
+  three new arms pin it (a carried block closing a run, one ending a run the removal did not touch, and one
+  standing between two removed renderings).
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted with the
+first twelve hex digits — `codex_target.go` `0c4358dc49e1…`, `dialogue_provenance.go` `65eb491689c6…`,
+`reader.go` `bb140241e5f4…`, `archive.go` `5cfc0ef5e4f0…`; every one of them was back to the quoted bytes
+after its run):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a record whose reader records `Content` as written is never rewritten | `codex_target.go`: `if !message.ContentRendersThinking {` → `if false {` | `TestDialogueFromContentKeepsOnlyTheRecordsOwnText/a_raw-content_reader's_matching_block_is_the_record's_own_text` and `… _beside_text_is_the_record's_own_text_too`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader/the_trace_holds_the_block's_words_exactly` |
+| the table names a rendering reader (Cline) | `dialogue_provenance.go`: `parser.AgentCline: {},` dropped | `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` |
+| a reader that records `Content` as written is not in the table (Vibe) | `dialogue_provenance.go`: `parser.AgentVibe: {},` added | `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader/the_trace_holds_the_block's_words_exactly` |
+| the source read establishes provenance from the parsed session | `reader.go`: `rendersThinkingTrace := readerRendersThinkingTrace(session.Agent)` → `rendersThinkingTrace := false` | `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` (its source half) |
+| the archive read establishes provenance from the stored row's label | `archive.go`: the same call on `parser.AgentType(session.Agent)` → `false` | `TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` (its archive half) |
+| bytes after a carried marker block continue its run | `codex_target.go`: the kept-block arm's `atPartStart = false` → `atPartStart = true` | the three `carried marker block` arms |
+| only the reader's one join feed per side goes with a removed rendering | `codex_target.go`: `strings.TrimSuffix(rest[:open], "\n")` → `strings.TrimRight(…)` and `strings.TrimPrefix(after, "\n")` → `strings.TrimLeft(…)` | the two `… blank line …` arms |
+| a block whose words the trace does not hold is the record's own text | `codex_target.go`: `!strings.Contains(trace, rendered)` → `strings.TrimSpace(trace) == ""` | `a block the record's own trace does not hold …`, `a reasoning-only block …`, and the three `carried marker block` arms |
+
+The Go suites were re-run afterwards on the restored tree (`ok go.kenn.io/agentsview/internal/ccc`), and
+the round's own review of the surviving surface found one rule the tests could not reach: the shortcut's
+copy of the provenance test (`thinkingRenderingOnly`) could not be reddened by any case, because
+`dialogueFromContent`'s gate answers first — a duplicate of the rule that nothing pins is dead weight, so
+it was removed in this round rather than given a test of its own.
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3620 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 5.781s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5702 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 156 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `… | ` at the parity line's front is what the run itself printed, and it is the only cut in the
+quoted line: the line above is the run's output whole, from its first byte to its last. The gate ran on
+this round's final working tree — this record included, with a placeholder line standing where this
+block now stands — and after it the placeholder was replaced by this block, repeating the run's own
+output, and by this sentence.)
+
+
+The narrowed Go suites' own test functions ran 392 before this round and 393 after — the one case added
+(`TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader`), counted as `^func Test` over the
+test files git lists under `cmd/ccc` and `internal/ccc`. `selftest` ran 354, the count round 9's run ended with: this
+round changed no Python. What else the round moved: `AGENTS.md` (the dialogue bullet now states the provenance
+the removal requires — `Message.ContentRendersThinking`, established by `dialogue_provenance.go`'s
+`thinkingRenderingReaders` — beside the rule that a block's words must be the record's own trace);
+`docs/decisions/OPEN-QUESTIONS.md` (Q-0007-08's default-taken text narrowed to the reader, with the
+coincidence the round measured and the table's maintenance); `docs/plans/0007-opencode-target-continuation.md`
+(§6.1's tenth-round paragraph and §7's `AGENTS.md` bullet). `README.md`, `docs/harness.md`,
+`docs/upstream.md` and the carry are untouched: no carried file changes, no new native check, no gate step
+change. No goal file is moved: 0007 is still the increment under review, implemented on its branch with its
+row; the earlier goals are archived and their rows say so. The tenth round also added one file
+(`internal/ccc/dialogue_provenance.go`, the table and its lookup) and no fixture: the Cline session the new
+case reads is written into the case's own temp root, not committed.
+
+### The eleventh review round's fixes (`48a3778` + working tree), re-measured
+
+The findings file (`review-findings-r11.md`, review head `48a3778`) named two defects, both P2 and both
+dispositions FIX, and its own instruction was again the systematic close-out: every rule the touched
+surface claims leaves the round with a machine-checked pin, one executed mutation per rule. The eight
+mutations below are this round's evidence; the one rule they showed unpinned was given a case of its own
+before the table was made.
+
+- **A block the trace's words stand behind is still not a rendering while the reader's own part shape does
+  not hold it** (`dialogueFromContent`, the new `renderingPart`). The readers that render a trace build the
+  block as one part of the record and join the parts with single line feeds (ZCode's
+  `strings.Join(texts, "\n")`; Cline joins its block to the text it heads with its own two feeds), so a
+  marker pair standing *inside* a part of the record's text is the model's own words -- and the round-9/10
+  rule, which removed every block whose words the trace held, deleted it: measured through the inherited
+  ZCode reader (a temp-root `db/db.sqlite` whose assistant record holds a thinking part and a text part
+  `Before[Thinking]…[/Thinking]After` carrying the same words), the pre-fix rule answered `Before\nAfter`
+  where the record's own text is the text part's bytes, and no target writer could notice, because the
+  items it builds are built after the deletion. A block is removed only where it opens at the content's
+  first byte or just after one feed and closes at its end or just before one (`renderingPart`) — and the
+  scan hands the test a suffix of the content, so a pair abutting a block the scan kept is inside that
+  part, its suffix's own start being a part start only where the content's was. The table of readers the
+  provenance is read from now states the requirement for every entry (`dialogue_provenance.go`). **A part
+  of the trace is rendered once** (`dialogueFromContent`): the words a removal accounts for are spent as it
+  is made, so a block holding words an earlier removal has already accounted for is not another rendering
+  of that part but the record's own text, kept as it stands and reported by nothing as carried.
+- **The OpenCode tool part's caveat counters are committed only where the part was written**
+  (`openCodeConverter.toolPart`). `empty_tool_inputs`'s own detail says an empty object "was written" in
+  the part's input member and `unresolved_tool_outputs`'s that "only results that were written are counted
+  here", and both were counted before the guards that omit a part: a call with no argument object whose
+  result carried a status word with no truthful state (`cancelled`) was reported as carrying a replacement
+  input while `carried.tool_calls` held no part for it, and a result the source's own parse answered as an
+  unresolved placeholder whose text held nothing was reported as carrying that text. Both counters now
+  stand past every omission guard, beside `generated_call_ids` (whose placement the Codex route already
+  pins with its own sentence: "a result this conversion does not write carries no output"), and the new
+  case drives the omitted and the written half of each counter in one conversion.
+
+The rules and their pins. The shared scan's rules are: the reader-provenance gate (a reader that records
+`Content` as written is never rewritten); the renderer's own part shape, each side separately (the opener
+stands just after the feed before it, or at the scan suffix's own part start, and the closer stands at the
+part's end); the block's words belonging to the record's own trace; the spent words (a part is rendered
+once); the readers' own whole-content rule (`thinkingRenderingOnly`); the one join feed per side of a
+removed rendering; and the kept bytes of a block nothing removed continuing one run. Each is reddened by
+its own mutation below; the cases that pin them are the shared table
+(`TestDialogueFromContentKeepsOnlyTheRecordsOwnText`, whose arms are named for the condition they drive),
+the inherited-reader cases, and the target case each rule's row names. The finding's own scenario is the
+new `TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`, which reads the shape through
+`NewSourceReader` and asserts the record's own text survives into the converted rollout.
+
+The mutations, executed and restored (each file hashed before and after its mutation and quoted with the
+first twelve hex digits — `codex_target.go` `e4d6b0f22afb…`, `opencode_target.go` `9cc5b4dce1f7…`; every
+one of them was back to the quoted bytes after its run):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a record whose reader records `Content` as written is never rewritten | `codex_target.go` 1182: `if !message.ContentRendersThinking {` → `if false {` | table arms `a raw-content reader's matching block is the record's own text` and `… beside text is the record's own text too`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader/the_trace_holds_the_block's_words_exactly` |
+| the rendering opens just after a part's own feed | `codex_target.go` 1285: `return content[open-1] == '\n'` → `return true` | table arm `a marker pair opening inside a text part is kept where the part ends with it` |
+| the rendering opens at the scan suffix's own part start | `codex_target.go` 1287: `return startsPart` → `return true` | table arm `a marker pair abutting a kept block's closer stands inside that part` |
+| the rendering closes at a part's own end | `codex_target.go` 1281: `if after != "" && after[0] != '\n' {` → `if false {` | table arm `a marker pair whose closer is not followed by a part feed is kept whole` |
+| the words a removal accounts for are spent | `codex_target.go` 1252: the update disabled | table arm `a block holding words the removals have already accounted for is the record's own text` |
+| a record whose `Content` is nothing but the rendering has no dialogue | `codex_target.go` 1187: `if thinkingRenderingOnly(message) {` → `if false {` | table arms `a rendering the readers' own rule trims beside it is still no dialogue` and `a rendering with only whitespace beside it is still no dialogue (the readers' own rule)` |
+| `empty_tool_inputs` follows the part | `opencode_target.go`: the post-guard count removed, the count standing before the status switch | `TestOpenCodeCaveatCountsFollowThePartThatWasWritten`: `empty_tool_inputs = 2, want 1` |
+| `unresolved_tool_outputs` follows the part | `opencode_target.go`: the post-guard count removed, the count standing before the empty-text guard | `TestOpenCodeCaveatCountsFollowThePartThatWasWritten`: `unresolved_tool_outputs = 3, want 1` |
+
+The table above also showed one *arm's* premise inconsistent with the rules it stands beside: the round-9
+arm `a carried marker block between two removed renderings keeps its own bytes` declared one trace
+occurrence for two renderings, and the spent-words rule refuses to delete a second block as a rendering of
+a part the reader wrote once. Its expectation is unchanged (`"A" + rendering("literal") + "B"`), and its
+trace now holds its words twice — the shape a reader with two such thinking parts produces — so the arm
+pins the kept bytes *and* the spending at once. Nothing was deleted or loosened for the new cases: the
+finding's own scenario gets its own ZCode case rather than an edit to an older one.
+
+The Go suites were re-run on the restored tree (`ok go.kenn.io/agentsview/cmd/ccc`, `ok
+go.kenn.io/agentsview/internal/ccc`, `ok go.kenn.io/agentsview/internal/ccc/parity` with `-tags fts5`), and
+the shared change was re-driven through the native checks this host can run, offline, because every route
+reads its dialogue through the helper the fix changes: `python3 scripts/pi-native-check.py` →
+`RESULT: PASS — 21 check(s), none failed`; `python3 scripts/omp-native-check.py` → `RESULT: PASS — 23
+check(s), none failed`; `python3 scripts/codex-native-check.py` → `26 check(s) passed, 0 failed, 2 skipped`
+(both skips are the real-turn stages, not attempted without their prompt flags). The OpenCode route's own
+check is not run on this host (`opencode: absent`), and its recorded numbers do not move with this fix: no
+recorded run's report held a non-zero `empty_tool_inputs` or `unresolved_tool_outputs`, and the shapes the
+scan's new conditions change are covered by the Go suite's own cases (the fixture-driven conversions'
+category maps are asserted in `continue_test.go` and the target suites, and all of them pass unchanged).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 5.760s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5702 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 156 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `… | ` at the parity line's front is what the run itself printed, and it is the only cut in the quoted
+line: the line copied here is the run's output whole, from its first byte to its last. The gate ran on this
+round's final working tree — this record included, the block's lines standing there as the previous run had
+printed them, and the two runs' step lines differing only in the selftest step's own duration (the parity
+line, the file counts and every verdict identical, measured by diffing the two runs' outputs) — and after
+the run the block was replaced by the run's own output, which is what stands above.)
+
+
+The narrowed Go suites' own test functions ran 393 before this round and 395 after — the two cases added
+(`TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`,
+`TestOpenCodeCaveatCountsFollowThePartThatWasWritten`), counted as `^func Test` over the test files git
+lists under `cmd/ccc` and `internal/ccc`; the shared table's new arms are cases of an existing function and
+are not counted. `selftest` ran 354, the count round 10's run ended with: this round changed no Python, no
+gate step and no target list. What else the round moved: `AGENTS.md` (the dialogue bullet now states the
+part shape and the spent words the removal requires, beside the provenance and the trace-words conditions
+it already carried); `docs/plans/0007-opencode-target-continuation.md` (§6.1's eleventh-round paragraph and
+§7's `AGENTS.md` bullet); and this record. `README.md`, `docs/harness.md`, `docs/upstream.md`,
+`docs/decisions/OPEN-QUESTIONS.md` and the carry are untouched: no carried file changes, no new file, no
+fixture, no new native check. No goal file is moved: 0007 is still the increment under review, implemented
+on its branch with its row; the earlier goals are archived and their rows say so.
+
+### The twelfth review round's fixes (`4e2e9c8` + working tree), re-measured
+
+The findings file (`review-findings-r12.md`, review head `4e2e9c8`) named two defects, both P2 and both
+dispositions FIX, and its instruction was the systematic close-out again: every rule the touched surface
+claims leaves the round with a machine-checked pin, one executed mutation per rule. Seventeen mutations
+were executed and restored (the four files' hashes are below). One first mutation stayed green for a real
+reason, and it was fixed before the table was final: the "a reading accounts for the whole trace"
+condition stood in two places (`canAccountFor`'s terminal and the leaf walk's own check), so disabling
+either one alone left the other deciding; the leaf's check was *removed* as a duplicate (the leaf is only
+reached through `canAccountFor`) and the rule is now single-sourced, where its mutation reddens three arms.
+
+- **The feeds around a marker pair are not a part boundary** (`dialogueFromContent`; `renderingPart` is now
+  the blocks' *candidacy* only, and the new `renderingDialogue`/`renderingCoveringSearch` reads the
+  record). Round 11's rule — a feed-delimited block whose words occur in the trace is removed — still
+  deleted source text the record's own bytes could not tell from a rendering, and the round's own
+  counterexample makes it concrete: a ZCode text part `Before\n[Thinking]\nprivate\n[/Thinking]\nAfter`
+  before the thinking part `private reasoning`; the pre-fix scan deleted the literal pair (its words
+  `private` occur in the trace), spent those words, and kept the real rendering as dialogue — the text
+  part's bytes replaced by the rendering of the record's trace, a difference no target writer can notice,
+  because the items it builds are built after the deletion. The rule now: the candidates (pairs standing
+  where a rendered part could open and close) are read against the record's own trace: a *reading* assigns
+  some of them, in the record's own order, to the trace's parts so that its first block's words open the
+  trace, its last close it, and every byte between is either a taken block's words or the separator bytes
+  between two taken blocks — the separator is not assumed (the readers join with a blank line, a single
+  feed or nothing at all, and assuming the wrong one can only leave a reading uncounted, whose blocks are
+  all kept) — and a block is taken only where *every* reading the bytes admit takes it; where the readings
+  disagree about the dialogue, nothing is removed and the blocks they disagree about stay in the dialogue
+  as text the record carries. The finding's own scenario is the new
+  `TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds`, reading the shape through
+  `NewSourceReader` (its own content assertion: the text part verbatim, then the reader's rendering) and
+  converting the read so the text part's bytes are what the rollout holds. The shared table gains the
+  arms the rule's own shapes need (the feed-delimited substring trace at the seam, the whole-trace
+  quotation whose readings disagree, the lone substring block, the lone block of a two-part trace, the
+  whole-content substring block the readers' own rule now refuses, and an arm per bound below); round 11's
+  spending rule survives as the readings' consequence and its arm is renamed to say so with its
+  expectation unchanged. The readers' whole-content rule (`thinkingRenderingOnly`) now asks the block's
+  words to *be* the trace, whole, rather than a substring of it, so a block holding a substring of the
+  trace is text the record carries there too.
+- **A tool part's `completed` is the result's own record's instant** (`openCodeConverter.planToolEvidence`,
+  through the new `ToolResult.Timestamp`, filled by `messageFromParsed` from
+  `ParsedToolResultEvent.Timestamp` — and from the containing record's instant for a result block, which
+  is where that block was recorded — and by `messageFromArchive` from the stored event's own column). The
+  committed Codex fixture records its shell call on the 09:15:05 record and its output on the 09:15:06 one,
+  folded onto the call's message: the pre-fix writer took the containing message's instant for the pair,
+  and the recorded one-second span disappeared into a zero-length call — the archive read met the same
+  problem, because the call's row is not the result's record. The containing record's instant is written
+  only where the read answers none of the result's own (a provider-recorded event with no timestamp, the
+  archive's derived summary stored on the call's row), and the new `result_completion_fallbacks` caveat
+  counts that substitution past every omission guard (only parts that were written are counted). The new
+  `TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant` drives the fixture through the reader and through
+  an ingested archive, a timestamp-less result event, and the derived summary, pinning both the part's
+  `created`/`completed` pair and each arm's count (0 for the recorded instants, the fallback's own for the
+  other two).
+
+The rules and their pins. The dialogue surface's rules are: the reader-provenance gate; the two candidacy
+conditions (the opener's feed, the closer's feed); a reading must account for the whole trace; a taken
+block is placed in the trace's own order; readings that disagree keep the block; the whole-content rule
+(the words must be the trace, whole); the byte rules of a removal (one feed per side of a taken block, and
+the kept runs joined with exactly one feed); the reasoning-only shortcut's gate; and the two bounds (the
+candidate count and the reading count, each keeping the record whole). The tool-instant surface's rules
+are: a result event carries its own instant through the interchange document; the writer prefers it; the
+fallback is counted; an archive event carries its stored instant; the derived summary's fallback is
+counted. Each is reddened by its own mutation below; the cases that pin them are the shared table
+(`TestDialogueFromContentKeepsOnlyTheRecordsOwnText`, whose arms are named for the condition they drive),
+the inherited-reader cases, and `TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant` with its four arms.
+
+The mutations, executed and restored (each file restored byte-identically, checked by its sha256; the
+final tree's own hashes are `codex_target.go` `02dfcd5914f0…`, `opencode_target.go` `c964eaf23754…`,
+`reader.go` `11ab7501d671…`, `archive.go` `aa97bc950ffb…`):
+
+| Rule | Line disabled | Observed (the case that reddened) |
+| --- | --- | --- |
+| a record whose reader records `Content` as written is never rewritten | `codex_target.go`: `if !message.ContentRendersThinking {` → `if false && …` | table arm `a raw-content reader's matching block is the record's own text` and its `… beside text …` sibling |
+| the rendering closes where a part could end | `codex_target.go`: `if after != "" && after[0] != '\n' {` disabled in `renderingPart` | table arm `a marker pair whose closer is not followed by a part feed is kept whole` |
+| the rendering opens where a part could begin | `codex_target.go`: `return content[open-1] == '\n'` → `return true` | table arms `a marker pair opening inside a text part is kept where the part ends with it` and `a marker pair abutting a kept block's closer stands inside that part` |
+| a reading accounts for the whole trace | `codex_target.go`: `return state.started && state.position == len(s.trace)` → `return state.started` | table arms `one trace rendered as two blocks around the record's text`, `a carried marker block between two removed renderings keeps its own bytes`, `a feed-delimited literal pair whose words are a substring of the trace is kept` |
+| a taken block is placed in the trace's own order | `codex_target.go`: `strings.Index(s.trace[state.position:], words)` → `strings.Index(s.trace, words)` | table arms `one trace rendered as two blocks around the record's text` and `a carried marker block between two removed renderings keeps its own bytes` |
+| readings that disagree about the dialogue keep the block | `codex_target.go`: `s.conflict = true` disabled | table arm `a text part quoting the whole trace beside its rendering leaves the bytes whole` |
+| the whole-content rule: the words must be the trace | `codex_target.go`: `words == trace` → `strings.Contains(trace, words)` | table arm `a whole-content block holding a substring of the trace is the record's own text` |
+| kept runs join with exactly one feed | `codex_target.go`: the `run = "\n" + run` prefix disabled in `renderingRemoval` | table arms `the blank line the record recorded before the rendering survives the removal` and `… after the rendering survives too` |
+| a taken block goes with one feed on its left | `codex_target.go`: `start--` disabled in `renderingRemoval` | table arms `ZCode's part order: the rendering stands after the text it followed` and `one trace rendered as two blocks around the record's text` |
+| the candidate bound | `codex_target.go`: `len(candidates) > thinkingRenderingCandidateLimit` dropped | table arm `a record spelling more blocks than the readings will read is kept whole` |
+| the reading bound | `codex_target.go`: `s.readings > thinkingRenderingCoveringLimit` → `s.readings > 1<<30` | table arm `a record whose bytes admit more readings than the enumeration walks is kept whole` |
+| the reasoning-only shortcut's gate | `codex_target.go`: `if thinkingRenderingOnly(message) {` → `if false && …` | table arms `a rendering the readers' own rule trims beside it is still no dialogue` and `a rendering with only whitespace beside it is still no dialogue (the readers' own rule)` |
+| a result event carries its own instant | `reader.go`: `Timestamp: event.Timestamp,` dropped | `TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant` (the fixture's read) |
+| the result's own instant is preferred | `opencode_target.go`: `if !result.Timestamp.IsZero() {` → `if false && …` | `TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant` (created 09:15:05, completed 09:15:05) |
+| the fallback is counted | `opencode_target.go`: `c.lossResultCompletionFallbacks++` disabled | `TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant`: `result_completion_fallbacks = 0, want 1` |
+| an archive event carries its stored instant | `archive.go`: `Timestamp: parseArchiveTimestamp(event.Timestamp),` dropped | `TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant` (the archive's read) |
+| the derived summary's fallback is counted | `opencode_target.go`: `entry.resultCompletionFallback = true` dropped in the summary loop | `TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant` (the summary arm's count) |
+
+The shared change was re-driven through the native checks this host can run, because every route reads its
+dialogue through the helper the fix changes: `python3 scripts/pi-native-check.py` → `RESULT: PASS — 21
+check(s), none failed` (exit 0); `python3 scripts/omp-native-check.py` → `RESULT: PASS — 23 check(s), none
+failed` (exit 0); `python3 scripts/codex-native-check.py` → `26 check(s) passed, 0 failed, 2 skipped` (exit
+0; both skips are the real-turn stages, not attempted without their prompt flags). The OpenCode route's own
+check cannot run on this host: `python3 scripts/opencode-native-check.py` exits 2 with `RESULT: INCOMPLETE —
+0 check(s) ran; opencode is not on PATH, so the native half of the opencode route could not run (this
+route's installation *is* the harness's own importer, so there is nothing to verify without it)`, and the
+Go suite's own cases are what stand in for it here: the new
+`TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant` reads the committed fixture through the reader and
+through an ingested archive (the store the inherited sync engine writes), and the recorded run's numbers in
+§1/§2 do not move with the fix beyond the new category's own row (`result_completion_fallbacks` is 0 for
+every source that records a result's instant, which is what those runs' sessions do).
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 6.269s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5702 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 156 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The `… | ` at the parity line's front is what the run itself printed, and it is the only cut in the
+quoted line: the line copied here is the run's output whole, from its first byte to its last. The gate ran
+on this round's final working tree — this record included, with a placeholder line standing where this
+block now stands — and after it the placeholder was replaced by this block, repeating the run's own
+output, and by this sentence.)
+
+The narrowed Go suites' own test functions ran 395 before this round and 397 after — the two cases added
+(`TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds`,
+`TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant`), counted as `^func Test` over the test files git
+lists under `cmd/ccc` and `internal/ccc`; the shared table's new arms and `TestOpenCodeToolPartsCarryOnlyWhatTheImporterAccepts`'s
+untouched arms are cases of existing functions and are not counted. `selftest` ran the gate's own count
+below: this round changed no Python, no gate step and no target list. What else the round moved:
+`AGENTS.md` (the dialogue bullet now states the readings rule, and the OpenCode bullet states the tool
+part's `completed` and its fallback caveat); `docs/plans/0007-opencode-target-continuation.md` (§2.2's
+timestamps row, §2.3's category vocabulary and the tool-times row, §6.1's twelfth-round paragraph, §7's
+`AGENTS.md` bullet); `docs/decisions/OPEN-QUESTIONS.md` (Q-0007-08's default-taken text carries round 12's
+refinement); and this record. `README.md`, `docs/harness.md`, `docs/upstream.md` and the carry are
+untouched: no carried file changes, no new file, no fixture, no new native check. No goal file is moved:
+0007 is still the increment under review, implemented on its branch with its row; the earlier goals are
+archived and their rows say so.
+
+### The thirteenth review round's fixes (`7bb35ba` + working tree), re-measured
+
+The findings file (`review-findings-r13.md`, review head `7bb35ba`) named two defects, both P2 and both
+dispositions FIX, and its instruction was the systematic close-out again: every rule the touched surface
+claims leaves the round with a machine-checked pin, one executed mutation per rule. Eighteen mutations were
+executed and restored; `internal/ccc/codex_target.go`'s sha256 was
+`ff1025cc778ba6cde128252d2d2a42a952541525da9d76a246a40e80c993af3b` when the sweep backed the file up and the
+same when it restored it (the round's later doc-comment edits in that file are the only change since). Two
+rules survived their first mutation — the scan's rule for an opener with no closer, and its rule for a block
+with no words — and each got its own arm in this round, whose mutation now reddens (rows 2 and 3 below). A
+third mutation is an equivalence check rather than a rule: the `known` memo `renderingCoveringSearch` keeps
+bounds the walk and decides no answer, and its removal changed nothing on the whole dialogue suite (row 18).
+
+**The finding's counterexample, executed.** The tests added this round were written first and run against
+the tree the review head left, before the fix:
+
+```console
+$ go test -tags fts5 -count=1 -run 'TestDialogueFromContentKeepsOnlyTheRecordsOwnText|TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering' ./internal/ccc/
+…
+        codex_target_test.go:1444: dialogueText(Content "Before\n[Thinking]\nprivate\n[/Thinking]\nAfter\n[Thinking]\n[Thinking]\nprivate\n[/Thinking]", Thinking "private") = "Before\nAfter\n[Thinking]\n[Thinking]\nprivate\n[/Thinking]", want "Before\n[Thinking]\nprivate\n[/Thinking]\nAfter\n[Thinking]\n[Thinking]\nprivate\n[/Thinking]"
+        codex_target_test.go:1685: dialogueText over the ZCode record = "Before\nAfter\n[Thinking]\n[Thinking]\nprivate\n[/Thinking]", want "Before\n[Thinking]\nprivate\n[/Thinking]\nAfter\n[Thinking]\n[Thinking]\nprivate\n[/Thinking]"
+```
+
+The first line is the shared table's arm; the second is the same shape read through the inherited ZCode
+reader. Both show the defect the finding traced statically: the record's own quoted pair deleted and the
+rendering left standing as dialogue.
+
+- **Every opener is a candidate, paired with the first closer that follows it** (`thinkingRenderingCandidates`).
+  The pair a part of the record's own text ends with spans the rendering that follows it — its closer is the
+  rendering's closer — so the rendering's own opener stands inside that span, and a scan that resumed past
+  the pair it had read (every version through round 12) left the rendering out of the candidates: the
+  record's own pair was the only one the trace accounted for, and the removal deleted words the source
+  recorded. Every opener is read now, so both pairs are candidates, both account for the trace, the readings
+  disagree about the dialogue, and *nothing* is removed — the record's bytes survive whole, a duplication a
+  reader can see rather than a deletion no later step can undo. Where the text part quotes nothing, the same
+  rule recovers the rendering (the text part `Before\n[Thinking]` before the rendering leaves
+  `Before\n[Thinking]` as the dialogue). The scan searches for each opener's first closer from where the
+  earlier opener's search ended (an opener's first closer never stands before the earlier opener's), so the
+  walk stays linear in the record's bytes; an opener with no closer now ends the walk, because none can
+  stand after a later one either. Pins: `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` (both arms
+  through `NewSourceReader`, asserting the reader's own content shape, the shared rule's answer and the
+  rollout's own bytes) and four arms of `TestDialogueFromContentKeepsOnlyTheRecordsOwnText`.
+- **The §5 row's reasoning claim is withdrawn** (§5's own first row, and §6's new limit bullet). The
+  finding is correct: the fixture the row's runs convert (`9f2c1d47-…`, the check's default source,
+  `scripts/opencode-native-check.py`'s `SOURCE_SESSION`) records no `thinking` block, so §§1–§2 imported no
+  trace. The row now names what the fixture holds, and the §6 bullet states the boundary and why an executed
+  reasoning-bearing native case is not simply citable: the check's independent side has no reasoning
+  comparison, so such a run would compare the trace against the conversion's own document rather than
+  against the source's recorded block.
+
+| the rule | the mutation (made, run, restored) | the pin that reddened |
+| --- | --- | --- |
+| every opener is read, even one inside a pair read before it | `thinkingRenderingCandidates`: the scan resumes past the pair it read (`strings.Index(content[end:], …)`) | table arms `a text part ending with an opener before the rendering leaves the bytes whole`, `an opener the text part ends with is read on to the rendering's closer`, and `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` (both arms) |
+| an opener with no closer is text: the scan does not read it to the content's end **(pinned this round)** | `thinkingRenderingCandidates`: the no-closer branch appends a block ending at `len(content)` | table arm `an opener the record never closes keeps the bytes that follow it` (added this round: the rule's first mutation stayed green) |
+| an empty block is not a candidate **(pinned this round)** | `thinkingRenderingCandidates`: `words != ""` dropped | table arm `an empty block beside the rendering is text, not a rendering` (added this round: the rule's first mutation stayed green) |
+| a pair's closer is the content's end or is followed by one feed | `renderingPart`: `if after != "" && after[0] != '\n'` → `if false && …` | table arm `a marker pair whose closer is not followed by a part feed is kept whole` |
+| a pair's opener is the content's first byte or stands after one feed | `renderingPart`: `if open > 0 { … }` → `if false && open > 0 { … }` | table arms `a marker pair opening inside a text part is kept where the part ends with it`, `a marker pair abutting a kept block's closer stands inside that part` |
+| a reading accounts for the whole trace | `canAccountFor`: `state.position == len(s.trace)` dropped | eight arms, among them `a lone block whose words are a substring of the trace accounts for none of it`, `a lone block that accounts for one part of a two-part trace is kept too`, `one trace rendered as two blocks around the record's text` |
+| the first taken block's words open the trace | `place`: `strings.HasPrefix(s.trace, words)` → `strings.Index` | table arm `one trace rendered as two blocks around the record's text` |
+| a later reading that leaves different bytes is a conflict | `record`: `if dialogue != s.dialogue` → `if false && …` | table arms `a text part quoting the whole trace beside its rendering leaves the bytes whole`, `a text part ending with an opener before the rendering leaves the bytes whole`, and the inherited-reader case |
+| a record spelling more blocks than the candidate limit is kept whole | `dialogueFromContent`: `len(candidates) > thinkingRenderingCandidateLimit` dropped | table arm `a record spelling more blocks than the readings will read is kept whole` |
+| a record whose bytes admit more readings than the covering limit is kept whole | `record`: `s.readings > thinkingRenderingCoveringLimit` → `false` | table arm `a record whose bytes admit more readings than the enumeration walks is kept whole` |
+| the reasoning-only shortcut asks the block's words to *be* the whole trace | `thinkingRenderingOnly`: `words == trace` → `strings.Contains(trace, words)` | table arm `a whole-content block holding a substring of the trace is the record's own text` |
+| no reader provenance: `Content` is the source's own text, byte for byte | `dialogueFromContent`: the `ContentRendersThinking` gate → `if false && …` | table arms `a raw-content reader's matching block is the record's own text` and `… beside text is the record's own text too`, and `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` (the arm whose trace holds the block's words exactly) |
+| a record carrying calls has no dialogue from its `Content` | `dialogueText`: the `ToolCalls` gate → `if false && …` | table arm `a record carrying calls has no dialogue from its Content` |
+| a projection is the dialogue, an explicitly empty one included | `dialogueText`: `\|\| message.DialogueProjected` dropped | table arm `a projection is the dialogue even where the rendering stands beside it`, and `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue` |
+| only the one feed before a taken block goes with it | `renderingRemoval`: `content[start-1] == '\n'` → `false && …` | fifteen arms, among them `ZCode's part order: the rendering stands after the text it followed`, `the blank line the record recorded before the rendering survives the removal` |
+| only the one feed after a taken block goes with it | `renderingRemoval`: `content[end] == '\n'` → `false && …` | eleven arms, among them `the readers' order: the rendering stands before the record's text`, `a carried marker block keeps the bytes that followed it` |
+| kept runs come out joined as the reader joins neighbours | `renderingRemoval`: `run = "\n" + run` → `false && …` | table arms `the blank line the record recorded before the rendering survives the removal`, `… after the rendering survives too` |
+| *(equivalence, not a rule)* the `known` memo bounds the walk and decides no answer | `canAccountFor`: `s.known[state] = accounted` dropped | green on the whole dialogue suite: the memo's removal changed no answer, which is what the code claims of it |
+
+The shared change was re-driven through the native checks this host can run, because every route reads its
+dialogue through the helper the fix changes, offline (no prompt flags, so no turn): `python3
+scripts/pi-native-check.py` → `RESULT: PASS — 21 check(s), none failed` (exit 0); `python3
+scripts/omp-native-check.py` → `RESULT: PASS — 23 check(s), none failed` (exit 0); `python3
+scripts/codex-native-check.py` → `26 check(s) passed, 0 failed, 2 skipped` (exit 0; both skips are the
+real-turn stages, not attempted without their prompt flags); `python3 scripts/opencode-native-check.py` →
+exit 2 with the boundary this host has always reported, `RESULT: INCOMPLETE — 0 check(s) ran; opencode is
+not on PATH, so the native half of the opencode route could not run`, so this round records no new OpenCode
+native run and does not quote one.
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 354 tests in 6.018s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 31 project-owned prefix(es); files seen by git: 5702 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     secrets  no leaks found in 156 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+(The parity line's own cut is the gate's rendering of a long detail — its leading `… | ` is the gate's, and
+the line copied here is the run's output whole, byte for byte, because this block was filled from the run's
+captured stdout rather than from a terminal's display; the `…`s inside the other quoted blocks of this
+record are the older rounds' own, disclosed in §6. The gate ran on this round's final working tree — this
+record included, with a placeholder line standing where this block now stands — and after it the
+placeholder was replaced by this block, repeating the run's own output, and by this sentence. A second run
+of the same gate on this tree, with the block in place, reprinted every step line and every count — only
+the durations moved.)
+
+The narrowed Go suites' own test functions ran 397 before this round and 398 after — the one case added,
+`TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering`, counted as `^func Test` over the test files git
+lists under `cmd/ccc` and `internal/ccc`; the shared table's four new arms are cases of an existing
+function and are not counted. What else the round moved: `AGENTS.md` (the dialogue bullet now states the
+blocks the readings weigh — every opener, each paired with the first closer that follows it, so a text
+part's trailing opener cannot stand in for the rendering that follows it), `docs/plans/0007-opencode-target-continuation.md`
+(§6.1's thirteenth-round paragraph and §7's `AGENTS.md` bullet), `internal/ccc/codex_target.go` and
+`internal/ccc/codex_target_test.go`, and this record (§5's first row and §6's new limit bullet). The
+Python half, the gate, the carried tree, `README.md`, `docs/harness.md`, `docs/upstream.md` and
+`docs/decisions/OPEN-QUESTIONS.md` are untouched, and the round took no owner-only default to disclose in
+the last of them: the two findings were closed by the code and the record alone, and no question was left
+for the owner. `selftest` ran the count below. No goal file is moved: 0007 is still the increment under
+review, implemented on its branch with its row, and the earlier goals are archived and their rows say so.
+
+### The fourteenth review round's fixes (`51275f5` + working tree), re-measured
+
+The findings file (`artifacts/pr9/review-14/report.md`, review head `51275f5`) named one defect, P2 and
+disposition FIX, and its instruction was the systematic close-out one round early: this is the second defect
+of the same class in the same helper (round 13 removed recorded text through an unmatched opener; this round
+through an unvalidated gap), so every rule the removal algorithm claims leaves the round with its own case
+and its own executed mutation. The sweep executed 27 mutations and restored each byte-identically; two of
+them decided nothing in their first form and were re-formed and executed again (29 runs in all).
+`internal/ccc/codex_target.go`'s sha256 was
+`bc6181f7ccf0128bd7e5757cf78edde90da19440b99e9d587153afa75dfe6702` when the sweep backed the file up and the
+same when it restored it, after every run.
+
+**The finding's counterexample, executed.** The new tests were written first and run against the tree the
+review head left (the sweep's `gap-unvalidated` row re-enacts the pre-fix placement: the new separator check
+removed, nothing else):
+
+```console
+$ go test -tags fts5 -count=1 -run 'TestDialogueFromContentKeepsOnlyTheRecordsOwnText|TestDialogueKeepsACloserInsideThePersistedTrace' ./internal/ccc/
+        codex_target_test.go:1538: dialogueText(Content "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter", Thinking "alpha\n[/Thinking]\nbeta") = "beta\n[/Thinking]\nBefore\nAfter", want "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter"
+        codex_target_test.go:1842: dialogueText over the ZCode record = "beta\n[/Thinking]\nBefore\nAfter", want the record's whole Content "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter": the reading that would cover the trace through the text part's block stands behind the trace's own bytes, which are no separator a reader writes, so nothing is established as the reader's rendering of the trace
+        codex_target_test.go:1863: the rollout's assistant text = ["beta\n[/Thinking]\nBefore\nAfter"], want the record's whole Content "[Thinking]\nalpha\n[/Thinking]\nbeta\n[/Thinking]\nBefore\n[Thinking]\nbeta\n[/Thinking]\nAfter": the literal block the source recorded must not be deleted as though it were a rendering of the trace standing beside it
+```
+
+The second and third lines are the finding's own counterexample read through the inherited ZCode reader (the
+thinking part whose text is `alpha\n[/Thinking]\nbeta`, rendered verbatim between the reader's own markers,
+beside the text part's literal block `Before\n[Thinking]\nbeta\n[/Thinking]\nAfter`): the pre-fix removal
+deleted the literal block the source recorded and left the rendering's tail standing as dialogue, and the
+rollout carried the same bytes.
+
+- **The bytes between two taken blocks are a separator the reader writes, and never the trace's own text.**
+  Round 12's readings enumerated what stands *before* a taken block but took the earliest occurrence at or
+  after the previous block's end for granted, so a pair of blocks could cover the trace while reading the
+  trace's own bytes as the join between two of its parts. `place` now refuses a placement whose gap is not
+  one of the separators the readers actually write (`thinkingRenderingSeparator`): one feed, or a blank
+  line's two — the readers that render a part per block join their parts with exactly those (ZCode, Crush,
+  Goose, Muse, DeepSeek TUI and Tau with `strings.Join(parts, "\n\n")`; Kimi and Evener with
+  `strings.Join(parts, "\n")`), and the readers that render one block for the record's whole trace (Cline,
+  Codebuff, Forge, legacy Kilo, RooCode) join no two parts at all — and the earliest occurrence's gap is the
+  one checked, because a later occurrence's gap contains that one's bytes. No reading accounts for the trace
+  then (the reading that skipped the trace's own bytes is not one the readers could have produced), so the
+  record's `Content` is kept whole: a duplication a reader can see rather than a deletion no later step can
+  put back. The narrowing is one-directional by construction: a part whose own edge feeds stand beside the
+  join loses its reading, not its bytes. Pins: the table arm `a pair of blocks cannot cover a trace by
+  skipping the trace's own bytes` and `TestDialogueKeepsACloserInsideThePersistedTrace` (the reader-driven
+  counterexample above), beside the separator's own boundary arms below.
+
+| the rule | the mutation (made, run, restored) | the pin that reddened |
+| --- | --- | --- |
+| the bytes between two taken blocks are a separator the readers write (the finding) | `place`: the separator check dropped (the pre-fix placement) | arm `a pair of blocks cannot cover a trace by skipping the trace's own bytes`; `TestDialogueKeepsACloserInsideThePersistedTrace` |
+| an abutting pair is not two of a reader's parts (a gap of no bytes) | `thinkingRenderingSeparator`: an empty gap accepted | arm `two blocks whose words abut in the trace are not the reader's two parts` |
+| a run of feeds longer than a join writes is not a separator | `thinkingRenderingSeparator`: any non-empty run of feeds accepted | arm `a run of feeds longer than a join writes is not a separator` |
+| the first taken block's words open the trace at its own first byte | `place`: the first block placed where its words occur (`strings.Index`, the occurrence's own index) | six arms, `a block whose words are the trace's own tail does not open it` the first (the mutation's first form, returning the trace's own first byte, stayed green; only the corrected shape places the block where its words stand); `TestDialogueKeepsACloserInsideThePersistedTrace` also failed |
+| the placements are in the record's own order (each block after the previous one's end) | `place`: a later block may stand before the previous block's end (`strings.Index(s.trace, words)`) | four arms, among them `a pair whose words cover the trace only by overlaying each other is not a reading`, `two identical blocks: every reading leaves the same bytes` and the round-12 arm; `TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds` also failed |
+| a reading closes the trace at its own last byte | `canAccountFor`: `state.position == len(s.trace)` dropped | ten arms, among them `a lone block whose words are a substring of the trace accounts for none of it`, `a lone block that accounts for one part of a two-part trace is kept too` and `a feed-delimited literal pair whose words are a substring of the trace is kept`; `TestDialogueKeepsACloserInsideThePersistedTrace` and `TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds` also failed |
+| each opener pairs with the first closer that follows it | `thinkingRenderingCandidates`: the *last* closer that follows | ten arms, among them `a block pairs with the first closer that follows its opener` and the round-12 arm `a feed-delimited literal pair whose words are a substring of the trace is kept`; `TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`, `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` and `TestOpenCodeCarriesAZCodeMixedRenderingOnce` also failed |
+| every opener is read, even one inside a pair read before it (round 13) | `thinkingRenderingCandidates`: the scan resumes past the pair it read | `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` (both arms); arms `a text part ending with an opener before the rendering leaves the bytes whole`, `an opener the text part ends with is read on to the rendering's closer` |
+| an opener with no closer is not a block (round 13) | `thinkingRenderingCandidates`: the no-closer branch appends a block ending at the content's end | arm `an opener the record never closes keeps the bytes that follow it` |
+| an empty block is not a candidate (round 13) | `thinkingRenderingCandidates`: `words != ""` dropped | arm `an empty block is not a candidate even where the record's trace is empty` (added this round: the separator rule masks the round-13 arm's shape, so the exclusion has an arm where it is load-bearing alone) |
+| a pair's closer is the content's end or is followed by one feed (round 11) | `renderingPart`: the closer-side check dropped | arm `a marker pair whose closer is not followed by a part feed is kept whole` |
+| a pair's opener is the content's first byte or stands after one feed (round 11) | `renderingPart`: the opener-side check dropped | arms `a marker pair opening inside a text part is kept where the part ends with it`, `a marker pair abutting a kept block's closer stands inside that part` |
+| where the readings disagree, nothing is removed (round 12) | `record`: the conflict mark dropped | arms `a text part quoting the whole trace beside its rendering leaves the bytes whole`, `a text part ending with an opener before the rendering leaves the bytes whole`; `TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` |
+| a block no trace of the record accounts for keeps its place (no trace included) | `dialogueFromContent`: every candidate removed without consulting the trace | twenty-one arms, among them `a block the record's own trace does not hold is text the record carries`, `a reasoning-only block the record's own trace does not hold is the record's own text` and `a record the read answered no trace for keeps its Content`; four inherited-reader cases also failed |
+| no reader provenance: `Content` is the source's own text, byte for byte | `dialogueFromContent`: the `ContentRendersThinking` gate dropped | arms `a raw-content reader's matching block is the record's own text` and `a raw-content reader's matching block beside text is the record's own text too`; `TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader` |
+| the reasoning-only rule asks the block's words to *be* the trace, whole (round 9) | `thinkingRenderingOnly`: `words == trace` → `strings.Contains(trace, words)` | arm `a whole-content block holding a substring of the trace is the record's own text` |
+| a record carrying calls has no dialogue from its `Content` | `dialogueText`: the `ToolCalls` gate dropped | arm `a record carrying calls has no dialogue from its Content`; `TestCodexRolloutKeepsTheDialogueProjection` |
+| the projection answers, an explicitly empty one included, before `Content` is read | `dialogueText`: `\|\| message.DialogueProjected` dropped | arm `a projecting rendering reader's projection answers before its Content is read`; arm `a projection is the dialogue even where the rendering stands beside it`; `TestCodexRolloutKeepsAReasoningOnlyRecordOutOfTheDialogue` |
+| the rendering is removed at all (the trace travels beside the dialogue, not in it) | `dialogueFromContent`: the removal never attempted (raw `Content` always) | seventeen arms, among them `the readers' order: the rendering stands before the record's text` and `ZCode's part order: the rendering stands after the text it followed`; five inherited-reader cases also failed |
+| only the one feed before a taken block goes with it (round 9) | `renderingRemoval`: the before-feed check dropped | twelve arms, among them `the blank line the record recorded before the rendering survives the removal`; three inherited-reader cases also failed |
+| only the one feed after a taken block goes with it (round 9) | `renderingRemoval`: the after-feed check dropped | ten arms, among them `the readers' order: the rendering stands before the record's text` and `a carried marker block keeps the bytes that followed it`; three inherited-reader cases also failed |
+| kept runs come out joined as the reader joins neighbours | `renderingRemoval`: the join dropped | arms `the blank line the record recorded before the rendering survives the removal` and `the blank line the record recorded after the rendering survives too` |
+| a record spelling more blocks than the candidate limit is kept whole | `dialogueFromContent`: `thinkingRenderingCandidateLimit` dropped | arm `a record spelling more blocks than the readings will read is kept whole` |
+| a record whose bytes admit more readings than the walk is kept whole | `record`: `thinkingRenderingCoveringLimit` dropped | arm `a record whose bytes admit more readings than the enumeration walks is kept whole` |
+| *(equivalence, not a rule)* the closer search's resume point | `thinkingRenderingCandidates`: the earlier opener's closer never re-found | green on the whole dialogue suite: the resume bounds the walk and decides no answer |
+| *(equivalence, not a rule)* the empty-trace short-circuit | `thinkingRenderingOnly`: the `strings.TrimSpace(trace) == ""` guard dropped | green: the non-empty-words test and the whole-trace equality already answer it |
+| *(equivalence, not a rule)* the walk's memo | `canAccountFor`: `s.known[state] = accounted` dropped | green (round 13's own row, re-run on this tree) |
+
+`python3 scripts/gate.py`, exit code 0:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 10.268s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5708 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 18 row(s) verified
+  PASS     secrets  no leaks found in 162 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is from a run on this round's code and tests, before this section existed (the block was filled
+from that run's captured stdout). Further runs of the same gate on this record's tree reprinted every step
+line and every count — the runs' stdout differs only in the `selftest` line's duration (`10.268s`, then
+`9.100s`, `9.144s`, `9.327s`) — and every run exits 0; the record's later edits are its own prose, outside
+what any step reads (§5's table and the rule records' `parity` lines are what the `selftest` cases read).
+
+The narrowed Go suites' own test functions ran 398 before this round and 399 after — the one case added,
+`TestDialogueKeepsACloserInsideThePersistedTrace`, counted as `^func Test` over the test files git lists
+under `cmd/ccc` and `internal/ccc`; the shared table's eight new arms are cases of an existing function and
+are not counted. `selftest` ran its own count (`Ran 384 tests`, rc=0), the same as before the round: this
+round adds Go cases only and no `scripts/tests/` case changed. What else the round moved: `AGENTS.md` (the
+dialogue bullet's reading now states the bytes between two taken blocks — the separator the readers write,
+and never the trace's own text), `docs/plans/0007-opencode-target-continuation.md` (§6.1's twelfth-round
+separator clause now says the gap is checked rather than unassumed, §6.1's fourteenth-round paragraph, and
+§7's `AGENTS.md` bullet), `internal/ccc/codex_target.go` and `internal/ccc/codex_target_test.go`, and this
+record. The Python half, the gate, the carried tree, `README.md`, `docs/harness.md`, `docs/upstream.md` and
+`docs/decisions/OPEN-QUESTIONS.md` are untouched, and the round took no owner-only default to disclose in
+the last of them: the finding was closed by the code and the record alone. No goal file is moved: 0007 is
+still the increment under review, implemented on its branch with its row, and the earlier goals are archived
+and their rows say so.
+
+### The root-fix round's dialogue authority (`fa8da89` + working tree), re-measured
+
+The owner's decision of 2026-11-19 (letter A) put the root fix for this face inside 0007, after three review
+rounds (13, 14, 15) each found a deletion defect in the same shared accessor and two cross-family consults
+each improved the inverse instead of removing the dependency on it. **The accessor was being asked to
+recover byte ownership after the source reader had discarded it.** `internal/parser/zcode.go` knows which
+parts are text and which are thinking, flattens them into `Content` (`strings.Join(texts, "\n")`, each
+thinking part rendered as `[Thinking]\n<text>\n[/Thinking]`, zcode.go:545-578) and records the trace
+separately, projecting no dialogue at all — so the native part orders `thinking("a"), text("mid")` and
+`text("[Thinking]\na\n[/Thinking]\nmid"), thinking("a")` produce the *same* `Content`, the same trace and
+the same reader label, and no inverse, however exact, can say which occurrence was the model's words. The
+projection the carried readers already make (`parser.ParsedMessage.DialogueText`, carried as
+`Message.Dialogue`/`DialogueProjected`) is the authority, and the readings machinery was a defensible
+*bound on what may be removed* used as a *promise of exact recovery*. The third consult's arm 2 — a trace
+part whose own text is the rendering's whole words, so the removal has no trimming to catch and the
+literal block quoting the trace is the only complete reading — is the case that shows the class was never
+the trimming's.
+
+**The states and the disclosure.** `dialogueOf` (`internal/ccc/dialogue_provenance.go`) answers one of four
+states for a record, every route acts on the state rather than on a text alone, and each state is named on
+the document (the read's own per-record fields), in the target (the per-message shape the state produced)
+and in the report (the category):
+
+| state | what it is | outcome | report |
+| --- | --- | --- | --- |
+| projected | the read answered `DialogueText` — an explicitly empty projection included, which is the source's own "no dialogue" | the projection, byte for byte | no category; `Content` is not read |
+| from Content | no projection; the reader is not one `thinkingRenderingReaders` names, or the read recorded no trace for the record (`Message.Thinking` empty — an entry acts only where the read answered the record's trace), and the record carries no calls, so `Content` is the record's own bytes | the text travels (the rendering inside it where the reader wrote one and the read recorded no trace to show it apart) | `unprojected_dialogue`, carried-with-caveat (count of records) |
+| rendering-only | no projection; `Content` is byte for byte the reader's rendering of the record's whole trace | no dialogue; the trace is not double-carried | no new category (the trace is counted where the target has no shape for it) |
+| unestablished | no projection and `Content` is not the record's own bytes (the reader renders the trace and the record carries one, or the record carries calls whose renderings a reader may have inlined) | **no text at all**; tool evidence still written; the record's reasoning travels where the target has a shape for it (Pi's `thinking` block, the harness's reasoning part) and is counted as omitted where it has none (Codex and Claude record reasoning as their provider's own artifact); the source keeps the bytes | `unresolved_dialogue`, omitted (count of records) |
+
+Partial conversion is the disposition chosen over refusal, and the reason is in the code
+(`dialogueOf`): the loss is per record, disclosed, and reversible in the only place that matters — the
+source session is untouched, so a later route with better provenance can read those bytes; refusing a whole
+conversation over one record's text would deny every record the source did answer for. The report says
+which state each record landed in (the categories' counts and dispositions), the document carries the
+read's own answers, and the target holds the shape: a ZCode mixed record installs as a message with a
+reasoning part and **no text part**, never as a text part holding the reader's rendering.
+
+**One line each for the cases the previous rounds pinned, and why the new design cannot reproduce them.**
+r13 (an unmatched opener in the record's own text hid the genuine rendering, and the reading deleted the
+record's own pair): no reading exists any more — a record of a rendering reader that carries a trace has
+nothing established, whatever its bytes spell. r14 (a trace whose own text holds a closer, with a literal
+block beside it, let a pair of blocks cover the trace while skipping its bytes): the same — the shape is
+never read, so no gap can be validated wrongly. r15's P1 (trimming a candidate's words lost the genuine
+rendering's separator and made a literal whole-trace block the only accepted reading): the same, and the
+class is closed at the same time — the consult's arm 2 showed the collision needs no trimming at all. The
+consult's arm 2 itself (a thinking part whose text is empty beside a text part quoting the whole trace):
+`dialogueOf` answers `dialogueUnestablished`, the writer writes no text, and the case is one of the
+`TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader` arms (through the unmodified reader) and one of
+the table's arms. The deleted cases' *shapes* are all kept as arms of the new tests, asserting the new
+outcome, and the rounds' evidence sections above are untouched history.
+
+**r15's second finding, re-derived and fixed.** The finding held on the clean tree
+(`internal/ccc/opencode_target.go`'s `openCodeClock.span` raised the single clock floor to a result's
+completion, and the next message's `created := c.clock.next(...)` was then clamped to it): a conversation
+whose calls sit on separate records — the shape the carried Codex reader produces, one message per
+`function_call` — with call A at t=0, call B at t=1 and A's result at t=10 came out with B's message and
+its tool part at t=10 instead of t=1, shortening a recorded 19-second span to 10 with no loss category
+naming the substitution (re-derived with a throw-away test before the fix, and pinned after it by
+`TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants`). The clock now holds two instants
+apart: `lastMessage`, the floor a message's own `created` is taken against (raised by messages alone), and
+`lastInstant`, the highest instant the document holds (raised by a message's `created` or a part's
+`completed`, read only for the session's `time.updated`). The existing
+`TestOpenCodeParallelToolSpansKeepTheirOwnInstants` (both calls on one message) never caught this and
+still passes; the regression test the finding asked for is the new one.
+
+**The rules, each with an executed mutation.** Six mutations were made, run and restored byte-identically
+(each file's sha256 verified before and after):
+
+| the rule | the mutation | the pin that reddened |
+| --- | --- | --- |
+| a rendering reader's unprojected record with a trace has nothing established | `dialogueOf`: the `ContentRendersThinking && Thinking != ""` arm disabled | `TestDialogueOfNamesWhatEstablishesARecordsText` (its unestablished arms), `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader`, `TestOpenCodeDoesNotGuessAZCodeRecordsDialogue`, `TestCodexRolloutCountsWhatItCouldNotEstablish` |
+| a record carrying calls has no dialogue from its `Content` | `dialogueOf`: the `ToolCalls` arm disabled | `TestDialogueOfNamesWhatEstablishesARecordsText/a_record_carrying_calls_has_nothing_established_from_its_Content` |
+| the whole-trace rendering is byte-exact, not a trimmed shape | `dialogueIsRenderingOnly`: `strings.TrimSpace(message.Content) == …` | `TestDialogueOfNamesWhatEstablishesARecordsText/the_same_block_with_one_byte_beside_it_is_not_that_shape` |
+| the readers list names the rendering readers the carried tree has | `thinkingRenderingReaders`: `parser.AgentZCode` dropped | `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader`, `TestOpenCodeDoesNotGuessAZCodeRecordsDialogue` (all arms) |
+| a record whose text is the reader's `Content` is counted as carried without a projection | `codex_target.go`: the `unprojected_dialogue` count disabled | `TestCodexRolloutCountsWhatItCouldNotEstablish`, `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader` (its control arm) |
+| a tool part's completion never raises the message-ordering floor | `openCodeClock.span`: `lastMessage` raised to `completed` (the pre-fix shape) | `TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants` |
+
+**The readers list is completed against the carried tree.** Eight more readers that render a trace into
+`Content` and project none were found by walking the carried readers for the block's own construction sites
+and are now named: ChatGPT (`chatgpt.go:401-413`), Claude.ai (`claude_ai.go:151-156`), Copilot
+(`copilot.go:200-208`), Gemini (`gemini.go:400-415`), Hermes (`hermes.go:319-321,517-519,1349-1351`),
+OpenCode (`opencode.go:1726-1731`, `opencode_v2.go:280-286`), Reasonix (`reasonix.go:89-93`) and Zencoder
+(`zencoder.go:371-377`). What an entry can do for those readers' own records is bounded by the read's other
+answer, and round 17's STD-A01 measured the bound: none of the nine reader files sets `ThinkingText`
+(re-derived by grep on this tree), so the read records no trace for a record those readers produce and
+`dialogueOf`'s rendering arm — the reader's name **and** a non-blank `Message.Thinking` — cannot fire; their
+records reach the record's-own-bytes state, the text (the rendered block inside it) travels, and the
+conversion counts it `unprojected_dialogue`. An entry acts on a record that *does* carry a trace — a legacy
+archive row, a later reader that records one — and the fix applied below re-derives that reading on the
+shape those readers produce (`dialogueFromContent`, `unprojected_dialogue`, the rendering's text inside the
+carried text). The condition as this round first stated it ("the reader is not named and the record carries
+no calls") was corrected in the rule's own statements by that fix — `AGENTS.md`'s rule (1), the state docs,
+the `unprojected_dialogue` row and this record's table above. The list now also names the readers that
+render a trace *and* project one (Amp, Claude Code, Codex, Cursor, Devin, Grok, iFlow, OpenClaude, OpenClaw,
+OpenHands, Pi/OMP, QClaw): their projection answers first wherever the read made one, and the entry is what
+keeps a record *without* a projection **that carries a trace** — a legacy archive row, a reader path that
+keeps `Content` as the source wrote it — from publishing the rendering. The list's doc names every
+construction site (its OpenHands entry cites the block's own construction site, `openhands.go:440-450`, as
+the fix below corrects; the entry previously cited that reader's projection sites) and the maintenance
+rule; a label this build knows no reader for is treated as recording `Content` as written and counted in
+`unprojected_dialogue`, the answer that keeps the source's own words (a rendering left standing is a
+duplication the report names; text dropped as though it were one cannot be put back).
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3621 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.842s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is from a run on this round's code and tests before this section's prose settled (it was filled
+from that run's captured stdout); later runs of the same gate on this record's tree reprinted every step
+line and every count, differing only in the `selftest` line's duration, and every run exited 0.
+
+The required lines, verbatim with their own return codes: `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.902s (rc=0)` (the same 384 tests as before the round: this round
+adds no `scripts/tests/` case) and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified`
+(0002 unchanged at 36 rows; 0007's manifest grew from 18 rows to 27 — R1-R9 carry this boundary's
+evidence: the projection as the authority, the display rendering's irrelevance, the target text traced to
+the source fixture's own typed parts, the refusal to guess a rendering record, the partial outcome and its
+disclosure on each writer, the disclosure categories, the whole-trace shape, the literal-block rule and the
+tool-part instant rule).
+
+The native checks this host can run, offline (no prompt flags, so no turn), re-run because every route
+reads its dialogue through the rule this round replaces: `python3 scripts/pi-native-check.py` →
+`RESULT: PASS — 21 check(s), none failed` (exit 0); `python3 scripts/omp-native-check.py` →
+`RESULT: PASS — 23 check(s), none failed` (exit 0); `python3 scripts/codex-native-check.py` →
+`26 check(s) passed, 0 failed, 2 skipped` (exit 0; both skips are the real-turn stages); and
+`python3 scripts/opencode-native-check.py` → `RESULT: PASS — 32 check(s), none failed` (exit 0) — this host
+now has `opencode` on `PATH` (`/home/azureuser/.npm-global/bin/opencode`, `opencode v2.2.5`), so the route's
+native half ran here in full rather than reporting the boundary earlier rounds recorded.
+`python3 scripts/claude-native-check.py` exited 2 with `claude is not on PATH: this harness verifies native
+behaviour, which needs the target harness installed`, which is that check's own harness-absent answer; this
+round records no Claude native run.
+
+The narrowed Go suites' own test functions ran 399 before this round and 400 after (counted as `^func Test`
+over the test files git lists under `cmd/ccc` and `internal/ccc`, plus this round's new file): seven cases
+were superseded — `TestDialogueFromContentKeepsOnlyTheRecordsOwnText` (whose ~40 arms pinned the readings,
+the candidate scan and the removal), `TestDialogueKeepsALiteralMarkerBlockWhoseWordsTheTraceHolds`,
+`TestDialogueKeepsANewlineDelimitedLiteralPairWhoseWordsTheTraceHolds`,
+`TestDialogueKeepsAnUnmatchedOpenerBeforeTheRendering` (r13),
+`TestDialogueKeepsACloserInsideThePersistedTrace` (r14),
+`TestRenderingReaderRemovesTheRenderedTraceThroughAnInheritedReader` and
+`TestOpenCodeCarriesAZCodeMixedRenderingOnce` — and their shapes all live on as arms of the new cases,
+asserting the outcome the new rule produces instead of the removal they used to pin; eight cases are new
+(six in `internal/ccc/dialogue_provenance_test.go`, two in `internal/ccc/opencode_target_test.go`). No
+existing case in this record is deleted, merged or weakened: the r13, r14 and r15 sections above stand as
+written, and this section names what happened to each of their counterexamples.
+
+What else the round moved: `AGENTS.md` (the dialogue bullet is now the two rules the round asked for — the
+semantic rule, with the collision stated and the readings machinery's removal declared, and the
+disclosed-outcome rule with its three states and the list's maintenance rule — plus one clause in the
+OpenCode paragraph fixing the message-ordering floor), `internal/ccc/dialogue_provenance.go` (the accessor,
+the states, the completed list), `internal/ccc/codex_target.go`, `internal/ccc/claude_target.go`,
+`internal/ccc/pi_target.go` and `internal/ccc/opencode_target.go` (each writer's message rule, two new loss
+categories and the clock fix), `internal/ccc/codex_install.go` and `internal/ccc/opencode_install.go` (the
+round-trip read side reads the new accessor; the per-route override field is renamed `readText`),
+`internal/ccc/conversation.go` (the message fields' contract), the tests, `docs/plans/0007-…` (§6.1's
+root-fix paragraph and §7's `AGENTS.md` bullet) and this record plus `docs/evidence/0007-citations.tsv`.
+The Python half, the gate, the carried tree (no `internal/parser` file changed), `README.md`,
+`docs/harness.md` and `docs/upstream.md` are untouched, and `docs/decisions/OPEN-QUESTIONS.md` gains one
+entry rather than being left alone: **Q-0007-10** records this round's default and says which mechanism it
+supersedes (Q-0007-08's, whose entry stands unedited), what reverses it (an upstream projection, or the
+stricter arm that refuses those records instead of omitting their text) and what settles it. The
+disposition itself — partial conversion, not refusal — is this round's own mandate applied, chosen in the
+code and stated here; no other owner-only default was taken. No goal file is moved: 0007 is still the
+increment under review, implemented on its branch.
+
+Limits of this round's evidence: no real turn was run (`--resume-prompt` was not passed to any check), so
+the native runs prove the loaders opened and read what the routes wrote and not that a model continued the
+conversation, and the Claude route has no native run here at all (its harness is absent). The durable fix
+for the readers this round had to classify is upstream: a reader that projected its own dialogue would let
+its records convert exactly, and until one does, a record of theirs that renders a trace and answers no
+projection converts with its text omitted and the omission counted on every run — the state Q-0007-10
+records, with what reverses it and what settles it.
+
+### The simplify round's accepted findings (`6aecee0` + working tree), applied
+
+The simplify stage's report (round 17) was accepted in full by the operator — its two deletions (1, 2),
+its two refactors (3, 4), its two coverage findings (5, 6) and its three possible defects (PD-1, PD-2,
+PD-3) — and every item of its "what is sound — do not touch" list was left standing. This section records
+what was applied and what was measured on this tree; the report's own measurements were taken in
+throw-away copies and are re-derived below where a claim here rests on them.
+
+**PD-1 — whitespace-only `Content` back to the category it reached at `fa8da89`.** `dialogueOf`'s
+empty-`Content` arm asked `strings.TrimSpace(message.Content) == ""`, folding a record whose `Content` is
+whitespace alone into "no text": the writers' whitespace case could no longer see it, so on Codex such an
+assistant record was dropped from the report with **no category naming it at all**, and the other three
+routes reported it as empty. The arm now asks `message.Content == ""` (exact), and the paragraph above it
+states the exactness and why. Measured per route, on a one-record hand-built document with no projection
+(each route's own `ConvertTo…` entry point over a throw-away `zz_probe_test.go`: `go test -count=1 -tags
+fts5 -run TestZZProbe -v ./internal/ccc/`, printing every non-zero report row), on three revisions:
+
+| record | `fa8da89` (measured) | `6aecee0` (measured) | this round (measured) |
+| --- | --- | --- | --- |
+| assistant, `Content: "   "` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_assistant_messages=1` | codex **no category at all**, claude/pi/opencode `empty_assistant_messages=1` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_assistant_messages=1` |
+| user, `Content: "   "` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_user_messages=1` | all four `empty_user_messages=1` | codex/claude/opencode `whitespace_only_dialogue=1`, pi `empty_user_messages=1` |
+
+Every route is back on its own `fa8da89` answer — `whitespace_only_dialogue` on the three routes whose
+reader reads a blank-after-trimming message as no message, and Pi's own empty-record category for the
+role, because its reader drops the record entirely — and the restoration is disclosure-only: no route's
+written items moved (measured below). The pin is `TestWhitespaceOnlyContentKeepsItsOwnCategory` (both
+roles × four routes): the state (`dialogueFromContent` carrying the whitespace bytes), the route's own
+category with count 1 and `omitted`, zero under `unprojected_dialogue` and `unresolved_dialogue`, and no
+item written for the record. The pin is not vacuous: reverting that one line in a throw-away copy (back to
+`strings.TrimSpace(message.Content) == ""`) made `go test -count=1 -tags fts5 -run
+TestWhitespaceOnlyContentKeepsItsOwnCategory ./internal/ccc/` exit 1 with both arms failing, and no copy of
+this tree ran with that line reverted.
+
+**PD-2 — OpenCode asks and counts the dialogue state after its role gate.** It was the only one of the
+four writers to ask `dialogueOf` and count its categories *before* the role gate and then discard the text
+in its default branch, so a `tool`-role record's `Content` was counted as carried-with-caveat
+(`unprojected_dialogue`) although neither the document nor the report held it. The ask and the counting
+now sit below the gate, and a non-dialogue role returns under its own category as on the other three
+routes. Measured on the report's own document (a projected user record, a `tool`-role record whose
+`Content` is "the tool's own words", a plain assistant record): before, codex/claude/pi answered
+`tool_role_messages=1, unprojected_dialogue=1` and OpenCode `tool_role_messages=1,
+unprojected_dialogue=2`; after, all four answer `tool_role_messages=1, unprojected_dialogue=1`. This is
+the one behavioural change this round makes — a count on one route, for documents holding a non-dialogue
+role's text, which no run in this record converts — and it is disclosed in
+[`OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md) as **Q-0007-11** (PD-1 is a measured restoration and
+PD-3 is report text, so neither took an entry). No number this record states goes stale with it: the
+fixture runs quoted above hold no such record and their counts are unmoved (the gate's `test` step re-ran
+every suite), and the report's category count is unchanged — both dialogue rows are still emitted on every
+route, from the one constructor.
+
+**PD-3 — the target's own answer, per route.** The `unresolved_dialogue` clause now comes per route.
+Codex and Claude said the record's own reasoning "still travels as reasoning_text", while their own
+`reasoning_text` rows are `omitted` (each target records reasoning as its provider's own artifact), so
+their clause stated the opposite of the row beside it; Pi's and OpenCode's clauses were already accurate
+and are unchanged. The four clauses as this tree states them, verbatim: codex "the text is not written,
+this count is not a claim that the record wrote none, and a trace the record carries is omitted with it --
+counted under reasoning_text above, because this target has no plaintext-trace shape: it records reasoning
+as its provider's own encrypted artifact"; claude the same with "signed artifact"; pi (the family's)
+"…the record's own reasoning still travels as the `thinking` block it was recorded in"; opencode "no text
+part is written for it, … the record's own reasoning still travels as the assistant message's reasoning
+part". The fact the corrected clauses state is pinned where prose cannot be:
+`TestEveryRouteCountsWhatTheReadCouldNotEstablish` asserts, per route, that the document holds the trace
+exactly when the format has a shape for it (Pi's `"type":"thinking"` block, OpenCode's `"type":"reasoning"`
+part; not at all on Codex and Claude) and that `reasoning_text` carries the matching disposition
+(carried-with-caveat where the trace travels, omitted where it does not).
+
+**Finding 3 — one place maps state → category, and one row constructor.** `dialogueLossOf`
+(`internal/ccc/dialogue_provenance.go`) names the category from the state `dialogueOf` answered, and
+`dialogueLossRows` builds the two rows with the route's own clause; the four writers read the category from
+the one function (call sites are `dialogueLossOf(dialogue) == dialogueLossUnresolved` / `…Unprojected`)
+and splice the rows from the one constructor. The proof that the pins now cover all four routes: with
+**the one shared branch** disabled in a throw-away copy (the `case dialogueUnestablished:` arm of
+`dialogueLossOf` answering `dialogueLossNone` instead of `dialogueLossUnresolved`),
+`go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/` exited 1 with 15 `--- FAIL` lines —
+`TestEveryRouteCountsWhatTheReadCouldNotEstablish` (all four route arms), 
+`TestCodexRolloutCountsWhatItCouldNotEstablish`, `TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader`
+(four arms) and `TestOpenCodeDoesNotGuessAZCodeRecordsDialogue` (three arms) — while `cmd/ccc` stayed
+`ok`. The opposite measurement, re-derived here on the pre-hoist tree (`6aecee0` in a copy, the
+dialogue-state branch disabled separately in `claude_target.go` and `pi_target.go` — the two copies the
+report measured as unpinned): `go test -count=1 -tags fts5 ./internal/ccc/ ./cmd/ccc/` exited 0 with both
+packages `ok`, so the four route arms are exactly what those two routes gained. The mutation never touched
+this tree: `internal/ccc/dialogue_provenance.go`'s sha256 is
+`95765a4a44199cf3f2ac4f4c4547fda4640fdd0e911ff65dba4de285ad751fc5` before and after.
+
+**Findings 5 and 6 — the new pins.** `TestEveryRouteCountsWhatTheReadCouldNotEstablish` drives one
+hand-built document through all four conversions from one table (`dialogueRoutes`, the new test helper):
+a projected user record, an unprojected record whose reader renders the trace into `Content` and which
+carries a call with its result, a plain unprojected record, and a rendering-only record. Per route it
+asserts: no text is written for the unestablished record — neither the record's own words nor the reader's
+rendering reaches the document, and no item holds the words as written text; the trace travels exactly
+where the target has a shape for it, and in that shape; the call and its recorded output are written on
+every route, with an item naming the result; and the counts are the route's own (`unresolved_dialogue ×1`
+omitted, `unprojected_dialogue ×1` carried-with-caveat). This is the pin PD-1 and PD-2 needed: the same
+document shows OpenCode's stray count before PD-2 (measured above) and fails on a wrongly generalised
+clause through the trace/`reasoning_text` agreement it asserts. `TestWhitespaceOnlyContentKeepsItsOwnCategory`
+is PD-1's pin, listed above.
+
+**Findings 1, 2 and 4 — the evidence-neutral items.** As the report describes them: the dead `tool_result`
+arm of the fixture walk in `dialogue_provenance_test.go` is gone (a result block inlines no rendering into
+`Content` — `ExtractTextContent` appends nothing for it — so the walk visits `tool_use` blocks only, and
+says so where it reads); `reader.go`'s `ContentRendersThinking` producing comment no longer describes the
+deleted removal mechanism (it now states that the flag is the read's answer that `Content` is not the
+record's text, which is what makes such a record's dialogue unestablished in `dialogueOf` — producer and
+consumer now agree); and the second fixture-locating convention is gone: `claudeFixturePath` (a
+`filepath.WalkDir` taking the last match silently) is replaced by the package's own,
+`fixturePath(t, filepath.Join("claude", "-home-user-code-example-api", claudeFixtureRef.ID+".jsonl"))`,
+which the other 33 call sites across seven test files already use.
+
+**What did not move.** The same probe over a copy of `6aecee0` and over this tree prints the same 16 item
+lines (4 routes × the four probe documents) byte for byte, so every route writes the same records for
+these documents before and after: the round moved the report's counting, PD-1's restored categories and
+PD-3's clauses, not what a target holds. The production balance, measured as `git diff --numstat` over
+the six non-test Go files this round touches: 201 added and 142 removed lines as written (+59), of which
+the added lines are 84 comment lines and 8 blank lines — 109 added code lines against 139 removed, so the
+statements are net-deleting by 30 lines and what grew is the documentation around the one helper and the
+four per-route clause constants (a clause per route is what PD-3 asks for; the constants are values, not
+another abstraction). The narrowed Go suites' own test functions ran 400 before this
+round and 402 after (counted as `^func Test` over the test files git lists under `cmd/ccc` and
+`internal/ccc`): two new top-level cases, both in `internal/ccc/dialogue_provenance_test.go`, and no case
+deleted, merged, renamed or weakened. The gate's `gofmt` count moved 3621 → 3622 with the round's new
+test file (`fa8da89` and `51275f5` hold 3621 `*.go` files; `6aecee0` holds 3622).
+`docs/evidence/0007-citations.tsv` is unchanged — no cited test was renamed and R1–R9's tests all still
+exist and pass (the `citations` step below reads all 27 rows). `AGENTS.md` is unchanged, and no binding
+rule moves: PD-1 restores the pre-round behaviour, PD-2 applies the increment's own rule (every route acts
+on the state the read answered) to the last route that did not follow it, and PD-3 corrects two report
+clauses where the paragraph already states the rule conditionally ("its recorded reasoning still travels
+where the target has a shape for it"). The plan's root-fix paragraph is unchanged too: its clause is that
+same conditional one ("keeps its reasoning where the target has that shape"), which is true on every route.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.804s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is from a run on this round's code and tests before this section's prose settled (it was filled
+from that run's captured stdout); later runs of the same gate over the same code and tests reprinted every
+step line and every count, differing only in the `selftest` line's duration, and every run exited 0.
+
+The required lines, verbatim with their own return codes, from a run over this tree's code and tests
+(runs differ only in the `selftest` line's duration): `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.806s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified`
+(0002 unchanged at 36 rows; 0007 unchanged at 27 — no row's test was renamed, and the round's two new
+cases are not cited, which is what the acceptance asked). A later run over the same code and tests
+reprinted every step line and every count, differing only in that duration, and exited 0.
+
+No native check was re-run this round: no route's written bytes change for any document (the items
+measurement above), PD-2 moves only a count and PD-3 only two clauses, so the load-level evidence the
+root-fix section recorded still describes what these routes write.
+
+### The round-17 review's accepted findings (`0aea879` + working tree), applied
+
+The review stage's report on the simplify round (Standards MUST_FIX ×3, Spec MUST_FIX ×1, caused by two of
+the three) was accepted: STD-A01 on its wording arm, its mechanism arm left as the owner's scope call
+([`OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md), **Q-0007-12**), and STD-A02 and STD-A03 as the
+report states them. Every measurement below was taken on this tree or in a throw-away copy
+(`/tmp/cccfix-mut`, `/tmp/cccfix-p2`; restored from the tree and deleted afterwards). The review's own
+probe is re-derived here.
+
+**STD-A01 — the rule's condition is the code's, everywhere it is stated.** The code's guard was and is
+`ContentRendersThinking && TrimSpace(Thinking) != ""` (`dialogueOf`'s rendering arm), so a *named* reader's
+record whose read answered no trace reaches `dialogueFromContent`, the text travelling and counted
+`unprojected_dialogue`; the rule was stated as "the reader is not one `thinkingRenderingReaders` names and
+the record carries no calls", under which such a record read as outside the state. Every record produced
+by the eight block-writing readers the root-fix round added is that case: none of the nine carried reader
+files sets `ThinkingText` (re-derived, `grep -c ThinkingText` = 0 for `chatgpt.go`, `claude_ai.go`,
+`copilot.go`, `gemini.go`, `hermes.go`, `opencode.go`, `opencode_v2.go`, `reasonix.go`, `zencoder.go`).
+Probe on the shape those readers produce (`Message{assistant, Content: "[Thinking]\nsecret trace\n
+[/Thinking]\nThe answer.", ContentRendersThinking: true}`, a throw-away `zz_probe_test.go` printing
+`dialogueOf`/`dialogueLossOf` and the Codex document): the state is `dialogueFromContent`, the loss
+`unprojected_dialogue`, the text is that Content byte for byte, the Codex document **holds** `secret
+trace` (the rendering travelled as the record's text) and `unresolved_dialogue = 0` — the review's probe
+reproduced. The condition and its consequence are now stated in every place the rule appears: `AGENTS.md`
+(its semantic headline — "the source's own answer, and a rendered reasoning trace is never it" was the
+statement the review measured false, and it now reads "the source's own answer or the record's own bytes,
+never a reading of them" — its "removed, not patched" tail, and its disclosed-outcome rule (1), which
+carries the new sentence: the entry acts only where the read recorded the record's trace, so a reader that
+renders a trace without recording its own text takes this state too and the text — the rendering among it —
+travels and is counted here); `internal/ccc/dialogue_provenance.go` (the list comment's two bullets, a new
+paragraph stating the bound on every entry's action, `dialogueOf`'s three-state bullet, the
+`dialogueFromContent` state doc, the `unprojected_dialogue` row's ground sentence); `internal/ccc/
+conversation.go`'s `ContentRendersThinking` doc; the plan's §6.1 clause; the header comment of
+`docs/evidence/0007-citations.tsv` (its quote of the semantic headline follows the new text; no row moved);
+and this record's own state-table row and readers paragraph above. The list's OpenHands entry now cites the
+block's own construction site, `openhands.go:440-450` (`openHandsAppendThinking`), where it cited that
+reader's projection sites — the review's sub-note (c). Q-0007-12 records both arms — carry `Content`
+counted (shipped) or carry `ParsedMessage.HasThinking` and treat (named reader ∧ a trace was recorded as
+existing ∧ no trace text) as `dialogueUnestablished`, verified per reader because `goose.go`'s
+`redactedThinking` sets `HasThinking` with no block and no text, so a blanket rule would omit real text —
+and what settles it (the owner's scope call, or an upstream reader that records the trace's own text).
+
+**STD-A02 — a trace on a record whose role has no shape is counted as omitted, not as carried.** Pi and
+OpenCode write a trace only as a block or part of the assistant message that produced it, while their
+`reasoning_text` count was role-blind (Pi counted a user record's trace, OpenCode counted every
+user-or-other-role record's before its role gate) and both routes' `unresolved_dialogue` clause said the
+record's reasoning "still travels". Measured before, in a copy with the role-bound counting reverted to the
+`fa8da89` shape, on one hand-built document (a projected user record carrying a trace, no assistant trace):
+pi and opencode `reasoning_text = 1 carried-with-caveat` while **neither document holds the trace**; codex
+and claude `reasoning_text = 1 omitted` (their row already said the trace is omitted). The counting is now
+role-bound — the assistant's is the only role both writers put the block/part on — a trace on any other
+role is counted under the new `non_assistant_reasoning` row (omitted) on those two routes, and each route's
+clause now says the trace travels "where the record's role is the assistant's", with the omission counted.
+Measured after, same document: pi and opencode hold no trace, `reasoning_text = 0`, `non_assistant_reasoning
+= 1 omitted`; codex and claude `reasoning_text = 1` omitted. The pin is
+`TestEveryRouteCountsWhatTheReadCouldNotEstablish` extended with that user record: it asserts the trace
+absent from every document, the two assistant records' traces `carried-with-caveat` where the format has
+the shape and `omitted` where it has none, and the user record's trace under the route's own omitted
+category. The pin is not vacuous: reverting Pi's and OpenCode's role-bound counts to `lossReasoning` in a
+throw-away copy made `go test -count=1 -tags fts5 -run TestEveryRouteCountsWhatTheReadCouldNotEstablish
+./internal/ccc/` exit 1 with exactly the pi and opencode arms failing (`reasoning_text = … Count:3 …, want
+2 trace(s) counted "carried-with-caveat"` and `non_assistant_reasoning = … Count:0 …, want the user
+record's trace counted as one omission`). The new row is named in Pi's `TestPiSessionReportsEveryLossCategory`
+list, whose walk of the report requires a listed name for every row the report carries. Counts moved: the
+report now names 41 rows on OpenCode (39 literal + the two shared dialogue rows) and 32 on Pi (30 + 2) —
+§5 and §6 carry the new numbers and the rounds that moved them by.
+
+**STD-A03 — the two "every category" cases name the categories their writer reports.**
+`unresolved_dialogue` and `unprojected_dialogue` — the two rows `dialogueLossRows` splices into every
+writer — are now in `TestCodexRolloutReportsEveryCategoryItKnows`'s map (counts, measured on its document:
+0 `omitted` and 1 `carried-with-caveat`) and in `TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers`'s
+list, which also gained `empty_assistant_messages` (a category the writer reports that this list had left
+to a sibling case); both comments now state what the cases check — every category the writer reports today
+is named, each read through `lossCount`, so a row that stopped being reported fails here rather than
+reading as a zero, while the pass that walks a report and catches a category the writer *gained* is the Pi
+case's, since a list can only check its own names. The case names are unchanged: both are cited
+(`docs/evidence/0002-citations.tsv`'s row B7 carries the codex case; 0002's and 0003's records quote both),
+and none may be renamed away. The two names are load-bearing: with the codex and claude writers'
+`dialogueLossRows` splice dropped in a throw-away copy, both cases failed with `the report does not name
+the "unresolved_dialogue" category`.
+
+**What did not move.** No route's written bytes change for any document: this round moves a count, two
+report clauses, the rule's own wording and two test lists, and nothing in a writer's record path
+(`internal/ccc/pi_target.go` and `internal/ccc/opencode_target.go` changed only where they count and what
+their clause constants say) — so the load-level evidence the earlier sections recorded still describes what
+these routes write, and no native check was re-run. No source is opened for writing, the carried tree is
+untouched (no `internal/parser` file changed), and `README.md`, `docs/harness.md`, `docs/upstream.md` and
+`docs/conventions.md` are unchanged. The narrowed Go suites' own test functions ran 402 before this round
+and 402 after (counted as `^func Test` over the test files git lists under `cmd/ccc` and `internal/ccc`):
+no case was deleted, merged, renamed or weakened — one case grew arms and two lists grew names — and
+`gofmt` still counts 3622 `*.go` files. `docs/evidence/0007-citations.tsv` keeps its 27 rows and no cited
+test was renamed.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.677s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The required lines, verbatim with their own return codes, from that run over this round's code and tests
+(before this section's prose settled): `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.677s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified`
+(0002 unchanged at 36 rows; 0007 unchanged at 27 — no row's test was renamed, and the round's extended case
+and two grown lists are not cited). A later run on the final tree reprinted every step line and every count,
+differing only in the `selftest` line's duration, and exited 0.
+
+### The PR #9 machine review's second finding (`857fc4a` + working tree), applied
+
+The cross-family machine review of PR #9 (`review-lane.py`, round 1, gpt-6.1-sol) returned two findings
+against the head it was handed (`8ad094d`). Its first was a stale-head artifact — that head's
+`internal/ccc/pi_target.go` had been reverted to its pre-fix content by an operator step — and the Pi half
+of STD-A02 is restored on this head; re-derived here, `go test -count=1 -tags fts5 -run
+'TestPiSessionReportsEveryLossCategory|TestEveryRouteCountsWhatTheReadCouldNotEstablish' ./internal/ccc/`
+printed `ok  	go.kenn.io/agentsview/internal/ccc	0.028s` and exited 0. The second finding is this round's
+edit.
+
+**The tool-span clock's raise was disclosed by no category.** The review's own words:
+
+> For a call recorded at `t+1` whose result has its own nonzero timestamp at `t`, `span` replaces the
+> recorded completion with `t+1`. The planner marks `resultCompletionFallback` only when the result
+> timestamp is absent, so this rewrite produces no timestamp-loss count; the report continues to describe
+> completion as the result's recorded instant. The unordered-source arm of
+> `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` already exercises this adjustment, but asserts only
+> the rewritten bytes. Count and disclose adjusted timestamps in `conversion.losses[]`, including when the
+> original timestamp was present. A code comment or plan description does not disclose which conversions
+> changed recorded spans.
+
+Re-derived on this tree: `openCodeClock.span` (`internal/ccc/opencode_target.go:466-476`) raises
+`completed` to the part's `created` whenever the instant the read answered for the result precedes it, and
+the only row that counted a substituted completion was `result_completion_fallbacks`, whose condition —
+the planner's `resultCompletionFallback`, set at `opencode_target.go:647-652` — is the *absent* instant, so
+the raise of a present one was silent and a reader took the part's own start for the result's recorded
+completion. The reviewed arm's result carries no instant of its own, so what it re-derives there is the
+containing record's instant (the fallback read), not the result's own record as the finding's words say;
+the raise fires on both readings, which is why the count is the raise itself and the two rows stay apart,
+and the case now pins both.
+
+**What changed.** The raise is counted per written part, past every omission guard, under
+`result_completion_adjustments` (`opencode_target.go`: the counter at :404, the count at :1089, and the row
+at :1581 beside `result_completion_fallbacks` at :1565), and the two rows are kept apart on purpose: the
+fallback row answers *which* instant the read answered (the containing record's, where it held none of the
+result's own), the adjustment row answers whether that answer was written. A part whose fallback instant
+itself precedes the call's own record takes both rows — the fallback row's detail says so — while a result
+whose record holds no instant at all stays the fallback read alone. No written byte moves for any source:
+the diff is a counter, its increment and one row of the report, `span`'s own arithmetic is untouched, and
+the pair the existing arms assert is what it was — so the load-level runs of §§1–2 still describe what this
+route writes and no native check was re-run. The plan's timestamps row and its `tool_part_times` /
+`result_completion_fallbacks` / `result_completion_adjustments` row now state the clock's whole rule, the
+control file's OpenCode clause names the raise beside the fallback (a rule an agent must follow, so it
+moved in the same increment), and the report names 42 rows on this route (40 literal + the two shared
+dialogue rows; the recorded runs of §§1–2 hold `result_completion_adjustments ×0`, their sources being
+ordered).
+
+**The pin.** `TestOpenCodeParallelToolSpansKeepTheirOwnInstants` asserted the rewritten bytes of the raise
+and nothing about the report; it now asserts the row on both readings, and the assertions are not vacuous:
+each mutation below was made in a throw-away copy (`/tmp/cccfix-p2`, restored from the tree and deleted
+afterwards) and each ran `go test -count=1 -tags fts5 -run
+'TestOpenCodeParallelToolSpansKeepTheirOwnInstants' ./internal/ccc/`, which failed there:
+
+| what the case pins | the mutation | the failure it produced |
+| --- | --- | --- |
+| the raise is counted | `opencode_target.go:1089`: the condition disabled (`false && …`) | `opencode_target_test.go:1674: result_completion_adjustments = 0, want 1`; `:1710: result_completion_adjustments = 0, want 1` |
+| the two rows are separate reads | `opencode_target.go:1090`: the raise counted as `lossResultCompletionFallbacks` (the rows merged) | `:1673: result_completion_fallbacks = 2, want 1`; `:1674: result_completion_adjustments = 0, want 1`; `:1710: result_completion_adjustments = 0, want 1`; `:1711: result_completion_fallbacks = 1, want 0` |
+| the row says what was rewritten | the row's phrase `raised to the` changed to `follows the` | `:1713: result_completion_adjustments detail = "the document's message order is the read's own, … result_completion_fallbacks", want the raise and the instant written named` (the message quotes the row's sentence whole; this record elides its middle) |
+
+The arms the case grew: the unordered arm now asserts `result_completion_fallbacks ×1` beside
+`result_completion_adjustments ×1` (its result recorded no instant of its own, and even the fallback
+instant precedes the call's record), and a new arm — the finding's own shape — carries the result's *own*
+instant `at` on a record standing before its call's `at+1s` and asserts `result_completion_adjustments ×1`,
+`result_completion_fallbacks ×0`, the pair `at+1s` twice, and the row's detail. The ordered arm asserts
+`result_completion_adjustments ×0`, so a counter that fired on any part fails there too.
+`docs/evidence/0007-citations.tsv` gains one row for the control file's new clause — R10, this case — which
+the `citations` step verifies with the rest (28 rows in that file). The narrowed suites' test functions
+still count 402 (`^func Test` over the test files git lists under `cmd/ccc` and `internal/ccc`): no case was
+added, deleted, renamed or weakened — one case grew two arms and two assertions moved into it — and `gofmt`
+still counts 3622 `*.go` files.
+
+**The sibling class, reported and not fixed.** The same shape — a recorded instant silently replaced by
+another — stands outside this round's edit, and each is a finding for the operator rather than an edit
+here: `entryClock.next` (`internal/ccc/route_shared.go:57-64`) raises an absent-or-earlier entry instant to
+the previous written record's for the Codex, Claude, Pi and OMP routes (call sites
+`codex_target.go:636-809`, `claude_target.go:370-694`, `pi_target.go:822-1170`), with no category naming
+it; and this route's own message floor, `openCodeClock.next` (`opencode_target.go:439-450`, read for
+`created` at :880), raises a message's own instant the same way — the unordered arm above reaches it, its
+user record at `at` written with `created = at+1s` and the report counting nothing for the raise. Both sit
+outside `span`, whose raise is this round's subject; a fix would have to decide what each route's report
+says about a raised record instant, and for the shared clock what all four routes say.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.675s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 28 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The required lines, verbatim with their own return codes, from that run over this round's code and tests
+(before this section's prose settled): `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.675s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 28 row(s) verified`
+(0002 unchanged at 36 rows; 0007 at 28 — the round's own added row, verified with the rest, and no row's
+test was renamed). A later run on the final tree reprinted every step line and every count, differing only
+in the `selftest` line's duration, and exited 0.
+
+### The PR #9 machine review's round-2 finding (`d16a9ac` + working tree), applied
+
+The cross-family machine review of PR #9's round 2 (`review-lane.py`, gpt-6.1-sol; report at
+`~/claw/tasks/2026-11-19/call-ccc-0007-rootfix/artifacts/pr9/review-2/report.md`) returned one finding —
+**[P2] "Disclose rewritten message and tool-start timestamps", `internal/ccc/opencode_target.go:439–443`**
+— beside a carried-tree parity audit that found nothing (the manifest diff only adds ownership of
+`scripts/opencode-native-check.py`, and the checker's declarations agree with `docs/upstream.md`), and its
+own "verification limits" say it performed no edits, builds, tests, native checks or gate runs: the
+finding is static tracing. Its claim: `openCodeClock.next` replaces an earlier *recorded* timestamp with
+the preceding message's timestamp, and no loss category counts that substitution — "for two carried
+messages recorded at `T+2` and then `T+1`, the second is written at `T+2`. If it carries a call whose
+result explicitly records `T+3`, `writeAssistantMessage` passes the substituted start to `toolPart`,
+shortening the recorded span from two seconds to one. Neither `result_completion_fallbacks` nor
+`result_completion_adjustments` counts this: the result timestamp exists and its completion was not
+raised." The round's scope was the class, not the instance: `entryClock.next` (`route_shared.go`) makes
+the same substitution for the Codex, Claude, Pi and OMP writers, and the round before's own
+reported-and-not-fixed paragraph named both.
+
+**The pre-fix reproduction.** In a throw-away worktree of `d16a9ac` (`/tmp/cccfix-r2`, removed afterwards)
+a throw-away `internal/ccc/zz_repro_test.go` built the reviewer's shape — messages at `T+2` then `T+1`, the
+second carrying a call whose result's own record instant is `T+3` — and the same out-of-order document
+through the routes with their own entry points among those the shared clock serves (Codex, Claude and Pi;
+OMP is Pi's own writer):
+
+```console
+$ go test -count=1 -tags fts5 -v -run 'TestZZRepro' ./internal/ccc/
+REPRO opencode: recorded message instants: T+2=1700000002000 T+1=1700000001000; result record T+3=1700000003000
+REPRO opencode: message type=user created=1700000002000
+REPRO opencode: message type=assistant created=1700000002000
+REPRO opencode: tool part call-x created=1700000002000 completed=1700000003000 (recorded span 1700000001000..1700000003000 = 2000ms, written = 1000ms)
+REPRO opencode: result_completion_fallbacks = 0 (reported=true)
+REPRO opencode: result_completion_adjustments = 0 (reported=true)
+REPRO opencode: nonzero loss counts: [assistant_completion_instant=1 empty_user_messages=1 message_model_attribution=1 target_model_binding=1 target_model_id_attribution=1 tool_name_vocabulary=1 usage_zeroed=1]
+REPRO opencode: categories naming a substituted/rewritten instant: [assistant_completion_instant=1]
+```
+
+The third line's message is the `T+1` record written at `T+2` (the second line's user message is the
+`T+2` record and keeps its own instant), the fourth line's part starts at that substituted `T+2` (the
+recorded 2000 ms call written as 1000 ms), and both completion rows are zero (the fifth and sixth lines)
+while the only "instant"-matching row is `assistant_completion_instant` — a different rule (the harness's
+own `time.completed` member), which is why it is quoted here rather than read as disclosure. The repro's
+shared-clock arms printed the same silence: on Codex the out-of-order message's `response_item` and
+`event_msg` are both stamped `09:00:02Z` where the record says `09:00:01Z`, the report's non-zero counts
+are empty (Claude the same; Pi only `unrecorded_token_usage ×1`), and no category names an instant on any
+of the three routes (`REPRO codex: categories naming a substituted/rewritten instant: []`, likewise
+claude and pi).
+
+**What changed.** `openCodeClock.next` now answers whether the instant it wrote is the read's recorded one
+or the previous written message's (`substituted`), and the writer counts a substitution where the message
+is actually written — `writeUserMessage`, `writeCompaction`, and `writeAssistantMessage` past its
+release path (a message whose parts all turned out unwritable releases the count with its reservations).
+`entryClock.next` counts each written timestamp it stamped with the previous written record's instant;
+`substitutedRecordInstantsDetail()` is the one shared sentence for the four writers that share the clock,
+and the OpenCode route has its own (its story is a message's `created` and the parts inside it). All five
+routes report the one category **`substituted_record_instants`** (carried-with-caveat) beside the two
+completion rows, and its own detail says which instant the read recorded, which instant the document
+carries in its place, why the document's order forces it, and — on OpenCode — that the tool parts inside
+such a message take the substituted instant as their `created`, so a recorded call→result span shortened
+by it is disclosed rather than left to read as the call's recorded start. A record the read recorded no
+instant for is not counted as a substitution: there is no recorded instant to replace — the family routes
+stamp such a record with the instant the options document for a source that recorded no times, and
+OpenCode with the instant the document already holds — and the row is about the recorded instants alone.
+`AGENTS.md`'s OpenCode clause states both rules
+in the same increment (a rule an agent must follow), the plan's timestamps and category rows state the
+clock's whole rule beside the two completion rows, and `docs/evidence/0007-citations.tsv` gains R11
+(`TestOpenCodeSubstitutedMessageInstantsAreCounted`) and R12
+(`TestCodexRolloutStampsRecordsInOneOrderedRun`).
+
+**What did not move.** The fix is a counter, its increment and report rows: the clock's arithmetic is
+untouched. Proven with the same before/after probe the round before used — a throw-away
+`internal/ccc/zz_probe_test.go` converting four documents (the reviewer's out-of-order shape, an ordered
+control, and both committed fixtures) through all five routes and printing each conversion's written
+bytes' digest (over a normalized copy: the minted session/message/record ids differ run to run, so the
+probe normalizes them and was run twice on the same tree to show the normalization is stable), every item
+line, and the non-zero report rows:
+
+```console
+$ diff <(grep '^PROBE-BYTES\|^PROBE-ITEM' before.txt) <(grep '^PROBE-BYTES\|^PROBE-ITEM' after.txt)   # silent
+$ diff -r zzprobe-before-a zzprobe-after                                                                  # silent
+$ diff <(grep '^PROBE-LOSS' before.txt) <(grep '^PROBE-LOSS' after.txt)
+< PROBE-LOSS codex/out-of-order: [tool_name_vocabulary=1 tool_result_outcomes=1]
+< PROBE-LOSS claude/out-of-order: [tool_name_vocabulary=1 tool_result_statuses=1]
+< PROBE-LOSS pi/out-of-order: [tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+< PROBE-LOSS omp/out-of-order: [message_model_attribution=1 target_model_binding=1 title_slot_written=1 tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+< PROBE-LOSS opencode/out-of-order: [assistant_completion_instant=1 empty_user_messages=1 message_model_attribution=1 target_model_binding=1 target_model_id_attribution=1 tool_name_vocabulary=1 usage_zeroed=1]
+> PROBE-LOSS codex/out-of-order: [substituted_record_instants=3 tool_name_vocabulary=1 tool_result_outcomes=1]
+> PROBE-LOSS claude/out-of-order: [substituted_record_instants=2 tool_name_vocabulary=1 tool_result_statuses=1]
+> PROBE-LOSS pi/out-of-order: [substituted_record_instants=1 tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+> PROBE-LOSS omp/out-of-order: [message_model_attribution=1 substituted_record_instants=1 target_model_binding=1 title_slot_written=1 tool_name_vocabulary=1 tool_result_statuses=1 unrecorded_token_usage=1]
+> PROBE-LOSS opencode/out-of-order: [assistant_completion_instant=1 empty_user_messages=1 message_model_attribution=1 substituted_record_instants=1 target_model_binding=1 target_model_id_attribution=1 tool_name_vocabulary=1 usage_zeroed=1]
+```
+
+The ordered control and both fixture conversions print no new row at all, so the counts above are the
+out-of-order document's own; the Codex count of 3 is its writer's three stamped entries for that one
+record (a `response_item`, an `event_msg` and the `function_call` — the shared clock's count is per
+written timestamp), and OpenCode's 1 is the one written message whose `created` moved, its parts'
+`created` following it without a second count. The first two diffs above are silent: the same 20 byte
+digests, the same 115 item lines, the same normalized documents, for every route × document pair. No
+route's written bytes, item lines, document member or record order moved for any of the 20 conversions, so
+no native check was re-run: the load-level evidence the earlier sections recorded still describes what
+these routes write.
+
+**The pins, and that they are not vacuous.** `TestOpenCodeSubstitutedMessageInstantsAreCounted` asserts the
+document's own bytes (both messages created at `T+2`, the part's pair `T+2`/`T+3` against the recorded
+`T+1`/`T+3`), the row's count ×1 and disposition, the three phrases its detail must state, both completion
+rows at ×0, and an ordered control whose messages keep their own instants and count ×0.
+`TestCodexRolloutStampsRecordsInOneOrderedRun` — the shared clock's own regression scenario — now asserts
+that every entry stamped for the out-of-order record carries `10:00:10` (its own instant is `09:00:00`),
+that `substituted_record_instants` equals the record's written entries, its detail, and an ordered control
+at ×0; its comment names the Claude, Pi and OMP writers that drive the same helper. Both mutations were
+made in a throw-away copy of this round's code (`/tmp/cccfix-r2-mut`, deleted afterwards; its only code
+differences are the two mutations — the copy was taken before this section's prose existed) and each
+failed its case under
+`go test -count=1 -tags fts5 -run '<the case>' ./internal/ccc/`:
+
+| what the case pins | the mutation | the failure it produced |
+| --- | --- | --- |
+| the OpenCode substitution is counted where the message is written | `opencode_target.go`: the three `if substituted {` guards disabled (`if false && substituted {`) | `opencode_target_test.go:1783: substituted_record_instants = 0, want 1` |
+| the shared clock's substitution is counted | `route_shared.go`: the `c.substituted++` increment removed | `codex_target_test.go:1531: substituted_record_instants = {Category:substituted_record_instants Disposition:carried-with-caveat Count:0 Detail:…}` |
+
+The codex cell's `…` is this record's elision of the row's own fixed detail sentence — the run's line is
+924 characters and the assertion it reports is the `Count:0` the cell quotes beside it — and every other
+quoted run line in this section is whole.
+
+The every-category lists that claim completeness name the new row: the Codex map
+(`substituted_record_instants ×0`) and the Claude list (present, ×0 in its count table) in their
+by-hand lists, and Pi's `TestPiSessionReportsEveryLossCategory` walks its report in both directions, so a
+dropped row is red there; OMP reads the same shared `losses()` list (its own case covers only the two
+OMP-only rows, which is what that case is about), and the OpenCode route has no by-hand completeness list,
+so its new row is pinned by the new regression's own `openCodeRequireLoss` (which fails when the category
+is missing) and by the count and detail assertions beside it.
+
+**Counts refreshed.** The OpenCode report now names 43 rows (measured on a throw-away counter case:
+`openCode loss rows = 43`), the narrowed suites' test functions count 403 (`^func Test` over the test files
+git lists under `cmd/ccc` and `internal/ccc`; 402 at `d16a9ac` — one case added, none deleted, merged,
+weakened or renamed), and `docs/evidence/0007-citations.tsv` holds 30 rows (the gate's `citations` line
+below). The current-state counts moved with them: §5's category total and its per-round history, §6's
+loss-categories bullet, and the plan's §2.2 timestamps row and §2.3 category rows (the new row's own rule
+row included); the round-1 plan paragraph's "28 rows in that file" is scoped there to that round. The
+per-round sections above quote the runs they made, at the trees they ran on, and are not rewritten — their
+gate transcripts and category counts are those rounds' own bytes.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.909s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 30 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The block is a run on this round's tree before this section's prose settled; the `parity` line is quoted
+whole (840 characters, the gate's own rendering end to end), and its deviation list is the one the round
+before's run printed too (`AGENTS.md` is a declared deviation; this round edits it, as those runs did).
+
+The required lines, verbatim with their own return codes:
+`selftest` printed `  PASS     selftest Ran 384 tests in 8.909s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 30 row(s) verified`
+(0002 unchanged at 36 rows; 0007 at 30 — R11 and R12 are this round's, verified with the rest, and no
+row's test was renamed). Every step passed and the run exited 0. A later run on the final tree, after this
+section was written, reprinted every step line and every count byte for byte, differing only in the
+`selftest` line's duration (`Ran 384 tests in 8.665s (rc=0)`), and exited 0.
+
+### The PR #9 machine review's round-3 findings and the class sweep (`3771fdd` + working tree), applied
+
+The cross-family machine review of PR #9's round 3 (`review-lane.py`, gpt-6.1-sol; report at
+`~/claw/tasks/2026-11-19/call-ccc-0007-rootfix/artifacts/pr9/review-3/report.md`) returned two P2 findings,
+both established by static inspection only — no edits, builds, tests or gate runs — and this round was
+changed from fixing two instances to closing the class: the same class ("the report does not name what the
+route dropped") had been found in three rounds, so the round fixes both findings **and** takes the carried
+document's own fields (`Conversation`, `Message`, `ToolCall`, `ToolResult` in `internal/ccc/conversation.go`)
+as a closed list, answers every field for every route, and closes each cell that was neither written,
+counted, consumed, derived nor out of scope.
+
+**Finding 1 — a shared reader's labels were missing from the projecting entries.**
+`internal/ccc/dialogue_provenance.go`'s `thinkingRenderingReaders` names the readers whose Content carries
+the reader's rendering of the record's persisted trace. `internal/parser/pi.go` renders the trace
+(`:511`) *and* projects (`:549`), and that one reader serves `parser.AgentPi`, `parser.AgentOMP`,
+`parser.AgentOMO`, `parser.AgentStepCode`, `parser.AgentDirectAPI` and `parser.AgentPrimeAgent`
+(`pi.go:108-109,129,385-389`; `internal/parser/provider.go:1318-1319,1334` routes every one of the six
+labels to `newPiProviderFactory`, whose `Parse` is `parsePiLikeSession`). Only `AgentPi` and `AgentOMP`
+were listed, so a record of one of the four other labels that carries no projection — a legacy archive row —
+landed in the record's-own-bytes state and the reader's rendered block travelled as dialogue. The round
+checked every label this build knows the same way, by walking each carried reader's render sites to the
+labels whose read path reaches them (`[Thinking]` construction sites plus the shared `content.go` helper),
+and found the same shape on four more readers: Kimi Work shares `kimi.go:374,590` with Kimi; Augure Code,
+Interpreter and TraeX share `codex.go:658-668` with Codex; Augure Desktop shares `hermes.go:319-321,517-519,1349-1351`
+with Hermes; Kilo and MiMo Code share `opencode.go:1726-1731`/`opencode_v2.go:280-286` with OpenCode.
+Eleven labels were added (`AgentOMO`, `AgentStepCode`, `AgentDirectAPI`, `AgentPrimeAgent`,
+`AgentKimiWork`, `AgentAugureCode`, `AgentInterpreter`, `AgentTraeX`, `AgentAugureDesktop`, `AgentKilo`,
+`AgentMiMoCode` — the render-only group for Kimi Work, Augure Desktop, Kilo and MiMo Code; the projecting
+group for the four pi-family labels and the three codex-family labels), the map's doc comment now names each
+shared reader's whole label set, and the label table is the closed list the next audit checks:
+
+| label | carried reader (construction site) | renders into Content | projects a dialogue | table entry |
+| --- | --- | --- | --- | --- |
+| `AgentPi`, `AgentOMP`, `AgentOMO`, `AgentStepCode`, `AgentDirectAPI`, `AgentPrimeAgent` | `pi.go:511` (one reader, six labels) | yes | yes (`pi.go:549`) | Pi, OMP listed; **OMO, StepCode, Direct API, Prime Agent added this round** |
+| `AgentKimi`, `AgentKimiWork` | `kimi.go:375,591` (Kimi Work parses through `parseKimiSessionWithFallbackModel`, `kimi_work_provider.go:62`) | yes | no | Kimi listed; **Kimi Work added** |
+| `AgentCodex`, `AgentAugureCode`, `AgentInterpreter`, `AgentTraeX` | `codex.go:660` (`codex_provider.go:125` routes all four to one parse path) | yes | yes (`codex.go:607,641,665`) | Codex listed; **Augure Code, Interpreter, TraeX added** |
+| `AgentHermes`, `AgentAugureDesktop` | `hermes.go:320,518,1350` (`hermes_provider.go:36,277-340`) | yes | no | Hermes listed; **Augure Desktop added** |
+| `AgentOpenCode`, `AgentKilo`, `AgentMiMoCode` | `opencode.go:1729`, `opencode_v2.go:285` (`opencode_provider.go` spec table) | yes | no | OpenCode listed; **Kilo, MiMo Code added** |
+| the other 28 listed labels | each reader's own site, as the map's comment names them | yes | as listed | unchanged |
+| `AgentVibe` | `vibe.go:353-371` copies `content` and `reasoning_content` independently | no | no | deliberately absent |
+| every other label the 80-label registry serves | no `[Thinking]` construction site in its read path (checked by grep over the carried readers: `cursor_ide.go`, `opencode_review.go`/`opencodereview.go`, `deepseek_harness*.go`, `codex_cloud*.go`, `gemini_apps*`, `vscode_copilot*`, `windsurf`, `kiro*`, `trae.go`, `junie`, `icodemate`, `gptme`, `kiro`, `posit*`, `qwen*`, `qoder`, `shelley`, `omnigent`, `warp`, `piebald`, `cowork`, `codebuddy`, `workbuddy`, `zed`, `aider`, `fx`, `antigravity*` and the import-only ChatGPT/Claude.ai/Gemini Apps readers, whose traces travel through their own export readers) | no | no | n/a |
+
+The pin is `TestRenderingReaderLabelsCoverEveryLabelTheirReadersServe`: it fails naming the missing label
+when any shared-reader label is dropped from the table, and it drives the `omo` label through the archive
+read of a real session whose stored projection was cleared (the legacy-row shape) — the label is the
+reader's name in the store, the read answers `ContentRendersThinking`, `dialogueOf` answers
+`dialogueUnestablished`, and the conversion counts the record (`unresolved_dialogue`) instead of
+publishing the rendering.
+
+**Finding 2 — a carried call's child-session link was dropped without a row (OpenCode, and Codex too).**
+The inherited Codex parser sets `ToolCall.SubagentSessionID` (a `spawn_agent` call's child session) and the
+reads preserve it (`internal/ccc/reader.go:816`, `archive.go:610`). Claude counts the link where its
+`tool_use` block cannot hold it (`claude_target.go:681-689` + row `:1049`) and Pi/OMP count it in the
+`toolCall` block (`pi_target.go:1099-1105` + row `:1419`); OpenCode's `toolPart` wrote the call and dropped
+the link silently, and `TargetItem` (`codex_target.go:75-86`) has no field for it, so the structural check
+could not see the difference either. OpenCode gained the row (`opencode_target.go:1102` increments
+`lossSubagentLinks`, the row at `:1625` names the part's `id`/`name`/`input`/`state` shape and says the child
+session is neither read nor converted). Codex was checked the same way and is the same gap: its reader
+derives the link from the rollout's own spawn-completion records — `event_msg` payloads of type
+`collab_agent_spawn_end` / `sub_agent_activity` carrying the call's id and the child's thread id
+(`internal/parser/codex.go:700-707,834-865`) — and the writer emits no such record, so the attribution is
+dropped silently there too; it now has the row (`codex_target.go:736` increment, row `:1035`) whose detail
+states the shape the log holds and that this conversion writes none. Writing the record would change the
+written bytes, which this disclosure-only round forbids, so the Codex gap is counted and reported here
+rather than filled; the same holds for every row this round added. The pins are
+`TestOpenCodeWriterCountsADiscardedSubagentSessionLink` (the call's part is written, the child's id is
+nowhere in the document, the count is 1, and a guard-left-out call's link is not counted) and
+`TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold` (the `function_call` holds the call, the
+child's id is nowhere in the log, count 1).
+
+**The class sweep.** Every field of the closed list, for each of the four route families. Legend for the
+table: **W** written (site), **C:cat** counted in `losses()` (category, row site), **U** consumed (site),
+**D** re-derived by the target's own read from written bytes (the reader's own derivation site; the value is
+a function of what was written, so nothing was lost), **L:cat** the pair cannot express it at all (format
+limit, site), **O** explicitly out of the target's scope (reason, site), **R** carried in the report
+(`result.source` at `continue.go:422` → `inspect.go:775`; `conversion.source_fidelity` at
+`continue.go:503`), **—** not applicable. File prefixes: `cx` = `codex_target.go`, `cl` = `claude_target.go`,
+`pi` = `pi_target.go` (OMP differs only in `omp_target.go` wiring), `oc` = `opencode_target.go`,
+`rs` = `route_shared.go`, `dp` = `dialogue_provenance.go`, `ct` = `continue.go`, `db` = `internal/db/…`,
+`p/` = `internal/parser/…`. Every cell is an answer; the rows this round added are marked **new**.
+
+| field | Codex rollout (cx) | Claude transcript (cl) | Pi/OMP session (pi) | OpenCode (oc) |
+| --- | --- | --- | --- | --- |
+| `Conversation.Source` | U (cx:254,:264,:268,:269,:417) | U (cl:152,:177,:193,:201) | U (pi:435,:459,:468,:475) | U (oc:292,:567) |
+| `Conversation.Messages` | U (the ordered walk over cx:417's decision) | U (cl:344) | U (pi:645) | U (oc:744) |
+| `Conversation.Fidelity` | U (cx:271) (+R ct:503) | U (cl:192) (+R ct:503) | U (pi:467) (+R ct:503) | U +R ct:503; the rows read it at oc:1781,:1787,:1793 |
+| `SourceIdentity.Provider` | U (cx:417 via rs:512); L `provider_and_model` ct:1460 | U (cl:193,:201); L `model_provider_binding` cl:1174 | U (pi:468,:475); L `model_provider_binding` pi:1586 | U (oc:567); L `provider_and_model` oc:1331 |
+| `SourceIdentity.Agent` | O/R: the log's own `originator`/`source` are harness literals (cx:382,:384); the source's identity is reported | O/R (fresh identity, cl:164-171) | O/R (fresh identity, pi:438-446) | O/R (fresh identity, oc:297-303) |
+| `SourceIdentity.SessionID` | R + fresh by design (cx:224-247) | R + fresh (cl:164-171) | R + fresh (pi:438-446) | R + fresh (oc:297-303) |
+| `SourceIdentity.RawSessionID` | R | R | R | R |
+| `SourceIdentity.SourcePath` | R (the pipeline's boundary names it, ct:1317) | R | R | R |
+| `SourceIdentity.DisplayPath` | R | R | R | R |
+| `SourceIdentity.Project` | R | R (the target's project is re-derived from Cwd, cl:206) | R (the filing directory is spelled from Cwd, pi:482,:510) | R |
+| `SourceIdentity.Cwd` | W (session_meta cx:381, turn_context cx:642) + U (cx:264) | W (cl:509,:549,:630,:698) + U (cl:152) | W (header pi:628, session pi:482) + U (pi:459) | W (info.location.directory oc:526, session oc:1238) + U (oc:292) |
+| `SourceIdentity.GitBranch` | W (session_meta.git, cx:391) + U (cx:268) | L `session_metadata_record` cl:1162-1167 | L `session_metadata_record` pi:1576-1583 | R (no member) |
+| `SourceIdentity.GitRemote` | W (cx:391) + U (cx:269) | L cl:1162-1167 | L pi:1576-1583 | R |
+| `SourceIdentity.Machine` | R | R (the limit's class clause, cl:1162-1167) | R/L pi:1576-1583 | R |
+| `SourceIdentity.SessionKind` | R | L cl:1162-1167 (the clause names a "source kind") | L pi:1576-1583 | R |
+| `SourceIdentity.Entrypoint` | R | L cl:1162-1167 (the clause names an originator) | L pi:1576-1583 | R |
+| `SourceIdentity.ParentSessionID` | R: the target holds no session the lineage could name | R | R | R |
+| `SourceIdentity.RelationshipType` | R | R | R | R |
+| `SourceIdentity.SourceVersion` | R (the log's `cli_version` is the target's, cx:383) | L/R | L/R | R |
+| `SourceIdentity.Fingerprint` | R | R | R | R |
+| `SourceIdentity.FileSize` | R (the pipeline's boundary, ct:1031) | R | R | R |
+| `SourceIdentity.FileModified` | W/U (the session_meta timestamp and the file name/dir, cx:254,:380) | R | R | R |
+| `Message.Ordinal` | D: the written order is the document's (the call-id key is the walk index, cx:711, never the ordinal) | D: the record order (cl:344) | D: the entry order (pi:645) | D: the array order (oc:744) |
+| `Message.Role` | W/U/C (`tool_role_messages` cx:922, `unclassified_role_messages` cx:931, `system_records` cx:913) | W/U/C (cl:924,:932,:916) | W/U/C (pi:1274,:1294,:1266) | W/U/C (the `type` member; oc:1437,:1456,:1428) |
+| `Message.Content` | W/U/C (the dialogue rows + `empty_user_messages`, `non_dialogue_content`, `whitespace_only_dialogue`) | W/U/C | W/U/C | W/U/C |
+| `Message.Dialogue` | U (dp:264-269); W where established | U dp; W (cl:471,:473) | U dp; W (pi:829,:861) | U dp; W (oc:871,:948) |
+| `Message.DialogueProjected` | U (dp:265) | U | U | U |
+| `Message.ContentRendersThinking` | U (dp:274) + C (the dialogue rows) | U + C | U + C | U + C |
+| `Message.Thinking` | C `reasoning_text` cx:898 (the log holds no plaintext-trace shape) | C cl:901 (same) | C `reasoning_text` pi:1236 + `non_assistant_reasoning` pi:1247; W (the `thinking` block, pi:843) | C `reasoning_text` oc:1398 + `non_assistant_reasoning` oc:1409; W (the `reasoning` part, oc:905) |
+| `Message.Timestamp` | W/U + C `substituted_record_instants` cx:1085 (rs:75) | W/U + C cl:1097 | W/U + C pi:1462 | W/U + C `substituted_record_instants` oc:1668 / `assistant_completion_instant` oc:1744 |
+| `Message.Model` | L `provider_and_model` ct:1460 (and C `provider_binding` cx:1097) | C `message_model_attribution` cl:1109 (the record has no model member) | W (pi:901-907) + C pi:1474 | W (the `model` member, oc:1183) + C oc:1689 |
+| `Message.ToolCalls` | W/U/C | W/U/C | W/U/C | W/U/C |
+| `Message.ToolResults` | W/U/C | W/U/C | W/U/C | W/U/C |
+| `Message.IsSystem` | U + C `system_records` cx:913 | U + C cl:916 | U + C pi:1266 | U + C oc:1428 |
+| `Message.IsSidechain` | U + C `sidechain_messages` cx:905 | U + C cl:908 | U + C pi:1257 | U + C oc:1419 |
+| `Message.IsCompactBoundary` | W + U + C `pre_compaction_history` cx:1134 | W + C cl:1121 | W + C pi:1486 | W + C oc:1773 |
+| `Message.SourceUUID` | U (rs:495,:522,:548) + C `inactive_branch_records` cx:1106 | U + W (the relation is written as `parentUuid`) + C | U (rs:296-302,:417-437) | U (rs:495,:522,:548,:624) + C oc:1755 |
+| `Message.SourceParentUUID` | U (rs:545,:548) + C `unresolved_source_parents` cx:1118 | U + W (as `parentUuid`) + C cl:1115 | U + C pi:1480 | U + C oc:1767 |
+| `ToolCall.ToolUseID` | W (cx:743) + U + C `generated_call_ids` cx:1028 | W + U + C cl:1036 | W + U + C pi:1403 | W + U + C oc:1607 |
+| `ToolCall.Name` | W (cx:743) + U + C `tool_name_vocabulary` cx:1091 | W + U + C cl:1103 | W + U + C pi:1468 | W + U + C oc:1683 |
+| `ToolCall.Category` | D: `NormalizeToolCategory(name)` p/codex.go:897 | D: p/content.go:90 (the block parse) | D: p/pi.go:526 | D: p/opencode.go:1855 |
+| `ToolCall.InputJSON` | W (cx:744) + C `empty_tool_inputs` cx:1021 | W (compacted) + C cl:1028 | W (pi:1092-1107) + C pi:1395 | W (`state.input`) + C oc:1599 |
+| `ToolCall.FilePath` | D: a projection of the written input by this build's own rule (p/content.go:434-443); the per-file projections of one patch call carry it per projection | D: same rule, and the per-file attribution of a repeated projection is the subject of `coalesced_tool_call_projections` cl:1043 | D: same rule (pi:1410) | D: same rule (oc:1615) |
+| `ToolCall.SkillName` | D: `inferCodexSkillNameWithBase` p/codex.go:900, from the written name+input+cwd | D: p/content.go:91-100, from the written input | D: `inferPiSkillName` p/pi.go:528; the cwd is written (pi:628) | D: `inferOpenCodeSkillName` p/opencode.go:1857 |
+| `ToolCall.SubagentSessionID` | **C `subagent_session_links` (new)** cx:736/:1035 | C cl:691/:1049 | C pi:1105/:1419 | **C `subagent_session_links` (new)** oc:1102/:1625 |
+| `ToolCall.ResultContent` | W (the archive's derived summary, only where the call has no recorded result, cx:599-621) + U | W + U (the derived-summary block, cl:606-617) | W + U (the derived-summary block, pi:1048) | W + U (the derived-summary block, oc:684) |
+| `ToolCall.ResultContentSize` | U (the summary's existence gate, cx:599) | U | U | U |
+| `ToolResult.ToolUseID` | W + U + C (`generated_call_ids` cx:1028 / `unpaired_tool_results` cx:971) | W + U + C | W + U + C | W + U + C |
+| `ToolResult.Status` | W where truthful (`error`) + C `tool_result_outcomes` cx:1013 | W (`is_error`) + C `tool_result_statuses` cl:1022 | W (`isError`) + C pi:1387 | W (`error` state) + C oc:1587 |
+| `ToolResult.Source` | **C `tool_result_sources` (new)** cx:837/:1049 | **C `tool_result_sources` (new)** cl:774/:1062 | **C `tool_result_sources` (new)** pi:1166/:1427 | **C `tool_result_sources` (new)** oc:1090/:1568 |
+| `ToolResult.Timestamp` | **C `result_completion_fallbacks` + `result_record_instants` (new)** cx:828,:830/:1060,:1072 (the envelope is stamped with the containing record's instant, cx:839-840) | **C (new)** cl:765,:767/:1073,:1085 (the block has no instant member; the record states the containing message's) | **C (new)** pi:1157,:1159/:1438,:1450 (the entry's own `timestamp` is stamped with the containing record's) | W: the part states `ToolResult.Timestamp` (oc:1146 via `openCodeClock.span`); C `result_completion_fallbacks` oc:1638 (oc:1105) + `result_completion_adjustments` oc:1654 (oc:1139) |
+| `ToolResult.ContentRaw` | W + U (`resultText` cx:1260) + C (empty/whitespace/blocks/unresolved) | W + U + C | W + U + C | W + U + C |
+| `ToolResult.ContentSize` | D: the readers set `ContentLength` to the length of the content they read (p/content.go:134, p/codex.go:469,609,643, p/pi.go:728, p/opencode.go:1746); the archive stores the post-redaction length | D | D | D |
+| `ToolResult.ContentDecoded` | U: chooses raw-vs-decoded (cx:1260) | U | U | U |
+| `ToolResult.PersistedOutputUnresolved` | C `unresolved_tool_outputs` cx:1005 | C cl:1014 | C pi:1364 | C oc:1579 |
+| `Fidelity.MalformedLines` | C `malformed_source_lines` cx:1140 | C cl:1137 | C pi:1501 | C oc:1779 |
+| `Fidelity.Truncated` | U (named inside the malformed-lines detail, cx:1195-1202) + R | U + R | U + R | U + R |
+| `Fidelity.SourceVersion` | R | L/R | L/R | R |
+| `Fidelity.TranscriptFidelity` | C `summary_transcript` cx:1146 | C cl:1143 | C pi:1507 | C oc:1785 |
+| `Fidelity.NeedsRetry` | C `source_needs_retry` cx:1152 | C cl:1149 | C pi:1513 | C oc:1791 |
+| `Fidelity.RetryReason` | U (in the row's detail) | U | U | U |
+| `Fidelity.UnresolvedToolOutputs` | C per result (`unresolved_tool_outputs` cx:1005); the aggregate is the per-result flag's own sum | same + R | same + R | same + R |
+| `Fidelity.ReadFrom` | R (ct:266,:499) | R | R | R |
+| `Fidelity.ContentShown` | R (ct:503) | R | R | R |
+
+Every other cell is written, counted, consumed, derived, covered by a limit or reported — no cell was left
+unanswered, and the cells that were neither written nor counted are the rows this round added:
+
+| route | new category | row site | increment site | what it counts |
+| --- | --- | --- | --- | --- |
+| Codex | `subagent_session_links` | cx:1035 | cx:736 | a written call whose recorded child-session id the log holds no record for |
+| Codex | `tool_result_sources` | cx:1049 | cx:837 | a written result whose recorded channel label has no member |
+| Codex | `result_completion_fallbacks` | cx:1060 | cx:828 | a written result the read answered no instant for (the containing record's instant stands in) |
+| Codex | `result_record_instants` | cx:1072 | cx:830 | a written result whose own recorded instant is not what the envelope states |
+| Claude | `tool_result_sources` | cl:1062 | cl:774 | as above |
+| Claude | `result_completion_fallbacks` | cl:1073 | cl:765 | as above |
+| Claude | `result_record_instants` | cl:1085 | cl:767 | as above |
+| Pi/OMP | `tool_result_sources` | pi:1427 | pi:1166 | as above |
+| Pi/OMP | `result_completion_fallbacks` | pi:1438 | pi:1157 | as above |
+| Pi/OMP | `result_record_instants` | pi:1450 | pi:1159 | as above |
+| OpenCode | `subagent_session_links` | oc:1625 | oc:1102 | a written call whose recorded child-session id the part's shape has no member for |
+| OpenCode | `tool_result_sources` | oc:1568 | oc:1090 | as above |
+
+The committed fixtures make both new content rows observable: converting the committed Codex fixture (whose
+shell call is recorded at `09:15:05` and whose output at `09:15:06`) through Codex/Claude/Pi/OMP now reports
+`result_record_instants = 1` where the output's own instant used to be restamped silently, and every route
+now reports `tool_result_sources = 1` for the fixture result whose stored channel label has no target
+member. The OpenCode route already wrote the result's own instant (`result_completion_fallbacks` /
+`result_completion_adjustments` cover its two reads) and its lines are unchanged.
+
+**What did not move.** The disclosure-only rule held: the fix is counters, rows, one map and one test. The
+before/after probe of the round before, re-run on the same four documents (the reviewer's out-of-order
+shape, an ordered control, and both committed fixtures) through all five routes, with the minted identities
+normalized (session ids, record uuids, Claude message ids and Pi entry ids) and each tree run twice to show
+the normalization is stable:
+
+```console
+$ diff <(grep '^PROBE-BYTES\|^PROBE-ITEM' before.txt) <(grep '^PROBE-BYTES\|^PROBE-ITEM' after.txt)   # silent
+$ diff <(grep '^PROBE-LOSS' before.txt) <(grep '^PROBE-LOSS' after.txt)
+< PROBE-LOSS codex/fixture-claude: [malformed_source_lines=1 pre_compaction_history=3 tool_name_vocabulary=1 unresolved_source_parents=1]
+…
+> PROBE-LOSS codex/fixture-claude: [malformed_source_lines=1 pre_compaction_history=3 tool_name_vocabulary=1 tool_result_sources=1 unresolved_source_parents=1]
+> PROBE-LOSS codex/fixture-codex: [pre_compaction_history=2 result_record_instants=1 tool_name_vocabulary=1 tool_result_sources=1]
+…
+```
+
+The first diff is silent: the same 20 byte digests and the same item lines for every route × document pair.
+The second shows only the new disclosures (`tool_result_sources=1` on all five routes for both fixtures;
+`result_record_instants=1` on Codex/Claude/Pi/OMP for the Codex fixture) — no other row's count moved, and
+the out-of-order and ordered shapes gained no row (their results carry no recorded channel label and their
+instants are the documents' own). The probe ran in a throw-away worktree pair (`/tmp/cccfix-r3-before`,
+HEAD's tree plus the probe; the working tree, plus the probe), each twice; the probe file was removed
+afterwards.
+
+**The pins, and that they are not vacuous.** Twelve rows, six pins, one per route plus the label table:
+
+| what the case pins | the mutation | the failure it produced |
+| --- | --- | --- |
+| every label a shared rendering reader serves is in the table, and an archive row of the `omo` label answers the rendering | `dialogue_provenance.go`: `parser.AgentOMO` dropped from the map | `dialogue_provenance_test.go:900: the Pi reader (pi.go:509-549) serves the label "omo" and no table entry answers for it` and `:990: the archive read did not name the record's rendering reader from the stored label` |
+| OpenCode counts a written call's dropped child-session link and its result's channel label | `opencode_target.go`: `c.lossSubagentLinks++` and `c.lossResultSources++` disabled | `opencode_target_test.go:1111: subagent_session_links = 0, want 1`; `:1133: tool_result_sources = 0, want 1` |
+| Codex counts the link its log holds no record for | `codex_target.go`: `b.lossSubagentLinks++` disabled | `codex_target_test.go:1587: subagent_session_links = {…Count:0…}, want the one written call's link counted as omitted` |
+| Codex counts the two result-instant reads and the channel label | `codex_target.go`: the three `++` sites disabled | `codex_target_test.go:1649: result_record_instants … Count:0`; `:1657: result_completion_fallbacks … Count:0`; `:1662: tool_result_sources … Count:0` |
+| Claude counts them | `claude_target.go`: the three `++` sites disabled | `claude_target_test.go:840 / :848 / :853` the same three counts 0 |
+| Pi/OMP counts them | `pi_target.go`: the three `++` sites disabled | `pi_target_test.go:1181 / :1189 / :1194` the same three counts 0 |
+
+The mutations were made in a throw-away copy of this round's code (`/tmp/cccfix-r3-mut2`, deleted
+afterwards; its only differences are those twelve statements) and each pin failed under
+`go test -count=1 -tags fts5 -run '<the case>' ./internal/ccc/`. A later increment that *writes* the Codex
+spawn-completion record or a result's own instant must move the corresponding count's detail and its
+native measurement with it — the rows say what the file holds, and this round did not change what it holds.
+
+**Counts refreshed.** The OpenCode report now names 45 rows (measured on a throw-away counter case:
+`openCode loss rows = 45`; Codex 31, Claude 33, Pi 36 — the same case), the narrowed suites' test functions
+count 409 (`^func Test` over the test files `git ls-files` names under `cmd/ccc` and `internal/ccc`; 403 at
+`3771fdd` — six cases added, none deleted, merged, weakened or renamed), and `docs/evidence/0007-citations.tsv`
+holds 37 rows (30 + R13–R19; the gate's `citations` line below). §5's category total and the plan's §2.3
+category rows gained the new categories; the previous rounds' sections are not rewritten.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.681s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The required lines, verbatim with their own return codes:
+`selftest` printed `  PASS     selftest Ran 384 tests in 8.681s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified`
+(0002 unchanged at 36 rows; 0007 at 37 — R13–R19 are this round's, verified with the rest, and no row's test
+was renamed). Every step passed and the run exited 0; the `parity` line is the gate's own rendering (its
+first segment is the gate's own truncation). `AGENTS.md` is a declared deviation, so this round's edit to it
+is expected by that step, as the runs before it were. A later run on the final tree, after this section
+was written, reprinted every step line and every count byte for byte, differing only in the `selftest`
+line's duration (`Ran 384 tests in 8.653s (rc=0)`), and exited 0.
+
+## 5. What travels, source side and target side
+
+| Source evidence | Target side, and the run that recorded it |
+| --- | --- |
+| a Claude Code conversation with a tool call, its result and a compaction boundary (the fixture's own bytes record no persisted reasoning trace, so no run in §1–§2 imports one: §6 names that boundary) | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
+| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 45 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, the round-17 fix added `non_assistant_reasoning`, the PR #9 machine review's second finding added `result_completion_adjustments`, and its round-2 review added `substituted_record_instants`, and its round-3 review and the class sweep added `subagent_session_links`, `tool_result_sources`, `result_completion_fallbacks` and `result_record_instants`, §4) |
+| the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
+| the tool call with its recorded arguments and result text | `toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'` in the harness's own document (§4's fourth round) — the same call id and name the source recorded, with its recorded arguments and the result's own text, compared part by part with the **source fixture's own bytes**, so a store holding different arguments or different output fails the check instead of passing on its identity |
+| a tool part's pair of instants | the part's `created` is the call's record's instant and its `completed` the **result's own record's** instant — the committed Codex fixture records its shell call at `09:15:05` and its output at `09:15:06`, so the part states that one-second span (§4's twelfth round) — carried per result through `ToolResult.Timestamp`; a read holding no instant of the result's own record (a provider event without a timestamp, the archive's derived summary on the call's row) falls back to the containing record's instant and is counted (`result_completion_fallbacks`) rather than presented as recorded; where the instant the read holds for the result precedes the part's own `created` (an out-of-order source, whose result record stands before the record that carried the call), `completed` is raised to the call's own recorded start and the part is counted (`result_completion_adjustments`), so a raised instant is never presented as the result's recorded completion either; and where the *message's own* recorded instant precedes the instant already written, the message is written at that instant and counted (`substituted_record_instants`, the round-2 review's finding, §4), the part's `created` being that substituted instant — so a recorded call→result span shortened by the substitution is disclosed rather than left to read as the call's recorded start, on this route and on the Codex, Claude, Pi and OMP writers that share the clock |
+| the compaction boundary | `{"type": "compaction", … "status": "completed", "reason": "auto", "summary": "Summary: the retry policy caps attempts at four…` (§2) — the source's own summary, with the harness's own `reason` vocabulary (`auto`) disclosed as `compaction_reason` |
+| the model binding a resumed turn runs under | the **target home's** own configured pair, asked of the harness's own `debug agents` listing — `tencent-litellm/deepseek-v4.1-flash-fast` (§2), written as the document's `info.model` and named by `target_model_binding` (§1) — never the source's model |
+| the directory a session is filed under | the session's recorded working directory, and the harness's own lookup resolves the session from it: `['ses_7utczOHDIjpwHab8vubyl0UDVt']` listed from that directory and not from another (§2), which is why the printed line changes into it |
+| the converted history as the **answer** of a real turn in the installed session | the recorded turn's answer holds the words the run asked for — `NATIVE-TURN-OK` (§2) |
+| a real turn run by the route's own resume check through the CLI | the run printed its own turn's words, `CLI-RESUME-OK` (§1), and the harness's own reader read 7 message(s) before the turn and 10 after (`native resume: verified`, §1) |
+| the source file during and after the run | `source file:  unchanged (sha256 fc21f865…, taken before and after the conversion)` (§1) and `PASS: the source fixture tree is unchanged — 1 file(s) digested before and after` (§2) |
+| a session the target store already held | untouched: planted through the harness's own importer and `PASS: the planted unrelated session is unchanged — exit 0; its document is byte-identical before and after` (§2), then removed through the harness's own `session delete` and shown gone |
+| the invocation a caller resumes with | the round's re-measured run: `cd …/workspace && OPENCODE_DB=…/opencode/opencode.db XDG_DATA_HOME=… opencode run --standalone --session … -- ''` (the review round below), read back as a POSIX shell line along with the exec form; §1's earlier line (`cd /tmp/ocx/ws && XDG_DATA_HOME=/tmp/ocx/data10 …`) is that run's own bytes, before the store's database was pinned beside the root |
+| the accepted OMP route after the shared change | `RESULT: PASS — 25 check(s), none failed` with a real turn (§3); re-run after the sixth round's shared change, offline: `RESULT: PASS — 23 check(s), none failed` (§4) |
+| the accepted Pi route after the same shared change | re-run offline, `RESULT: PASS — 21 check(s), none failed` (§4) |
+| the invocation a caller resumes with, spelled by the caller as a path | the sixth round's run drove every stage — the export, the listing and one real turn — through a relative spelling the check resolved once to the absolute word it names, ending 35 check(s) with none failed and that turn's own answer recorded under the marker as `NATIVE-TURN-OK` (§4); the same spelling crashed the pre-fix run before its verdict and left the planted session in the caller-named home (§4) |
+| the accepted Claude Code → Codex route after the shared change | its offline half passes in full (§3); its real turn failed on this host with the harness's own `failed to connect to Responses WebSocket`, named there rather than hidden |
+
+The row that rests on the target model's own words is the `NATIVE-TURN-OK` one: it is the block the
+harness printed under `the turn's own output (the target's answer, as the harness printed it):`, quoted
+verbatim in §2, and the case that keeps a record from quoting an answer it did not make reads exactly that
+block (`scripts/tests/test_evidence_claims.py`, which this record is registered with).
+
+## 6. Limits, and what this record does not claim
+
+- **The installation needs the harness.** This target's install is the harness's own importer, so a host
+  without OpenCode cannot install a converted session at all — the route reports that boundary
+  (`… is not on PATH, and this target's installation is the harness's own importer: …`) rather than writing
+  the store itself, and the native check reports `INCOMPLETE` with exit 2.
+- **A turn was measured on this host, not on a model's best behaviour.** The two real turns recorded here
+  (`NATIVE-TURN-OK`, `CLI-RESUME-OK`) answered the prompts they were given; the record claims that the
+  harness answered *from the installed session* (the session grew through the harness's own reader) and not
+  that any particular model answered well.
+- **The store's own bytes are not claimed to be unchanged by a read.** `session export` is content-neutral
+  in the session's *records* (measured), while the database file's bytes move with its WAL handling; the
+  record says which of the two it measured.
+- **The user count of a read-back includes the compaction row.** The inherited reader reads a compaction row as
+  a system record under the user role, so a read-back of a 7-message document reports
+  `user_messages: 3`; the boundary count names the same row, and the comparison itself is itemwise.
+- **The 45 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
+  category whose count is zero is still named (that is what makes a missing category a defect), and each
+  non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were
+  made; the first review round added `coalesced_tool_call_projections`, the second added
+  `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round the two
+  dialogue rows, the round-17 fix `non_assistant_reasoning`, the PR #9 machine review's second finding
+  `result_completion_adjustments`, and its round-2 review `substituted_record_instants`.)
+- **§1–§3 quote the runs they name, at the tree they ran on.** Their transcripts are those runs' own bytes:
+  the printed resume line in them names the data root alone, because the store's database was pinned beside
+  it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step
+  set; §4's re-measured runs are the current build's own (the fourth round's: the same 31 offline, 35 with a
+  turn, on the step set the second round measured).
+- **This record's older gate transcripts quote the `parity` line as a display showed it.** The gate blocks
+  in §4 (the increment's own run, and every review round up to the eighth) copied that line from a
+  768-character display cut: each keeps the run's leading `… | ` and ends with a `…` the round added, and
+  the fifth round's quote elided the line's middle with a `…` it named below its block. They are the
+  record's own excerpts, not each run's rendering end to end — the bytes each run printed after the cut are
+  not observable from here any more, so they are not reconstructed — and the record does not otherwise
+  claim them as whole. The two whole renderings it holds are §4's first gate run and the ninth round's, both
+  816-character bodies (the checker's 800 kept characters plus the separator each kept line feed adds)
+  ending at the stored-bytes file the checker names.
+- **No native run on this route imports a persisted reasoning trace.** The §5 row that rests on §§1–§2
+  converts the committed Claude fixture `9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10`, whose own bytes record
+  user and assistant turns, one tool call with its result, a compaction boundary and a torn trailing line —
+  and no `thinking` block, so the reader answers no reasoning for any of its records. That row
+  claimed "recorded reasoning" until the thirteenth review round read the fixture; it now says what the
+  fixture holds. An executed reasoning-bearing native case is not simply citable here: the check's own
+  independent side compares the source fixture's bytes for the user texts, the tool evidence and the
+  compactions (`source_tool_evidence`, `document_texts`, `document_compactions`) and has no reasoning
+  comparison, so a run over a reasoning-bearing source would compare the trace against the conversion's own
+  document — the self-agreement the seventh round's finding named — rather than against the source's
+  recorded block. The reasoning limbs of this route are the offline arms (§4's rounds: the ZCode mixed
+  rendering, the RooCode reasoning-only record, the literal block, the newline-delimited pair, the
+  unmatched opener), which read the source through `NewSourceReader` and assert what the writer holds.
+- **Not measured here:** a `--to opencode` conversion on a source whose recorded directory does not exist
+  (refused by the harness, and reported as the failure it is), a Windows host, and the real pilot-time
+  behaviour of a converted session inside OpenCode's TUI (this increment verifies the loader, the reader,
+  the listing and one real turn, not the TUI's own rendering).

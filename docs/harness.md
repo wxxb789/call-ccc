@@ -501,10 +501,84 @@ says so.
   script builds `ccc` into `bin/ccc-native-check-omp` (`.gitignore` covers `bin/`), takes the same
   `--resume-prompt`/`--expect`/`--keep`/`--json` flags as its siblings, and prints the turn's own answer
   under `TURN_OUTPUT_MARKER`.
+- `scripts/opencode-native-check.py` — the target-side native verification for goal 0007, and
+  **deliberately not a gate step** for the same reason the others are not: it needs the OpenCode binary
+  installed (this route's installation *is* that harness's own importer, so a host without it has no
+  offline half to verify at all — the run ends as `RESULT: INCOMPLETE`, exit 2, before any check) and, for
+  a real turn, model access. It takes a **copy** of the committed Claude fixture with only its recorded
+  working directory rewritten mechanically to a directory the run owns — measured: the harness's importer
+  refuses a session whose `location.directory` does not exist (`LocationNotFoundError`) — plants an
+  unrelated session **through the harness's own importer**, reads that session's document back around the
+  run, converts through the CLI (`--json`) and reads the report's three states rather than trusting them,
+  and then asks the harness itself: `session export <id>` for the installed session (its own document,
+  compared with the source's first prompt, its compaction boundary and the tool call with the arguments
+  and result text the **source fixture's own bytes** record — read independently of the conversion's
+  report and items, so a writer that mangled either member cannot pass by agreeing with itself),
+  the same command for an id nothing installed as the control arm (it must refuse, naming the id),
+  `session list --format json` from the session's own recorded directory (it must name the session) and
+  from another (it must not), and `session delete` to remove the planted session — the run records that
+  removal and that the id no longer resolves, because the store can only be written by the harness. The
+  planting itself is reconciled the way the route reconciles its own import, and a caller-named home is
+  read before anything is written into it: the id this run plants is first asked of the harness's own
+  reader, and a session the store already holds is removed only where that store's own document **is** the
+  check's own fixture — compared member for member, with only the two members the harness's own importer
+  rewrites normalized away (`info.projectID`, recomputed from the session's recorded directory, and
+  `info.time.updated`, the import's own instant; measured on 2.2.5) — which nothing else writes. A session
+  holding anything else is left exactly as found and the run stops, recording the refusal: a caller's own
+  session, and equally a leftover a caller has since continued, holds records the check never wrote
+  (measured: the pre-fix recognition — the id, the directory and any message text — authorised deleting a
+  continued leftover's whole history, while the fixed one leaves the session resolving with its caller's
+  turn and reports the refusal). An import whose process failed or overran its deadline after committing is a
+  publication, read in the route's own order (the harness's own `Imported session: <id>` line, kept even
+  when the command overran its deadline, then the harness's own reader, whose answered document means the
+  store holds it) and removed again by the same cleanup — so the check cannot leave its own fixture behind
+  in a store where its fixed id would make every later run's planting meet `Session already exists`
+  (measured: the pre-fix check ended `RESULT: FAIL` on such a store and left the fixture, while the fixed
+  one removes it, plants, converts and ends `RESULT: PASS`). An acknowledgment the reader does not confirm,
+  and a store that answers nothing, are recorded as unresolved rather than as either outcome. The
+  conversion is verified at the **load** level even when a turn is requested, and a requested turn is run
+  by this check itself — one `--resume-prompt` is one real turn, not two. The turn is the report's own
+  **exec-form argument vector** (`exec_resume_arguments`), read against what the check knows on its own
+  (the harness this run probed, this conversion's session, the `--standalone` flag immediately after its
+  subcommand: a flag left on the managed service's side of the `--` terminator answers from a store this
+  run did not grow, measured) before it runs: the prompt substituted for the vector's placeholder, from
+  the report's working directory and under the report's `resume_environment` (the data root and the
+  store's own database file pinned beside it -- a shell line can set a variable but cannot remove an
+  inherited `OPENCODE_DB`, and the pin is what makes the pasted command read this run's store). A vector
+  that only agreed with the report's own words is recorded as a failure and nothing is run. The harness's
+  own answer is printed under `TURN_OUTPUT_MARKER`, and the growth is measured through the harness's own
+  reader (before/after `session export`: a turn appends its own records, 3 per turn measured). Every
+  command the check runs goes through one deadlined runner: an overrun is recorded as a failed check of
+  its own and answered as a failed exit status, so a hung harness cannot skip the planted session's
+  removal or the run's final `RESULT` line. A named
+  `--target-home` whose own name is `opencode` is read through the harness's own rule first (it is the
+  data directory itself, and its parent becomes the root), and the conversion is handed the caller's own
+  spelling so each side applies that rule once — so the conversion and the check are pointed at one store
+  for every spelling, where handing the conversion this check's normalized root would have the route
+  normalize a second time and split the two. The harness word is **resolved once, before any command
+  runs**: a `--opencode` spelling that names a path is made absolute by the host's own rule — against the
+  directory this check runs in, and on Windows against the *current drive*, because a rooted word with no
+  drive is not absolute there (`os.path.isabs` answers False for exactly that shape since Python 3.13; the
+  `windows-latest` job measured the mismatch when a report's own vector was spelled with such a literal
+  and this check resolved it). It is resolved because `shutil.which` answers such a spelling unchanged,
+  and the export, its unknown-id control arm, the listing and the turn run *from the session's own
+  directory* — where a relative spelling raised
+  `FileNotFoundError` out of the run, before its cleanup and its `RESULT` line, leaving the planted session
+  in a caller-named home (measured). The conversion's own CLI resolves the same word against its own
+  directory, and a spelling that means different programs in the two is refused by the report's vector
+  reading, which names both words. The script builds `ccc` into
+  `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),
+  takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`, and prints
+  each check's own state.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
-  subprocess runner (`run`), the POSIX-shell reading of a rendered command (`shell_words`,
-  `unquoted_text` and the character set a shell acts on), the JSONL record-shape test the checks report
+  subprocess runner (`run`, which a check can hand a command's *whole* environment instead of an overlay
+  of this process's, so a name the check's own dictionary removed cannot be restored underneath it), the
+  POSIX-shell reading of a rendered command (`shell_words`,
+  `unquoted_text` and the character set a shell acts on, with `spelled_as_invocation` requiring **every**
+  name the line's own word vector carries to stand unquoted as `NAME=` — a quoted assignment is the program
+  to a shell, so a line whose *second* assignment is quoted sets no variable there even though its words
+  read back as the invocation), the JSONL record-shape test the checks report
   through (a line may be blank or one JSON **object**; anything else — unparseable, or a value that is not
   an object — is that check's FAIL with the line's number), the two strings the record's own rules
   read (`TURN_OUTPUT_MARKER`, `PROMPT_PLACEHOLDER`), the fixture-copy mechanism (`rewrite_source_cwd`:

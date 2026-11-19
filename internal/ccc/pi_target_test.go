@@ -1096,14 +1096,20 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 		DispositionCarriedWithCaveat: true,
 	}
 	wanted := []string{
-		"reasoning_text", "sidechain_messages", "system_records", "tool_role_messages",
+		"reasoning_text", "non_assistant_reasoning", "sidechain_messages", "system_records",
+		"tool_role_messages",
 		"synthesized_tool_call_messages",
 		"unclassified_role_messages", "empty_user_messages", "empty_assistant_messages",
-		"non_dialogue_content", "whitespace_only_dialogue", "unpaired_tool_results",
+		"non_dialogue_content", "whitespace_only_dialogue", "unresolved_dialogue",
+		"unprojected_dialogue", "unpaired_tool_results",
 		"empty_tool_results", "whitespace_only_tool_results", "unrepresentable_result_blocks",
 		"unresolved_tool_outputs", "unrecorded_token_usage", "tool_result_statuses",
 		"empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
-		"subagent_session_links", "tool_name_vocabulary", "message_model_attribution",
+		"subagent_session_links",
+		"tool_result_sources",
+		"result_completion_fallbacks", "result_record_instants",
+		"substituted_record_instants", "tool_name_vocabulary",
+		"message_model_attribution",
 		"pre_compaction_history", "empty_compaction_summary", "malformed_source_lines",
 		"summary_transcript", "source_needs_retry", "unresolved_source_parents",
 	}
@@ -1128,6 +1134,79 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 			t.Errorf("the report carries category %q, which this case does not list: add it here so a "+
 				"category added to the writer cannot pass silently", loss.Category)
 		}
+	}
+}
+
+// TestPiSessionCountsTheResultRecordInstantsItDoesNotWrite pins the disclosure for the instant a carried
+// result was recorded on. ToolResult.Timestamp answers the instant of the result's own record -- a result
+// event's own envelope instant, which may be later than the record that carried its call -- and a Pi
+// toolResult message entry carries a `timestamp` member, but this conversion stamps it with the instant
+// of the containing message: the read's own answer for the result is not what the file holds. The two
+// reads are counted apart -- the read answered an instant and the containing record's is written instead
+// (result_record_instants, omitted), or the read answered none and the containing record's instant
+// stands in (result_completion_fallbacks, carried-with-caveat) -- and a result whose own recorded instant
+// is the containing message's is counted in neither, because the file states the read's answer.
+func TestPiSessionCountsTheResultRecordInstantsItDoesNotWrite(t *testing.T) {
+	at := time.Date(2026, 5, 5, 9, 15, 5, 0, time.UTC)
+	late := at.Add(time.Second)
+	conversation := Conversation{
+		Source: SourceIdentity{Provider: "claude", SessionID: "source-session", Cwd: "/work/project"},
+		Messages: []Message{
+			{Ordinal: 0, Role: string(parser.RoleUser), Content: "run it", Dialogue: "run it",
+				DialogueProjected: true, Timestamp: at},
+			{Ordinal: 1, Role: string(parser.RoleAssistant), Content: "calling", Dialogue: "calling",
+				DialogueProjected: true, Timestamp: at,
+				ToolCalls: []ToolCall{
+					{ToolUseID: "call_late", Name: "shell", InputJSON: `{"command":"ls"}`},
+					{ToolUseID: "call_none", Name: "shell", InputJSON: `{"command":"pwd"}`},
+					{ToolUseID: "call_same", Name: "shell", InputJSON: `{"command":"date"}`},
+				}},
+			{Ordinal: 2, Role: string(parser.RoleUser), Timestamp: late, ToolResults: []ToolResult{
+				// The read answered this result's own record instant, and it is not the instant of the
+				// record that carried the result; the read also named the native record that carried the
+				// text (a wait call's own output event), which the entry has no member for.
+				{ToolUseID: "call_late", ContentRaw: "late output", ContentDecoded: true, Timestamp: at,
+					Source: "wait_output"},
+				{ToolUseID: "call_none", ContentRaw: "no instant", ContentDecoded: true},
+				{ToolUseID: "call_same", ContentRaw: "own record", ContentDecoded: true, Timestamp: late},
+			}},
+		},
+	}
+	session, err := ConvertToPiSession(conversation, PiTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	omitted := lossCount(t, session.Losses, "result_record_instants")
+	if omitted.Count != 1 || omitted.Disposition != DispositionOmitted {
+		t.Errorf("result_record_instants = %+v, want the one written result whose own instant the file "+
+			"does not state", omitted)
+	}
+	if !strings.Contains(omitted.Detail, "result's own recorded instant") {
+		t.Errorf("the category's reason does not name the value it counts: %q", omitted.Detail)
+	}
+	fallbacks := lossCount(t, session.Losses, "result_completion_fallbacks")
+	if fallbacks.Count != 1 || fallbacks.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("result_completion_fallbacks = %+v, want the one written result the read answered no "+
+			"instant for", fallbacks)
+	}
+	sources := lossCount(t, session.Losses, "tool_result_sources")
+	if sources.Count != 1 || sources.Disposition != DispositionOmitted {
+		t.Errorf("tool_result_sources = %+v, want the one written result whose recorded channel label "+
+			"the entry has no member for", sources)
+	}
+	// The route's own behaviour, pinned: the late result's text travels, its entry states the containing
+	// message's instant, and the result's own recorded instant is nowhere in the file.
+	installed := string(session.Data)
+	if !strings.Contains(installed, "late output") {
+		t.Errorf("the written session does not hold the late result's text:\n%s", installed)
+	}
+	if want := late.UTC().Format(piEntryTimestampLayout); !strings.Contains(installed, want) {
+		t.Errorf("the entry carrying the results is not stamped with the containing message's instant "+
+			"%s:\n%s", want, installed)
+	}
+	if loss := lossCount(t, session.Losses, "substituted_record_instants"); loss.Count != 0 {
+		t.Errorf("substituted_record_instants = %+v, want none: this document's records are ordered",
+			loss)
 	}
 }
 

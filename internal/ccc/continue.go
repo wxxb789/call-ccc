@@ -30,11 +30,27 @@ const (
 // Conversion and installation states, which a caller reads apart: the conversion is what the target
 // document holds, and the installation is whether the session is where the target harness keeps its
 // sessions. The verification states live with their verifications (codex_verify.go).
+//
+// The installation has three answers, not two: whether the session is installed, is not, or -- where the
+// installation is another process's write -- could not be established. The third is the answer a run
+// owes when the target harness's own importer failed after it may have committed (a deadline, a
+// cancellation) and the harness's own reader could not say either way; reporting that as
+// InstallationStateNotInstalled would assert an absence nobody observed, and reporting it as
+// InstallationStateInstalled would assert a publication nobody observed. It is reported by the installer
+// through ErrInstallationUnresolved (see opencode_install.go, the route whose installation is the
+// harness's own importer).
 const (
 	ConversionStateConverted      = "converted"
 	InstallationStateInstalled    = "installed"
 	InstallationStateNotInstalled = "not-installed"
+	InstallationStateUnresolved   = "unresolved"
 )
+
+// ErrInstallationUnresolved reports an installation whose outcome the run could not establish: the
+// installer ran, it did not observe its own success, and the evidence that could resolve the question
+// answered nothing. It exists so the report can say `unresolved` instead of `not-installed`, which is a
+// claim about the target's store that such a run has no basis for.
+var ErrInstallationUnresolved = errors.New("the installation's outcome could not be established")
 
 // Source-file comparison results: what the source session's own bytes were shown to be after the
 // conversion. There are three answers, not two -- the file was shown to be its same bytes, the file
@@ -255,7 +271,10 @@ type ConversionReport struct {
 	SourceFidelity Fidelity `json:"source_fidelity"`
 }
 
-// TargetReport describes the session that was written and how to resume it.
+// TargetReport describes the session that was written and how to resume it. FileName is the name of the
+// file the session occupies inside its home; a route whose artifact is a row in the harness's own store
+// rather than a file (OpenCode) names none, and the member is then absent rather than naming a file that
+// exists nowhere.
 type TargetReport struct {
 	Provider         string        `json:"provider"`
 	Format           string        `json:"format"`
@@ -266,7 +285,7 @@ type TargetReport struct {
 	BinaryVersion    string        `json:"binary_version,omitempty"`
 	BinaryDetail     string        `json:"binary_detail,omitempty"`
 	SessionID        string        `json:"session_id"`
-	FileName         string        `json:"file_name"`
+	FileName         string        `json:"file_name,omitempty"`
 	Path             string        `json:"path,omitempty"`
 	Cwd              string        `json:"cwd,omitempty"`
 	StartedAt        time.Time     `json:"started_at,omitempty"`
@@ -465,6 +484,8 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		CLIVersion:     facts.CLIVersion,
 		Provider:       facts.ModelProvider,
 		Model:          facts.Model,
+		ModelVariant:   facts.ModelVariant,
+		Agent:          facts.Agent,
 		ProviderDetail: facts.ProviderDetail,
 		Now:            opts.Now,
 		MaxToolNames:   opts.MaxToolNames,
@@ -543,7 +564,12 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 			return reportAfterFailure(result, verification, level, fmt.Errorf("creating a scratch directory: %w", err))
 		}
 		defer os.RemoveAll(scratch)
-		if _, _, err := route.Install(session, scratch); err != nil {
+		if _, _, err := route.Install(ctx, session, targetInstallInput{
+			Home:    scratch,
+			Binary:  probe.Binary,
+			Timeout: opts.Timeout,
+			Stderr:  opts.Stderr,
+		}); err != nil {
 			return reportAfterFailure(result, verification, level, fmt.Errorf("verifying the conversion: %w", err))
 		}
 		structure, err := route.ReadBack(ctx, route.StructureRoot(scratch), session, cfg)
@@ -582,7 +608,7 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		result.Installation.Detail = sourceDetail
 		result.Warnings = append(result.Warnings, sourceChangedWarnings(sourceState)...)
 		// A dry run's conversion may record nothing a target harness would have filled in, because the
-		// harness was never started against the home; the route says what that means for its format.
+		// harness's own answer was not asked; the route says what that means for its format.
 		result.Warnings = append(result.Warnings, route.DryRunWarnings(facts, probe)...)
 		if homeMissing {
 			result.Warnings = append(result.Warnings, fmt.Sprintf(
@@ -600,7 +626,12 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 			return reportAfterFailure(result, verification, level, fmt.Errorf("creating %s: %w", home, err))
 		}
 	}
-	path, mechanism, err := route.Install(session, home)
+	path, mechanism, err := route.Install(ctx, session, targetInstallInput{
+		Home:    home,
+		Binary:  probe.Binary,
+		Timeout: opts.Timeout,
+		Stderr:  opts.Stderr,
+	})
 	if path != "" {
 		// The installer returns the path it published even when it also reports a failure (a temporary
 		// file it could not remove): the report carries the identity the installed session can be resumed
@@ -616,7 +647,14 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	}
 	if err != nil {
 		// Nothing was published, or a published session's own failure: either way the report answers
-		// "installed?" from the path above, and this error is what the run failed on.
+		// "installed?" from the path above, and this error is what the run failed on. An installer that
+		// could not establish its own outcome says so through ErrInstallationUnresolved: the report then
+		// answers `unresolved` rather than `not-installed`, because the run observed neither a
+		// publication nor its absence. A path alongside that error is an answer of its own -- the path is
+		// the session the installer published -- so the state is unresolved only where no path came back.
+		if errors.Is(err, ErrInstallationUnresolved) && path == "" {
+			result.Installation.State = InstallationStateUnresolved
+		}
 		return reportAfterFailure(result, verification, level, err)
 	}
 	sourceState, sourceDetail, err := sourceCheckAfter(conversation, readFrom, sourceDigest)
@@ -760,6 +798,19 @@ const (
 
 	resumeMethodOMP = "one turn in the installed session through the target harness's non-interactive " +
 		"resume (omp -p --resume)"
+
+	// The OpenCode route. Its target artifact is a session inside the harness's own SQLite store, so the
+	// structure check reads the installed session back through the inherited OpenCode reader by its own
+	// reference form (`<database path>#<session id>`), the load check asks the harness's own reader
+	// (`session export`) -- a command measured to leave the session's own records unchanged, unlike a
+	// turn -- and the resume check runs the reported invocation's one real turn.
+	structureMethodOpenCode       = "the inherited AgentsView OpenCode reader over the installed session"
+	structureMethodOpenCodeDryRun = "the inherited AgentsView OpenCode reader over a throw-away copy (dry run)"
+	loadMethodOpenCode            = "the target harness's own reader (opencode session export, with a " +
+		"scratch configuration and no model turn, plus an unknown-id control)"
+	resumeMethodOpenCode = "one turn in the installed session through the target harness's " +
+		"non-interactive resume (opencode run --session)"
+	structureReaderOpenCode = "OpenCode"
 )
 
 // hasAnswer reports whether a check carries an answer of its own: it verified, or it came back

@@ -294,6 +294,8 @@ type claudeTranscriptBuilder struct {
 	lossEmptyAssistantMessages int
 	lossWhitespaceDialogue     int
 	lossNonDialogueText        int
+	lossUnresolvedDialogue     int
+	lossUnprojectedDialogue    int
 	lossUnpairedResults        int
 	lossUnresolved             int
 	lossStatuses               int
@@ -302,6 +304,9 @@ type claudeTranscriptBuilder struct {
 	lossGeneratedIDs           int
 	lossCoalescedProjections   int
 	lossSubagentLinks          int
+	lossResultFallbacks        int
+	lossResultInstants         int
+	lossResultSources          int
 	lossEmptyResults           int
 	lossWhitespaceResults      int
 	lossResultBlocks           int
@@ -403,11 +408,14 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 		b.writeToolEvidence(message)
 		return
 	}
+	dialogue := dialogueOf(message)
 	if len(message.ToolResults) == 0 && len(message.ToolCalls) == 0 && strings.TrimSpace(message.Thinking) != "" &&
-		strings.TrimSpace(dialogueText(message)) == "" {
+		strings.TrimSpace(dialogue.Text) == "" && dialogue.State != dialogueUnestablished {
 		// Nothing but a persisted reasoning trace: the target's thinking blocks are its own
 		// provider-signed artifacts and a plaintext one written in their place would present source
-		// reasoning as a target-native trace (goal 0013 owns this).
+		// reasoning as a target-native trace (goal 0013 owns this). The state is asked beside the text
+		// for the same reason it is on the Codex route: a record whose dialogue the read could not
+		// establish is counted as that, not as a record that held nothing but a trace.
 		b.lossReasoning++
 		return
 	}
@@ -438,8 +446,21 @@ func (b *claudeTranscriptBuilder) writeMessage(message Message) {
 		if len(message.ToolCalls) == 0 && len(message.ToolResults) == 0 {
 			return
 		}
+	} else if dialogueLossOf(dialogue) == dialogueLossUnresolved {
+		// The read established no dialogue for this record and its Content is not the record's own
+		// bytes (dialogueOf): the reader rendered the record's persisted reasoning trace into a Content
+		// that also holds the record's text, or the record carries calls whose renderings a reader may
+		// have inlined. The text is not written -- publishing the reader's rendering as the model's
+		// words is the error this rule exists to prevent, and deleting the rendering by inference is
+		// the guess it refuses -- and the record is counted. Its tool evidence still travels below.
+		b.lossUnresolvedDialogue++
 	} else {
-		switch text := dialogueText(message); {
+		if dialogueLossOf(dialogue) == dialogueLossUnprojected {
+			// Content, not a projection, is what travels: the report says so per record
+			// (unprojected_dialogue) rather than presenting the read's Content as the source's answer.
+			b.lossUnprojectedDialogue++
+		}
+		switch text := dialogue.Text; {
 		case text != "" && strings.TrimSpace(text) == "":
 			// The source recorded dialogue text that holds only whitespace. The inherited reader's block
 			// parser carries a text block whose text is only whitespace as no text, and drops a record
@@ -585,18 +606,14 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 	// result at all is the only evidence the read holds of that outcome, and it is written.
 	for _, entry := range calls {
 		call := entry.call
-		if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
+		result, ok := derivedResultSummary(call, call.ToolUseID)
+		if !ok {
 			continue
 		}
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		block, ok := b.toolResult(ToolResult{
-			ToolUseID:      call.ToolUseID,
-			ContentRaw:     call.ResultContent,
-			ContentSize:    call.ResultContentSize,
-			ContentDecoded: true,
-		}, message.Timestamp)
+		block, ok := b.toolResult(result, message.Timestamp)
 		if ok {
 			pending = append(pending, block)
 		}
@@ -740,6 +757,22 @@ func (b *claudeTranscriptBuilder) toolResult(result ToolResult, at time.Time) (c
 	if result.PersistedOutputUnresolved {
 		b.lossUnresolved++
 	}
+	// The record this block is written into (the record of the message the result travelled on) states
+	// that message's instant: a result's own recorded instant is not what the file holds, and the two
+	// reads of it are counted apart -- the read answered an instant and the containing record's is
+	// written instead, or the read answered none and the containing record's instant stands in.
+	if result.Timestamp.IsZero() {
+		b.lossResultFallbacks++
+	} else if !result.Timestamp.Equal(at) {
+		b.lossResultInstants++
+	}
+	if strings.TrimSpace(result.Source) != "" {
+		// The read named which native record carried the result's text (a result block in a message, a
+		// `function_call_output`, a wait call's output event, a subagent notification). The target's
+		// block carries the text and no such label -- its own read answers its own for its own shapes --
+		// so the source's label is omitted and counted rather than dropped in silence.
+		b.lossResultSources++
+	}
 	block := claudeContentBlock{Type: claudeBlockToolResult, ToolUseID: callID, Content: text}
 	if strings.TrimSpace(result.Status) != "" {
 		switch status := strings.ToLower(strings.TrimSpace(result.Status)); status {
@@ -813,6 +846,17 @@ func compactJSON(raw string) string {
 	return buffer.String()
 }
 
+// claudeUnestablishedOutcome is this route's own answer for a record whose dialogue was not established
+// (dialogueUnestablished), passed to dialogueLossRows: what the writer does not write and where the
+// record's reasoning goes. This target records reasoning as its provider's own signed artifact, so a
+// plaintext trace has no shape here -- it is counted as omitted above (reasoning_text). The clause first
+// said the trace "still travels as reasoning_text", which is no route's answer and contradicts this
+// route's own reasoning_text row (round 17's PD-3).
+const claudeUnestablishedOutcome = "the text is not written, this count is not a claim that the record " +
+	"wrote none, and a trace the record carries is omitted with it -- counted under reasoning_text " +
+	"above, because this target has no plaintext-trace shape: it records reasoning as its provider's " +
+	"own signed artifact"
+
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the
 // report without knowing which categories this run happened to produce.
 func (b *claudeTranscriptBuilder) losses() []Loss {
@@ -852,7 +896,7 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			"touched -- and what has no field in the target is the per-file attribution of a second " +
 			"projection, which is what this count names"
 	}
-	return []Loss{
+	losses := []Loss{
 		{
 			Category:    "reasoning_text",
 			Disposition: DispositionOmitted,
@@ -911,9 +955,15 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Disposition: DispositionOmitted,
 			Count:       b.lossNonDialogueText,
 			Detail: "the source itself classified these records as carrying no dialogue, and their " +
-				"content is not dialogue it rendered either (a tool result the provider recorded with a " +
-				"user role): the target has no message that would not state the user said those words",
+				"content is not dialogue it rendered either (a tool result the provider recorded with " +
+				"a user role): the target has no message that would not state the user said those words",
 		},
+	}
+	// The two rows the dialogue states are reported under come from the one constructor
+	// (dialogueLossRows), with this route's own answer for an unestablished record.
+	losses = append(losses, dialogueLossRows(b.lossUnresolvedDialogue, b.lossUnprojectedDialogue,
+		claudeUnestablishedOutcome)...)
+	return append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1009,6 +1059,47 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 				"counted twice",
 		},
 		{
+			Category:    "tool_result_sources",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultSources,
+			Detail: "the read names which native record carried each result's text (a result block " +
+				"inside a message, a `function_call_output`, a wait call's own output event, a " +
+				"subagent notification: internal/parser's readers answer this per shape). The " +
+				"target's tool_result block carries the text and no such label -- its own read " +
+				"answers the analogous question for its own shapes -- so the source's label is " +
+				"omitted, counted per result this conversion wrote that recorded one",
+		},
+		{
+			Category:    "result_completion_fallbacks",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossResultFallbacks,
+			Detail: "a tool_result block carries the result's text, and the record carrying it states " +
+				"the instant of the message the result travelled on. Where the read holds no instant " +
+				"of the result's own record -- a provider-recorded event with no timestamp, or the " +
+				"archive's derived summary, which is stored on the call's own row and has no record " +
+				"of its own -- that containing record's instant is written, an instant the read " +
+				"answered for that record rather than one this build invented; only results this " +
+				"conversion wrote are counted here",
+		},
+		{
+			Category:    "result_record_instants",
+			Disposition: DispositionOmitted,
+			Count:       b.lossResultInstants,
+			Detail: "the source recorded the instant the result itself was recorded on (a result " +
+				"event's own envelope instant, which may be later than the record that carried its " +
+				"call, and which the archive read answers from the stored event's own column). A " +
+				"Claude Code tool_result block carries an id, its content and an error flag and no " +
+				"instant of its own, so the record carrying it states the containing message's " +
+				"instant instead: the result's own recorded instant is not what the file holds. " +
+				"Counted per result this conversion wrote and only where the read answered one",
+		},
+		{
+			Category:    "substituted_record_instants",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.clock.substituted,
+			Detail:      substitutedRecordInstantsDetail(),
+		},
+		{
 			Category:    "tool_name_vocabulary",
 			Disposition: DispositionCarriedWithCaveat,
 			Count:       len(names),
@@ -1060,7 +1151,7 @@ func (b *claudeTranscriptBuilder) losses() []Loss {
 			Count:       flagCount(b.sourceFidelity.NeedsRetry),
 			Detail:      needsRetryDetail,
 		},
-	}
+	}...)
 }
 
 // claudeFormatLimits is what this pair of formats cannot express at all, as opposed to what one run

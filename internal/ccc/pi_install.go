@@ -59,6 +59,7 @@ func VerifyPiSessionStructure(
 	return verifyStructure(ctx, sessionsDir, parser.AgentPi, structureMethodPi,
 		structureReaderPi, structureReaderPi,
 		filepath.Join(sessionsDir, session.Directory, session.FileName),
+		os.ReadFile,
 		func(readBack Conversation, installed []byte) roundTripComparison {
 			return comparePiRoundTrip(session, readBack, installed)
 		}, cfg)

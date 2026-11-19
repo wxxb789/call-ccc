@@ -273,9 +273,12 @@ func assistantMessageIDWithText(t *testing.T, records []map[string]any, want str
 	return ""
 }
 
-// TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers pins the two halves of the disclosure rule: the
-// report lists every category it knows about (so a consumer never infers what was left out), and the
-// records the file holds are exactly the ones the counts say were carried.
+// TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers pins the two halves of the disclosure rule: every
+// category the writer reports today is named below, each read through lossCount, so a category the
+// report dropped fails here rather than reading as a zero (the list is kept in step with the writer by
+// hand; the pass that walks the report itself is the Pi case's,
+// TestPiSessionReportsEveryLossCategory), and the records the file holds are exactly the ones the counts
+// say were carried.
 func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 	conversation := testConversation(
 		Message{Ordinal: 0, Role: "user", Content: "Where is the retry cap configured?",
@@ -315,15 +318,19 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 	// report dropped is a failure here, not a zero that reads like a real count.
 	for _, category := range []string{
 		"reasoning_text", "sidechain_messages", "system_records", "tool_role_messages",
-		"unclassified_role_messages", "empty_user_messages", "non_dialogue_content",
+		"unclassified_role_messages", "empty_user_messages", "empty_assistant_messages",
+		"non_dialogue_content",
 		"whitespace_only_dialogue", "unpaired_tool_results", "empty_tool_results",
 		"whitespace_only_tool_results", "unrepresentable_result_blocks", "unresolved_tool_outputs",
 		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
-		"subagent_session_links",
+		"subagent_session_links", "tool_result_sources",
+		"result_completion_fallbacks", "result_record_instants",
+		"substituted_record_instants",
 		"tool_name_vocabulary",
 		"message_model_attribution", "unresolved_source_parents", "pre_compaction_history",
 		"empty_compaction_summary",
 		"malformed_source_lines", "summary_transcript", "source_needs_retry",
+		"unresolved_dialogue", "unprojected_dialogue",
 	} {
 		lossCount(t, transcript.Losses, category)
 	}
@@ -341,6 +348,9 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		{"message_model_attribution", 1},
 		{"tool_name_vocabulary", 1},
 		{"subagent_session_links", 0},
+		{"result_completion_fallbacks", 1},
+		{"result_record_instants", 0},
+		{"substituted_record_instants", 0},
 		{"unresolved_source_parents", 0},
 		{"pre_compaction_history", 3},
 		{"empty_user_messages", 0},
@@ -783,6 +793,80 @@ func TestClaudeWriterCountsADiscardedSubagentSessionLink(t *testing.T) {
 	}
 	if transcript.Carried.ToolCalls != 2 {
 		t.Errorf("carried %d call(s), want the two written calls", transcript.Carried.ToolCalls)
+	}
+}
+
+// TestClaudeWriterCountsTheResultRecordInstantsItsBlocksCannotState pins the disclosure for the instant
+// a carried result was recorded on. ToolResult.Timestamp answers the instant of the result's own record
+// -- a result event's own envelope instant, which may be later than the record that carried its call --
+// and a tool_result block carries an id, its content and an error flag and no instant of its own: the
+// record carrying it states the containing message's instant, so the read's own answer for the result is
+// not what the file holds. The two reads are counted apart (result_record_instants, omitted: the read
+// answered an instant and the containing record's is written instead; result_completion_fallbacks,
+// carried-with-caveat: the read answered none and the containing record's instant stands in), and a
+// result whose own recorded instant is the containing message's is counted in neither.
+func TestClaudeWriterCountsTheResultRecordInstantsItsBlocksCannotState(t *testing.T) {
+	at := time.Date(2026, 5, 5, 9, 15, 5, 0, time.UTC)
+	late := at.Add(time.Second)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "run it", Dialogue: "run it",
+			DialogueProjected: true, Timestamp: at},
+		Message{Ordinal: 1, Role: "assistant", Content: "calling", Dialogue: "calling",
+			DialogueProjected: true, Timestamp: at,
+			ToolCalls: []ToolCall{
+				{ToolUseID: "call_late", Name: "shell", InputJSON: `{"command":"ls"}`},
+				{ToolUseID: "call_none", Name: "shell", InputJSON: `{"command":"pwd"}`},
+				{ToolUseID: "call_same", Name: "shell", InputJSON: `{"command":"date"}`},
+			}},
+		Message{Ordinal: 2, Role: "user", Timestamp: late, ToolResults: []ToolResult{
+			// The read answered an instant for this result's own record that is not the instant of the
+			// record that carried the result (the call was recorded at `at`, the result at `at` too, and
+			// it travels on the `late` record), and it named the native record that carried the text
+			// (a wait call's own output event), which the block has no member for.
+			{ToolUseID: "call_late", ContentRaw: "late output", ContentDecoded: true, Timestamp: at,
+				Source: "wait_output"},
+			{ToolUseID: "call_none", ContentRaw: "no instant", ContentDecoded: true},
+			// The read answered the containing record's instant here, so what the file states is the
+			// read's own answer and neither row counts it.
+			{ToolUseID: "call_same", ContentRaw: "own record", ContentDecoded: true, Timestamp: late},
+		}},
+	)
+	transcript, err := ConvertToClaudeTranscript(conversation, ClaudeTargetOptions{})
+	if err != nil {
+		t.Fatalf("converting the document: %v", err)
+	}
+	omitted := lossCount(t, transcript.Losses, "result_record_instants")
+	if omitted.Count != 1 || omitted.Disposition != DispositionOmitted {
+		t.Errorf("result_record_instants = %+v, want the one written result whose own instant the file "+
+			"does not state", omitted)
+	}
+	if !strings.Contains(omitted.Detail, "result's own recorded instant") {
+		t.Errorf("the category's reason does not name the value it counts: %q", omitted.Detail)
+	}
+	fallbacks := lossCount(t, transcript.Losses, "result_completion_fallbacks")
+	if fallbacks.Count != 1 || fallbacks.Disposition != DispositionCarriedWithCaveat {
+		t.Errorf("result_completion_fallbacks = %+v, want the one written result the read answered no "+
+			"instant for", fallbacks)
+	}
+	sources := lossCount(t, transcript.Losses, "tool_result_sources")
+	if sources.Count != 1 || sources.Disposition != DispositionOmitted {
+		t.Errorf("tool_result_sources = %+v, want the one written result whose recorded channel label "+
+			"the block has no member for", sources)
+	}
+	// The route's own behaviour, pinned: the late result's text travels, and the instant the read
+	// answered for its own record is nowhere in the file -- the record states the containing message's
+	// instant instead.
+	installed := string(transcript.Data)
+	if !strings.Contains(installed, "late output") {
+		t.Errorf("the written transcript does not hold the late result's text:\n%s", installed)
+	}
+	if want := late.Format(time.RFC3339Nano); !strings.Contains(installed, want) {
+		t.Errorf("the record carrying the results is not stamped with the containing message's instant "+
+			"%s:\n%s", want, installed)
+	}
+	if loss := lossCount(t, transcript.Losses, "substituted_record_instants"); loss.Count != 0 {
+		t.Errorf("substituted_record_instants = %+v, want none: this document's records are ordered",
+			loss)
 	}
 }
 

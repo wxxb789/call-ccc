@@ -1,0 +1,75 @@
+# Obligation citations — goal 0007 (OpenCode target continuation).
+#
+# One row per rule of this increment that a gate-runnable Go test discharges, in the three id spaces the
+# increment's rules come from:
+#   D1–D4   the goal's four `Done when` clauses, in order
+#           (docs/goals/0007-opencode-target-continuation.md);
+#   B1–B3   the goal's three `Bounds` clauses, in order;
+#   O1–O12  the rules of AGENTS.md §"OpenCode is a target whose store only the harness writes", in the
+#           paragraph's own order;
+#   R1–R12  the rules of AGENTS.md's dialogue boundary — the semantic rule ("A record's dialogue is the
+#           source's own answer or the record's own bytes, never a reading of them") and the disclosed-outcome
+#           rule that follows it ("Where the read answered no projection, the outcome is disclosed, never
+#           guessed") — plus the OpenCode paragraph's tool-part instant and record-instant rules, in the
+#           order the rows read; R13–R19 are the PR #9 machine review round 3's own rules — the label table
+#           as a closed list (finding 1) and the disclosure of a carried call's child-session link, of a
+#           result's own recorded instant and of a result's recorded channel label, each closed by the
+#           round's class sweep (finding 2).
+#
+# scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
+# and run and pass, and the `citations` step is required — a tree that lost this file, or a citation that
+# went stale, fails the gate instead of passing partially. Columns: rule_id, test, package, artifact.
+# Tab-separated; `#` comments and blank lines are ignored; a rule id appears once.
+#
+# Deliberately not covered, with the reason (form-based: a row is one Go test in a package
+# scripts/gate-targets.txt covers, so a rule whose gate evidence is a python case the required `selftest`
+# step runs, or a native harness run, cannot hold one):
+#   O12 — the native check's planting and removal discipline (the id read before planting, only the
+#            check's own leftover removed through the harness's own `session delete`, a failed planting
+#            reconciled as the route reconciles one). Its evidence is the native run
+#            scripts/opencode-native-check.py and the python case
+#            scripts/tests/test_opencode_native_check.py the `selftest` step runs — a native harness run
+#            and a python case, not a Go test.
+# Two evidence halves belong to clauses whose rows hold their Go-test half; they are named here rather
+# than dropped: D1's native load/export/resume arm is that same native run, and D4's "source-side
+# AgentsView parity remains intact" is the gate's required `parity` step (scripts/upstream-parity.py),
+# while its "existing Claude-to-Codex route remains intact" half is a property of the accepted routes'
+# existing suites the gate's `test` step runs, not any single Go test.
+rule_id	test	package	artifact
+D1	TestContinueIntoOpenCodeConvertsInstallsAndReadsBack	./internal/ccc	0007-opencode-target-continuation.md §Done when 1
+D2	TestInstallOpenCodeSessionReconcilesAFailedImport	./internal/ccc	0007-opencode-target-continuation.md §Done when 2
+D3	TestConvertToOpenCodeSessionCarriesTheFixturesEvidence	./internal/ccc	0007-opencode-target-continuation.md §Done when 3
+D4	TestContinueToOpenCodeThroughTheCLI	./cmd/ccc	0007-opencode-target-continuation.md §Done when 4
+B1	TestInstallOpenCodeSessionAsksTheHarnesssOwnImporter	./internal/ccc	0007-opencode-target-continuation.md §Bounds 1
+B2	TestContinueIntoOpenCodeWithoutTheHarnessNamesTheBoundary	./internal/ccc	0007-opencode-target-continuation.md §Bounds 2
+B3	TestVerifyOpenCodeSessionStructureReadsTheStoreBack	./internal/ccc	0007-opencode-target-continuation.md §Bounds 3
+O1	TestInstallOpenCodeSessionAsksTheHarnesssOwnImporter	./internal/ccc	AGENTS.md §OpenCode — the importer-only install
+O2	TestConvertToOpenCodeSessionWritesTheHarnesssOwnDocumentShape	./internal/ccc	AGENTS.md §OpenCode — assistant time.completed
+O3	TestVerifyOpenCodeSessionStructureAcceptsTheImportersOwnReEncoding	./internal/ccc	AGENTS.md §OpenCode — tool state.input
+O4	TestOpenCodeWriterNeverLetsABindingGoUnnamed	./internal/ccc	AGENTS.md §OpenCode — assistant model member
+O5	TestOpenCodeToolPartsCarryTheResultsOwnRecordInstant	./internal/ccc	AGENTS.md §OpenCode — tool part completion instant
+O6	TestVerifyOpenCodeLoadAnswersOnlyForThisSession	./internal/ccc	AGENTS.md §OpenCode — load asks session export
+O7	TestOpenCodePreservesTheRecordedWorkingDirectory	./internal/ccc	AGENTS.md §OpenCode — the session's recorded directory
+O8	TestOpenCodeFactsAskTheHarnesssOwnAgentList	./internal/ccc	AGENTS.md §OpenCode — model binding asked of the harness
+O9	TestContinueIntoOpenCodeConvertsInstallsAndReadsBack	./internal/ccc	AGENTS.md §OpenCode — --standalone placement
+O10	TestOpenCodeResumePinsTheDatabaseItPrints	./internal/ccc	AGENTS.md §OpenCode — data root and OPENCODE_DB
+O11	TestInstallOpenCodeSessionReconcilesAFailedImport	./internal/ccc	AGENTS.md §OpenCode — a failed import reconciled
+R1	TestDialogueOfNamesWhatEstablishesARecordsText	./internal/ccc	AGENTS.md §dialogue — the projection is the authority, asked before Content, an explicitly empty one included
+R2	TestDialogueOfIgnoresTheDisplayRenderingOfAProjectedRecord	./internal/ccc	AGENTS.md §dialogue — the closure criterion: a reader's display rendering cannot change what a target receives
+R3	TestCodexRolloutCarriesTheClaudeFixturesOwnDialogue	./internal/ccc	AGENTS.md §dialogue — the target's text traced to the source's own typed parts, the reader's rendering excluded
+R4	TestZCodeRecordsAreNotGuessedThroughTheUnmodifiedReader	./internal/ccc	AGENTS.md §dialogue — nothing is removed from Content by inference; a rendering record is not guessed at
+R5	TestOpenCodeDoesNotGuessAZCodeRecordsDialogue	./internal/ccc	AGENTS.md §dialogue — the partial outcome and its disclosure on the OpenCode route
+R6	TestCodexRolloutCountsWhatItCouldNotEstablish	./internal/ccc	AGENTS.md §dialogue — the disclosure categories and the state each record landed in
+R7	TestRenderingReadersReasoningOnlyRecordKeepsItsTraceOnce	./internal/ccc	AGENTS.md §dialogue — Content that is exactly the reader's rendering of the whole trace is no dialogue
+R8	TestCodexRolloutKeepsALiteralThinkingBlockThroughAnInheritedReader	./internal/ccc	AGENTS.md §dialogue — a literal marker block of a reader that records Content as written is the model's own words
+R9	TestOpenCodeOverlappingCallsOnSeparateMessagesKeepTheirOwnInstants	./internal/ccc	AGENTS.md §OpenCode — the message floor is the messages' own records, not a part's completion
+R10	TestOpenCodeParallelToolSpansKeepTheirOwnInstants	./internal/ccc	AGENTS.md §OpenCode — a completion raised to the part's own start counted apart from the fallback (result_completion_adjustments)
+R11	TestOpenCodeSubstitutedMessageInstantsAreCounted	./internal/ccc	AGENTS.md §OpenCode — a message's own recorded instant written at the previous written one, counted, its parts taking it (substituted_record_instants)
+R12	TestCodexRolloutStampsRecordsInOneOrderedRun	./internal/ccc	AGENTS.md §OpenCode — the Codex/Claude/Pi/OMP shared clock's substituted written timestamps counted (substituted_record_instants)
+R13	TestRenderingReaderLabelsCoverEveryLabelTheirReadersServe	./internal/ccc	AGENTS.md §dialogue — the table names every label a rendering reader serves, a shared reader's extra labels included (PR #9 review round 3, finding 1)
+R14	TestOpenCodeWriterCountsADiscardedSubagentSessionLink	./internal/ccc	AGENTS.md §OpenCode — a written call whose recorded child-session link the harness's tool part cannot hold is counted (subagent_session_links; review round 3, finding 2)
+R15	TestCodexRolloutCountsTheSubagentSessionLinkItsLogDoesNotHold	./internal/ccc	AGENTS.md §OpenCode — the same row on the Codex rollout, whose spawn-completion record the inherited reader derives the link from and whose writer writes none
+R16	TestClaudeWriterCountsTheResultRecordInstantsItsBlocksCannotState	./internal/ccc	AGENTS.md §OpenCode — the result's own recorded instant counted where the transcript's block cannot state it (result_completion_fallbacks, result_record_instants)
+R17	TestCodexRolloutCountsTheResultRecordInstantsItDoesNotWrite	./internal/ccc	AGENTS.md §OpenCode — the same two rows on the Codex rollout
+R18	TestPiSessionCountsTheResultRecordInstantsItDoesNotWrite	./internal/ccc	AGENTS.md §OpenCode — the same two rows on the Pi/OMP session
+R19	TestOpenCodeWriterCountsADiscardedSubagentSessionLink	./internal/ccc	AGENTS.md §OpenCode — a result's recorded channel label counted where the tool state cannot hold it (tool_result_sources); the transcript, rollout and session arms are the three writers' pins (R16–R18)

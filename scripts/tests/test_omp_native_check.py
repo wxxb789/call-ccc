@@ -46,6 +46,7 @@ import io
 import json
 import os
 import re
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -1259,6 +1260,25 @@ class ReportedInvocationCases(unittest.TestCase):
         # every word of the right invocation, so the spelling is the only thing that refuses it.
         quoted = (f"cd '{self.WORKSPACE}' && '{NATIVE_CHECK.OMP_HOME_ENV}={home}' "
                   f"'{NATIVE_CHECK.OMP_SESSION_DIR_ENV}={tree}' omp --resume {self.SESSION}")
+        self.assertFalse(NATIVE_CHECK.reported_invocation(
+            quoted, self.WORKSPACE, home, NATIVE_CHECK.OMP_HOME_ENV, ["omp", "--resume", self.SESSION],
+            session_dir_env=NATIVE_CHECK.OMP_SESSION_DIR_ENV, session_dir=tree))
+
+    def test_a_quoted_second_assignment_is_not_read_as_the_invocation(self):
+        """The line the renderer really writes -- the home assignment first, its own value quoted -- with
+        the *sessions-tree* assignment, the one the renderer writes second, spelled as a single quoted
+        word. A shell reads `'NAME=value'` as the program to run, so nothing sets the tree and the harness
+        resolves the session from nowhere; the words alone are the invocation's, which is why the spelling
+        rule has to require every assignment the word vector carries and not only the one that leads."""
+        home = self.HOME
+        tree = NATIVE_CHECK.omp_session_tree(home, self.PROJECT_DIR)
+        quoted = (f"cd '{self.WORKSPACE}' && {NATIVE_CHECK.OMP_HOME_ENV}='{home}' "
+                  f"'{NATIVE_CHECK.OMP_SESSION_DIR_ENV}={tree}' omp --resume {self.SESSION}")
+        self.assertEqual(
+            shlex.split(quoted),
+            ["cd", self.WORKSPACE, "&&", f"{NATIVE_CHECK.OMP_HOME_ENV}={home}",
+             f"{NATIVE_CHECK.OMP_SESSION_DIR_ENV}={tree}", "omp", "--resume", self.SESSION],
+            "the line's own words are not the invocation's, so the case would not be about the spelling")
         self.assertFalse(NATIVE_CHECK.reported_invocation(
             quoted, self.WORKSPACE, home, NATIVE_CHECK.OMP_HOME_ENV, ["omp", "--resume", self.SESSION],
             session_dir_env=NATIVE_CHECK.OMP_SESSION_DIR_ENV, session_dir=tree))

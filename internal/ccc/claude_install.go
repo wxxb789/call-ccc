@@ -61,6 +61,7 @@ func VerifyClaudeTranscriptStructure(
 	return verifyStructure(ctx, projectsDir, parser.AgentClaude, structureMethodClaude,
 		"Claude", structureReaderClaude,
 		filepath.Join(projectsDir, filepath.FromSlash(transcript.Directory), transcript.FileName),
+		os.ReadFile,
 		func(readBack Conversation, installed []byte) roundTripComparison {
 			return compareClaudeRoundTrip(transcript, readBack, installed)
 		}, cfg)

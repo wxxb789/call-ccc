@@ -106,6 +106,7 @@ OWNED = (
     "scripts/native_check_common.py",
     "scripts/obligation-citations.py",
     "scripts/omp-native-check.py",
+    "scripts/opencode-native-check.py",
     "scripts/tests/",
     "scripts/claude-native-check.py",
     "scripts/codex-native-check.py",

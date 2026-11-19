@@ -1,6 +1,6 @@
 # 0007 — Continue supported conversations in OpenCode
 
-**Status:** Ready  
+**Status:** Implemented on `feat/0007-opencode-target-continuation`; awaiting operator acceptance  
 **Prerequisite:** [0002 — Continue a Claude Code session in Codex](archive/0002-claude-to-codex-continuation.md). Can be pursued independently of 0003–0006.
 
 ## Intended advance
