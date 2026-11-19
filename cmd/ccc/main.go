@@ -789,7 +789,7 @@ func contiguitySuffix(space ccc.OrdinalSpace) string {
 	if space.Contiguous {
 		return ""
 	}
-	return fmt.Sprintf(" (min %d, max %d: the read's own values are not contiguous)", space.Min, space.Max)
+	return " (the read's own values are not contiguous)"
 }
 
 // sourceCheckLine is the human spelling of the installation's source check: the goal asks the run to

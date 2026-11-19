@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.kenn.io/agentsview/internal/ccc"
 )
 
 // selectionFixtureProject is the committed Claude transcript the selection cases read: the one fixture
@@ -288,6 +291,24 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 		t.Errorf("the unflagged run carried no message at all: %+v", document.Conversion.Carried)
 	}
 
+	// The empty value is the flag's absence (Q-0009-03): `ccc continue … --select "$SPEC"` with an empty
+	// SPEC is the run without the flag, so the same document comes back with no selection section.
+	code, emptyStdout, stderr := runCLI(t, continueArgs(sessionID, "--select", "", "--dry-run", "--json")...)
+	if code != exitOK {
+		t.Fatalf("the empty selection: exit %d (stderr %q)", code, stderr)
+	}
+	var empty reportedContinueDocument
+	if err := json.Unmarshal([]byte(emptyStdout), &empty); err != nil {
+		t.Fatalf("the empty selection is not one JSON object: %v\n%s", err, emptyStdout)
+	}
+	if empty.Selection != nil || strings.Contains(emptyStdout, `"selection"`) {
+		t.Errorf("the empty selection reported a selection section:\n%s", emptyStdout)
+	}
+	if empty.Conversion.Carried != document.Conversion.Carried {
+		t.Errorf("the empty selection carried %+v, want the unflagged run's %+v",
+			empty.Conversion.Carried, document.Conversion.Carried)
+	}
+
 	code, human, stderr := runCLI(t, continueArgs(sessionID, "--dry-run")...)
 	if code != exitOK {
 		t.Fatalf("human run: exit %d (stderr %q)", code, stderr)
@@ -326,5 +347,31 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 	if selected.Verification.Structure.State != document.Verification.Structure.State {
 		t.Errorf("the whole-read selection's structural read-back is %q, want the unflagged run's %q",
 			selected.Verification.Structure.State, document.Verification.Structure.State)
+	}
+}
+
+// TestWriteSelectionSpellsAGappySpace pins the human selection line's non-contiguous arm, which no CLI
+// case reaches: the one committed fixture's space has no gap, so the suffix that states one has to be
+// exercised over a report of its own. The space is spelled once as its bounds; the suffix states the gap
+// without repeating them, and the classes render as they do for a contiguous space.
+func TestWriteSelectionSpellsAGappySpace(t *testing.T) {
+	var out bytes.Buffer
+	writeSelection(&out, &ccc.SelectionReport{
+		Spec:     "1,5",
+		Space:    ccc.OrdinalSpace{Min: 1, Max: 5, Records: 3, Contiguous: false},
+		Included: ccc.SelectionClass{Count: 2, Regions: []string{"1", "5"}},
+		Excluded: ccc.SelectionClass{Count: 1, Regions: []string{"3"}},
+	})
+	block := out.String()
+	for _, want := range []string{
+		"  selection:    1,5: the read's own ordinals are 1-5 (3 record(s)) (the read's own values are not contiguous)\n",
+		"  selected:     2 record(s) at ordinals 1,5\n",
+		"  excluded:     1 record(s) at ordinals 3\n",
+		"  necessities:  0 record(s) added: none\n",
+		"  undischarged: 0 carried call(s) with no recorded result at ordinals none\n",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the gappy space's block does not hold %q:\n%s", want, block)
+		}
 	}
 }

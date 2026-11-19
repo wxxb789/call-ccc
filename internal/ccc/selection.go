@@ -225,8 +225,9 @@ func selectionWarnings(report *SelectionReport) []string {
 			report.CallsUndischarged.Count, joinOrNone(report.CallsUndischarged.Regions)))
 	}
 	if report.Strict {
-		warnings = append(warnings, "the selection ran with --strict-selection: a selection that would "+
-			"have separated a recorded call from its recorded result was refused rather than carried")
+		warnings = append(warnings, "the selection ran with --strict-selection: had the selection "+
+			"separated a recorded call from its recorded result, the conversion would have been refused "+
+			"rather than carried one half")
 	}
 	return warnings
 }

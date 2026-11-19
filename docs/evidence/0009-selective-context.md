@@ -252,11 +252,11 @@ print `GATE: PASS`:
 $ python3 scripts/gate.py; echo "exit=$?"
 gate: /home/azureuser/repos/call-ccc
 gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     gofmt    3627 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 442 tests in 9.453s (rc=0)
+  PASS     selftest Ran 442 tests in 8.832s (rc=0)
   PASS     parity   … (5553 carried file(s) identical to the pinned revision; 27 declared deviations + 1
                     generated input present as declared; 32 project-owned prefix(es))
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 14 row(s) verified
@@ -268,10 +268,11 @@ exit=0
 (`parity`'s detail is elided in this transcript with `…` — the step prints it as one line of about 800
 characters, and the numbers this record quotes are the ones it holds; the step's own leading `… | ` marks
 inside that line are the gate's rendering of a long detail, not this record's cut. The transcript is one
-run of this script on the increment's tree; `selftest`'s duration is that run's own. A run made after this
-record was written printed the same eight `PASS` states, the same counts and `GATE: PASS` with exit 0 —
-its `selftest` duration differs (the step times itself on every run), which is the only line that
-moved.)
+run of this script on the increment's tree; `selftest`'s duration is that run's own. It is the run taken
+after the increment's own, with the simplify findings applied: between the two runs one count moved —
+`gofmt`, from `3624` to `3627`. `gofmt` lists `git ls-files` only, and the increment's three new `.go`
+files were still untracked when its first run was taken, so committing them moved that count. Every other
+count is the same in both runs; `selftest`'s duration moves run to run because the step times itself.)
 
 `docs/evidence/0009-citations.tsv` holds one row per obligation a gate-runnable Go test discharges, in
 this increment's own id spaces:

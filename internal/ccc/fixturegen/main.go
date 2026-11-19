@@ -678,7 +678,7 @@ func claudeSession() string {
 		},
 	}}
 	builder := testjsonl.NewSessionBuilder().
-		AddRaw(claudeVersionedUser(
+		AddRaw(claudeUserLine(claudeSessionID, claudeCwd(),
 			"Summarize the retry policy in internal/retry/policy.go.", "2026-05-04T09:15:00.000Z")).
 		AddClaudeAssistantWithUUID(
 			"2026-05-04T09:15:04.000Z",
@@ -757,7 +757,7 @@ func claudeToolingSession() string {
 		},
 	}}
 	builder := testjsonl.NewSessionBuilder().
-		AddRaw(claudeToolingUser(
+		AddRaw(claudeUserLine(claudeToolingSessionID, claudeToolingCwd,
 			"Check the retry policy and tell me the attempt limit.", "2026-05-05T10:00:00.000Z")).
 		AddRaw(claudeThinkingAssistant(
 			"2026-05-05T10:00:03.000Z",
@@ -791,7 +791,7 @@ func claudeToolingSession() string {
 			"bbbbbbbb-0000-4000-8000-000000000005",
 		)).
 		AddRaw(claudeSystemRecord("2026-05-05T10:00:10.000Z")).
-		AddRaw(claudeToolingUser(
+		AddRaw(claudeUserLine(claudeToolingSessionID, claudeToolingCwd,
 			"Then name the file that holds the cap.", "2026-05-05T10:00:12.000Z")).
 		AddRaw(claudeToolUse(jsonCall, "2026-05-05T10:00:12.500Z", "bbbbbbbb-0000-4000-8000-000000000006")).
 		// The tool printed a JSON-encoded value, so the text the result records is itself a JSON string:
@@ -812,21 +812,9 @@ func claudeToolingSession() string {
 	return builder.String()
 }
 
-// claudeToolingUser is a Claude user line carrying the session's own identity and working directory.
-func claudeToolingUser(text, timestamp string) string {
-	return marshal(map[string]any{
-		"type":      "user",
-		"timestamp": timestamp,
-		"version":   claudeVersion,
-		"sessionId": claudeToolingSessionID,
-		"cwd":       claudeToolingCwd,
-		"message":   map[string]any{"content": text},
-	})
-}
-
 // claudeSelectionSession is the third Claude fixture: the shape a selection has to decide about.
 //
-// Its ten records are the four shapes the selection's own rules need. The build call is answered by a
+// Its eleven records are the four shapes the selection's own rules need. The build call is answered by a
 // result the source recorded in a *later* message than the call, so a selection whose boundary falls
 // between the two separates a recorded call/result pair (the call is at one ordinal, its result at the
 // next). The read call is never answered: it is the state a selection must leave exactly as it is and
@@ -864,7 +852,8 @@ func claudeSelectionSession() string {
 		},
 	}}
 	return testjsonl.NewSessionBuilder().
-		AddRaw(claudeSelectionUser(claudeSelectionQuestion, "2026-05-08T08:00:00.000Z")).
+		AddRaw(claudeUserLine(claudeSelectionSessionID, claudeSelectionCwd,
+			claudeSelectionQuestion, "2026-05-08T08:00:00.000Z")).
 		AddClaudeAssistantWithUUID(
 			"2026-05-08T08:00:02.000Z",
 			"Starting the build now.",
@@ -893,7 +882,8 @@ func claudeSelectionSession() string {
 			"cccccccc-0000-4000-8000-000000000006",
 			"cccccccc-0000-4000-8000-000000000005",
 		)).
-		AddRaw(claudeSelectionUser(claudeSelectionFollowup, "2026-05-08T08:06:00.000Z")).
+		AddRaw(claudeUserLine(claudeSelectionSessionID, claudeSelectionCwd,
+			claudeSelectionFollowup, "2026-05-08T08:06:00.000Z")).
 		AddClaudeAssistantWithUUID(
 			"2026-05-08T08:06:04.000Z",
 			claudeSelectionAnswer,
@@ -901,19 +891,6 @@ func claudeSelectionSession() string {
 			"",
 		).
 		String()
-}
-
-// claudeSelectionUser is a user line of the selection fixture: the version, sessionId and cwd members a
-// Claude Code transcript's own user records carry, with this fixture's identity.
-func claudeSelectionUser(text, timestamp string) string {
-	return marshal(map[string]any{
-		"type":      "user",
-		"timestamp": timestamp,
-		"version":   claudeVersion,
-		"sessionId": claudeSelectionSessionID,
-		"cwd":       claudeSelectionCwd,
-		"message":   map[string]any{"content": text},
-	})
 }
 
 // claudeThinkingAssistant is an assistant line whose content holds a persisted reasoning block beside
@@ -1091,15 +1068,16 @@ func claudeToolUse(content any, timestamp, uuid string) string {
 	return marshal(line)
 }
 
-// claudeVersionedUser is a Claude user line carrying the source version, which older and newer
-// Claude Code releases both put on their transcript lines.
-func claudeVersionedUser(text, timestamp string) string {
+// claudeUserLine is one Claude user line: the version, sessionId and cwd members a Claude Code
+// transcript's own user records carry -- older and newer releases both put them on their lines -- with
+// the session's own identity and working directory, which every Claude fixture supplies.
+func claudeUserLine(sessionID, cwd, text, timestamp string) string {
 	return marshal(map[string]any{
 		"type":      "user",
 		"timestamp": timestamp,
 		"version":   claudeVersion,
-		"sessionId": claudeSessionID,
-		"cwd":       claudeCwd(),
+		"sessionId": sessionID,
+		"cwd":       cwd,
 		"message":   map[string]any{"content": text},
 	})
 }
