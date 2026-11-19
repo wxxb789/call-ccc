@@ -382,6 +382,15 @@ type openCodeConverter struct {
 	// that happens to share its id, which would state an outcome the source never recorded for it.
 	pairings     map[resultOccurrence]callOccurrence
 	plannedCalls map[callOccurrence]*openCodeCall
+	// reservedSlots names the planned call occurrences whose outcome this document states through a
+	// retained result that records its own id, whose text and status this target can write
+	// (reserveResultSlots). The part states one outcome, so the id-less inference may not be written for
+	// such an occurrence: the recorded result is the one the slot is owed to, and an inference taking it
+	// would count that recorded result as a repeat (repeated_tool_results) although both halves of the
+	// pairing travelled (round 10's finding 1). The occurrence still counts as unanswered where an
+	// id-less result stands *before* its recorded result (soleInferablePlannedCall): the document's own
+	// records are going to answer it, so the id-less event has no call it could mean.
+	reservedSlots map[callOccurrence]bool
 	// usedCallIDs is the namespace a minted id must stay out of: every tool-use id the read recorded
 	// (each call's and each result's, reserved by reserveRecordedCallIDs before the plan mints anything)
 	// plus every id already minted for an id-less call. The pairing map and the pending set are keyed by
@@ -614,6 +623,12 @@ func (c *openCodeConverter) convert() error {
 // empty object is written for it, counted); what a *result* turns out to be decides at write time
 // whether the call has a shape here at all.
 //
+// A call occurrence whose outcome this document already states through a retained result that records
+// its own id is not an inference's to take (reservedResultSlots): the part states one outcome, so an
+// id-less event inferred onto it would occupy the slot the recorded result is owed and the recorded
+// result itself would be counted as a repeat -- a recorded pairing displaced by an inference although
+// both halves of it travelled (round 10's finding 1).
+//
 // A result event the read records as progress rather than an outcome is never the carried result: the
 // terminal event the same call recorded is what the part states, and a call whose read holds only
 // progress has no outcome here (counted as unpaired_tool_calls). Both shapes are counted separately
@@ -623,6 +638,7 @@ func (c *openCodeConverter) convert() error {
 // reused a recorded spelling would alias two calls in the maps below.
 func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	c.reserveRecordedCallIDs()
+	c.reserveResultSlots(inactive)
 	for index, message := range c.conv.Messages {
 		if inactive[index] || message.IsSidechain {
 			continue
@@ -775,6 +791,54 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	}
 }
 
+// reserveResultSlots answers the planned call occurrences whose outcome this document states through a
+// result that records its own id: a result event this conversion *writes* -- its record is one the plan
+// walks and the writer publishes evidence from (not off the read's line, not a subagent's, not a
+// compaction boundary record, which the writer publishes as the boundary alone) -- whose text and status
+// the harness's tool states can hold (openCodeResultWritable: a progress event's word is one of those it
+// refuses), and that the seam's own pairing attaches to the occurrence (c.pairings).
+//
+// The map is the id-less inference's own reservation: the part such a call gets states one outcome, and
+// the recorded result is the one it is owed -- an inference onto the occurrence would fill the slot and
+// the recorded result would be counted as a repeat (repeated_tool_results) although both halves of the
+// recorded pair travelled (round 10's finding 1). A result whose text this target cannot write reserves
+// nothing: no outcome is written for the call, so the id-less event is the only evidence that can
+// travel, and the inference is what the plan has always done with a call whose recorded outcome has no
+// shape here. A reserved occurrence is still unanswered where the id-less result stands: the recorded
+// result comes later in the walk, and the inference may not name a call the document's own records are
+// going to answer.
+//
+// The question is asked only for a document a selection produced: a conversation the read returned asks
+// the ledger's id-keyed set (solePendingCall), which is what a run without a selection has always had
+// (goal 0009's D4).
+func (c *openCodeConverter) reserveResultSlots(inactive []bool) {
+	c.reservedSlots = map[callOccurrence]bool{}
+	if !c.conv.selectionReduced() {
+		// A work guard, not a disposition: the map's only reader is the reduced path's id-less
+		// inference (soleInferablePlannedCall, called under the same answer), so building it on a
+		// conversation the read returned would allocate for a question nothing asks.
+		return
+	}
+	for place, call := range c.pairings {
+		message := c.conv.Messages[place.message]
+		if inactive[place.message] || message.IsSidechain || message.IsCompactBoundary {
+			continue
+		}
+		// openCodeResultWritable is the whole answer about the event: it refuses a status the tool states
+		// cannot spell, and every word resultStatesAnOutcome reads as progress ("running", "pending",
+		// "streaming", "started", "in_progress") is one of those -- the two vocabularies are disjoint, so
+		// a separate progress test here would never change an answer. The map holds only results that
+		// recorded an id of their own (pairedCallOccurrences), so no id-less event is among them either.
+		if !openCodeResultWritable(message.ToolResults[place.result]) {
+			continue
+		}
+		// No question is asked about the plan here: this pass runs before the walk fills plannedCalls,
+		// and the answer is only ever read for a call the plan carries (soleInferablePlannedCall walks
+		// plannedCalls), so a reserved occurrence the plan turns out not to hold is never consulted.
+		c.reservedSlots[call] = true
+	}
+}
+
 // soleOutstandingPlannedCall answers the one call occurrence this plan carries that no carried result
 // has answered yet, and whether there is exactly one. A reduced document's id-less *progress* event asks
 // this question rather than the ledger's id-keyed one: the plan carries the records the read's line
@@ -810,12 +874,15 @@ func (c *openCodeConverter) soleOutstandingPlannedCall() (*openCodeCall, bool) {
 func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
 	unanswered := 0
 	found := (*openCodeCall)(nil)
-	for _, entry := range c.plannedCalls {
+	for occurrence, entry := range c.plannedCalls {
 		if c.plannedOutcomeWritable(entry) {
 			continue
 		}
 		unanswered++
-		if entry.Result == nil {
+		if entry.Result == nil && !c.reservedSlots[occurrence] {
+			// A reserved occurrence counts among the unanswered ones -- its recorded result stands later
+			// in the walk, and the inference may not name a call the document's own records are going to
+			// answer -- but it is never the call the result may be written for.
 			found = entry
 		}
 	}

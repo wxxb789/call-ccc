@@ -128,7 +128,9 @@ it in, while `--strict-selection` refuses such a selection by name before anythi
 whose read holds no recorded outcome — no result at all, only progress events that say it is still
 running, or an id-less progress event — stays as it is and is counted (`calls_undischarged`) unless the
 archive's own summary of an outcome stands on the call itself, and whether the target's own format can
-hold it is that writer's answer, named in the conversion's losses. On a target whose session is a tree, a
+hold it is that writer's answer, named in the conversion's losses: on a run that carries a selection the
+progress event itself is omitted and counted (`nonterminal_tool_events`) rather than written as the call's
+answer, which is what a file whose format carries an outcome or nothing would read it as. On a target whose session is a tree, a
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
 line (a window whose own end stands off that line is refused by name rather than written under a branch --
@@ -146,23 +148,30 @@ answered (two outstanding occurrences sharing an id are two calls, so a result t
 is omitted and counted, a progress event is not an answer on the reduced writers' own side either, and an
 outcome the document cannot carry — a text the output field's own shape rejects — does not answer its
 call; a summary the read stored on a call is written for that call's own occurrence and never inferred —
-and a writable summary answers its call on the written path, so a later id-less result is omitted rather
-than replacing it).
+a writable summary answers its call on the written path, so a later id-less result is omitted rather than
+replacing it — and where the target's part holds one outcome per call, a recorded result the conversion
+publishes reserves its call's slot, so an inference may not fill it and leave the recorded result counted
+as a repeat).
 A call occurrence whose recorded id an earlier written occurrence already holds is written under an id
 generated from its own place (counted `colliding_call_ids`), and each result is written under the owning
 occurrence's emitted id — so an id two calls share cannot rebind an output, and the round-trip check
 asserts that ownership: a result item names the call item it was written for and the read-back's own
 attachment is compared with it, rather than trusting the id and the text. A reader that projects one call
 record into several rows (Codex reads one `apply_patch` as one call per file it names) is compared as the
-file's own record units, so a file holding several call envelopes is not read as one, and an owner a tree
-format states is resolved through the result's own recorded ancestry rather than by file order. The flat
+file's own record units, so a file holding several call envelopes is not read as one — rows the file's own
+records do not account for keep standing, so an extra invocation under a shared id is still reported —
+and an owner a tree format states is resolved through the result's own recorded ancestry rather than by
+file order, following the installed file's own entry chain where a parent names an entry the read-back
+holds no message for. The flat
 route's
 `unresolved_source_parents` count is the read's own relation answers too, so a parent the caller merely
 excluded is not reported as a relation the read could not place.
 The dispositions
 that exist for the reduction act only there: a run
 without the flag — which writes an id-less call under the plain positional spelling it has always written,
-a recorded id's duplicate included — and a selection applied to a document a selection already produced
+a recorded id's duplicate included, keeps writing a progress event, keeps the structural comparison's
+rows-against-items verdict for a Codex session and does not carry the reduction's own loss rows — and a
+selection applied to a document a selection already produced
 (refused by name),
 are what they were.
 Every run that carried a selection reports the transformation in both the human block and `--json`: the

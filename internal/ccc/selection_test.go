@@ -1633,6 +1633,253 @@ func TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall(t *testing.T) {
 	}
 }
 
+// TestSelectionReservesARecordedResultsSlotFromAnIdLessInference pins the tenth round's first finding:
+// an id-less result may be inferred only onto a call occurrence the document's own records do not
+// already answer. The shape is a Pi read's: call B, call A, an id-less result, and then a result that
+// records A's id, with the window carrying A and both result records and leaving B out. Both halves of
+// the recorded pair are retained, so the explicit result must take A's one output slot and the id-less
+// event -- which no record links to a call -- must be omitted and counted; inferring it onto A instead
+// displaced the recorded pairing (the explicit result then read as a repeat) and wrote the source's
+// words as the outcome of an invocation it never recorded them for. The second arm holds the reservation
+// to what it claims: a recorded result whose text this target cannot write reserves nothing, so the
+// id-less event may still be inferred onto its call, and a third carried call makes the id-less event
+// ambiguous even though the reserved call is going to be answered.
+func TestSelectionReservesARecordedResultsSlotFromAnIdLessInference(t *testing.T) {
+	const (
+		firstInput   = `{"command":"first"}`
+		secondInput  = `{"command":"second"}`
+		thirdInput   = `{"command":"third"}`
+		firstCall    = "toolu_first"
+		secondCall   = "toolu_second"
+		thirdCall    = "toolu_third"
+		idLessText   = "the id-less output"
+		recordedText = "the recorded output"
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call b", Dialogue: "call b",
+			ToolCalls: []ToolCall{{ToolUseID: firstCall, Name: "Bash", InputJSON: firstInput}}},
+		Message{Ordinal: 1, Role: "assistant", Content: "call a", Dialogue: "call a",
+			ToolCalls: []ToolCall{{ToolUseID: secondCall, Name: "Bash", InputJSON: secondInput}}},
+		Message{Ordinal: 2, Role: "user", Content: "the id-less output", Dialogue: "the id-less output",
+			ToolResults: []ToolResult{{ContentRaw: idLessText, ContentSize: len(idLessText)}}},
+		Message{Ordinal: 3, Role: "user", Content: "the recorded output", Dialogue: "the recorded output",
+			ToolResults: []ToolResult{{ToolUseID: secondCall, ContentRaw: recordedText,
+				ContentSize: len(recordedText)}}},
+	)
+	route, err := targetRouteFor(TargetOpenCode)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetOpenCode, err)
+	}
+	assertReserved := func(t *testing.T, arm string, carried Conversation, spec string) {
+		t.Helper()
+		selected, _, err := Select(carried, spec, false)
+		if err != nil {
+			t.Fatalf("%s: selecting %s: %v", arm, spec, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", arm, err)
+		}
+		written := map[string]string{}
+		for _, line := range selectionCallAndResultLines(t, TargetOpenCode, converted.Data) {
+			if strings.HasPrefix(line, "call ") {
+				fields := strings.SplitN(line, " ", 4)
+				if len(fields) != 4 {
+					t.Fatalf("%s: a call line is not 'call <id> <name> <input>': %q", arm, line)
+				}
+				written[fields[3]] = fields[1]
+			}
+		}
+		secondID, ok := written[secondInput]
+		if !ok {
+			t.Fatalf("%s: the written document holds no call for the occurrence the recorded result "+
+				"answers", arm)
+		}
+		for _, line := range selectionCallAndResultLines(t, TargetOpenCode, converted.Data) {
+			if strings.Contains(line, idLessText) {
+				t.Errorf("%s: the written document holds the id-less result: the recorded result's slot "+
+					"was reserved, so an inference may not take it (%q)", arm, line)
+			}
+		}
+		found := false
+		for _, line := range selectionCallAndResultLines(t, TargetOpenCode, converted.Data) {
+			if line == "result "+secondID+" "+recordedText {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: the written document does not hold the recorded result under the id the "+
+				"occurrence it answers stands under: the inference displaced a recorded pairing whose "+
+				"two halves the window carried", arm)
+		}
+		if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 1 {
+			t.Errorf("%s: unpaired_tool_results = %d, want the one id-less result no call it could be "+
+				"inferred onto answers", arm, got)
+		}
+		if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 0 {
+			t.Errorf("%s: generated_call_ids = %d, want 0: nothing was inferred", arm, got)
+		}
+	}
+	// The window 1-3 carries A and both result records and leaves B out.
+	assertReserved(t, "the recorded pairing's window", conversation, "1-3")
+
+	// The ambiguity arm: the same window plus a third carried call no result answers. The reserved call
+	// is still unanswered where the id-less result stands, so the inference has no single call to name.
+	withThird := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call b", Dialogue: "call b",
+			ToolCalls: []ToolCall{{ToolUseID: firstCall, Name: "Bash", InputJSON: firstInput}}},
+		Message{Ordinal: 1, Role: "assistant", Content: "call a", Dialogue: "call a",
+			ToolCalls: []ToolCall{{ToolUseID: secondCall, Name: "Bash", InputJSON: secondInput}}},
+		Message{Ordinal: 2, Role: "assistant", Content: "call c", Dialogue: "call c",
+			ToolCalls: []ToolCall{{ToolUseID: thirdCall, Name: "Bash", InputJSON: thirdInput}}},
+		Message{Ordinal: 3, Role: "user", Content: "the id-less output", Dialogue: "the id-less output",
+			ToolResults: []ToolResult{{ContentRaw: idLessText, ContentSize: len(idLessText)}}},
+		Message{Ordinal: 4, Role: "user", Content: "the recorded output", Dialogue: "the recorded output",
+			ToolResults: []ToolResult{{ToolUseID: secondCall, ContentRaw: recordedText,
+				ContentSize: len(recordedText)}}},
+	)
+	assertReserved(t, "the ambiguous window", withThird, "1-4")
+
+	// The control: a recorded result whose text the target's output field cannot carry (whitespace only)
+	// is no outcome on the written path, so it reserves nothing -- the id-less event is the only outcome
+	// evidence that can travel and is inferred onto the call, disclosed as an inference, exactly as a
+	// call whose only recorded outcome is unwritable has always been read.
+	blank := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call b", Dialogue: "call b",
+			ToolCalls: []ToolCall{{ToolUseID: firstCall, Name: "Bash", InputJSON: firstInput}}},
+		Message{Ordinal: 1, Role: "assistant", Content: "call a", Dialogue: "call a",
+			ToolCalls: []ToolCall{{ToolUseID: secondCall, Name: "Bash", InputJSON: secondInput}}},
+		Message{Ordinal: 2, Role: "user", Content: "the id-less output", Dialogue: "the id-less output",
+			ToolResults: []ToolResult{{ContentRaw: idLessText, ContentSize: len(idLessText)}}},
+		Message{Ordinal: 3, Role: "user", Content: "   ", Dialogue: "   ",
+			ToolResults: []ToolResult{{ToolUseID: secondCall, ContentRaw: "   ", ContentSize: 3}}},
+	)
+	selected, _, err := Select(blank, "1-3", false)
+	if err != nil {
+		t.Fatalf("selecting the blank-outcome window: %v", err)
+	}
+	converted, err := route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the blank-outcome window: %v", err)
+	}
+	if !strings.Contains(string(converted.Data), idLessText) {
+		t.Errorf("the written document does not hold the id-less result: a recorded result this target " +
+			"cannot write reserves no slot, so the inference was the only outcome that could travel")
+	}
+	if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 1 {
+		t.Errorf("blank-outcome generated_call_ids = %d, want the one inferred result", got)
+	}
+}
+
+// TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite pins the reservation's own question: a slot is
+// reserved for the outcome the *written* part is owed, so a result standing where this plan writes no
+// tool evidence reserves nothing -- a record the read's own line leaves off it, a subagent's record, a
+// record the writer publishes as a compaction boundary alone (writeMessage's own skips) -- and neither
+// does a progress event, which is no outcome the part could state. Every arm's read is the finding's own
+// order: a call, then the id-less result, then the event whose slot would be reserved. The id-less result
+// is written under the call's own id in every arm, disclosed as an inference, and the event that could
+// not answer it is counted; without the conditions the call would look answered and the id-less event --
+// the only outcome evidence the document can carry -- would be dropped in favor of a result that never
+// travels.
+func TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite(t *testing.T) {
+	const (
+		callID     = "toolu_slot"
+		callInput  = `{"command":"slot"}`
+		idLessText = "the id-less output"
+		owedText   = "the event whose slot would have been reserved"
+	)
+	conversation := func(owed Message, askParent string) Conversation {
+		return testConversation(
+			Message{Ordinal: 0, Role: "user", Content: "root", Dialogue: "root", SourceUUID: "u1"},
+			Message{Ordinal: 1, Role: "assistant", Content: "the call", Dialogue: "the call",
+				SourceUUID: "a2", SourceParentUUID: "u1",
+				ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: callInput}}},
+			Message{Ordinal: 2, Role: "user", Content: "the id-less output",
+				Dialogue:   "the id-less output",
+				SourceUUID: "r3", SourceParentUUID: "a2",
+				ToolResults: []ToolResult{{ContentRaw: idLessText, ContentSize: len(idLessText)}}},
+			owed,
+			Message{Ordinal: 4, Role: "user", Content: "the ask", Dialogue: "the ask",
+				SourceUUID: "t5", SourceParentUUID: askParent},
+		)
+	}
+	outcome := func(parent string) Message {
+		return Message{Ordinal: 3, Role: "user", Content: owedText, Dialogue: owedText,
+			SourceUUID: "s4", SourceParentUUID: parent,
+			ToolResults: []ToolResult{{ToolUseID: callID, ContentRaw: owedText,
+				ContentSize: len(owedText)}}}
+	}
+	progress := Message{Ordinal: 3, Role: "user", Content: owedText, Dialogue: owedText,
+		SourceUUID: "s4", SourceParentUUID: "r3",
+		ToolResults: []ToolResult{{ToolUseID: callID, Status: "running", ContentRaw: owedText,
+			ContentSize: len(owedText)}}}
+	sidechain := outcome("r3")
+	sidechain.IsSidechain = true
+	compaction := outcome("r3")
+	compaction.IsCompactBoundary = true
+	for _, arm := range []struct {
+		name    string
+		carried Conversation
+	}{
+		// The event's record hangs off the root while the conversation continues through the id-less
+		// result, so the read's own line leaves it off the walk and the plan never installs it. The ask
+		// record chains through the id-less result, not through the owed record.
+		{"a record the read's line leaves off", conversation(outcome("u1"), "r3")},
+		// A subagent's record: the plan and the writer both skip a sidechain record, though the record
+		// stands on the line (the ask record chains through it).
+		{"a subagent's record", conversation(sidechain, "s4")},
+		// A compaction boundary record: the writer publishes the boundary alone and never its evidence.
+		{"a compaction boundary record", conversation(compaction, "s4")},
+		// A progress event names the call but states no outcome the tool states can spell, so the part is
+		// owed nothing.
+		{"a progress event", conversation(progress, "s4")},
+	} {
+		selected, _, err := Select(arm.carried, "0-", false)
+		if err != nil {
+			t.Fatalf("%s: selecting the whole read: %v", arm.name, err)
+		}
+		route, err := targetRouteFor(TargetOpenCode)
+		if err != nil {
+			t.Fatalf("route %s: %v", TargetOpenCode, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the window: %v", arm.name, err)
+		}
+		written := ""
+		for _, line := range selectionCallAndResultLines(t, TargetOpenCode, converted.Data) {
+			if strings.HasPrefix(line, "call ") && strings.Contains(line, callInput) {
+				written = strings.Fields(line)[1]
+			}
+		}
+		if written == "" {
+			t.Fatalf("%s: the written document holds no call for the occurrence", arm.name)
+		}
+		found := false
+		for _, line := range selectionCallAndResultLines(t, TargetOpenCode, converted.Data) {
+			if line == "result "+written+" "+idLessText {
+				found = true
+			}
+			if strings.Contains(line, owedText) {
+				t.Errorf("%s: the written document holds the event the reservation was about (%q): a "+
+					"result this plan does not write is not the outcome the part is owed", arm.name, line)
+			}
+		}
+		if !found {
+			t.Errorf("%s: the written document does not hold the id-less result under the call's own "+
+				"id: a result the plan does not write reserved the slot an inference could have filled",
+				arm.name)
+		}
+		if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 1 {
+			t.Errorf("%s: generated_call_ids = %d, want the one inferred result", arm.name, got)
+		}
+		if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: the id-less result was written under the "+
+				"call it could mean", arm.name, got)
+		}
+	}
+}
+
 // TestSelectionWritesCollidingCallOccurrencesUnderDistinctTargetIDs pins the eighth round's first
 // finding: a document a selection produced writes every call occurrence the read holds, and when the
 // source recorded one id on two of them the later occurrence is written under an id generated from its
@@ -1956,6 +2203,94 @@ func TestSelectionReportsAResultWhoseAncestryLeavesItsCall(t *testing.T) {
 				"invocation: it resolved the owner by id order, not by the relation the file records",
 				target)
 		}
+	}
+}
+
+// TestClaudeRoundTripResolvesAResultOwnerThroughAMergedAssistantRecord pins the tenth round's third
+// finding: the Claude writer emits one record per content block of one source record and every record of
+// one source message carries that message's id, so the reader merges a dialogue record and a tool-call
+// record into the run's *last* one -- whose own parent names the entry that was merged away. The owner
+// check walked only the uuids the read-back holds as messages, stopped at that merged-away link and
+// reported a correct conversion as missing the invocation its own installed chain reaches. The shape is
+// the finding's: call A, a later assistant record carrying dialogue and call B (two entries sharing one
+// message id), then A's recorded result, which pairs with A by the read's own ancestry.
+func TestClaudeRoundTripResolvesAResultOwnerThroughAMergedAssistantRecord(t *testing.T) {
+	const (
+		callA = "toolu_merged_a"
+		callB = "toolu_merged_b"
+		bText = "call b and its outcome"
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "root", Dialogue: "root", SourceUUID: "u0"},
+		Message{Ordinal: 1, Role: "assistant",
+			SourceUUID: "a1", SourceParentUUID: "u0",
+			ToolCalls: []ToolCall{{ToolUseID: callA, Name: "Bash", InputJSON: `{"command":"a"}`}}},
+		Message{Ordinal: 2, Role: "assistant", Content: bText, Dialogue: bText,
+			SourceUUID: "b2", SourceParentUUID: "a1",
+			ToolCalls: []ToolCall{{ToolUseID: callB, Name: "Bash", InputJSON: `{"command":"b"}`}}},
+		Message{Ordinal: 3, Role: "user", Content: "a's result", Dialogue: "a's result",
+			SourceUUID: "r3", SourceParentUUID: "b2",
+			ToolResults: []ToolResult{{ToolUseID: callA, ContentRaw: "the output"}}},
+	)
+	selected, _, err := Select(conversation, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the whole read: %v", err)
+	}
+	route, err := targetRouteFor(TargetClaude)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetClaude, err)
+	}
+	converted, err := route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	home := t.TempDir()
+	path, _, err := route.Install(context.Background(), converted, targetInstallInput{Home: home})
+	if err != nil {
+		t.Fatalf("installing the session: %v", err)
+	}
+	installed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	// The case is only about a merged chain if the installed file really holds one: two assistant
+	// records sharing a message id, the earlier of them merged away by the reader.
+	merged := 0
+	ids := map[string]int{}
+	for _, line := range bytes.Split(bytes.TrimSpace(installed), []byte("\n")) {
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decoding an installed record: %v", err)
+		}
+		if record["type"] != "assistant" {
+			continue
+		}
+		message, _ := record["message"].(map[string]any)
+		id, _ := message["id"].(string)
+		if id == "" {
+			continue
+		}
+		ids[id]++
+	}
+	for _, count := range ids {
+		if count > 1 {
+			merged++
+		}
+	}
+	if merged != 1 {
+		t.Fatalf("the installed session holds %d assistant message id(s) carried by several records, "+
+			"want the one the finding's shape writes (the dialogue and the tool call of one source "+
+			"record)", merged)
+	}
+	verification, err := route.ReadBack(context.Background(), route.StructureRoot(home), converted,
+		fixtureConfig(t))
+	if err != nil {
+		t.Fatalf("reading the installed session back: %v", err)
+	}
+	if verification.State != VerificationStateVerified {
+		t.Errorf("the conversion verifies as %s: %s; the result's own installed ancestry reaches the "+
+			"invocation it states, through the entry the reader merged away",
+			verification.State, verification.Detail)
 	}
 }
 
@@ -2878,10 +3213,11 @@ func TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers(t *te
 	// invocation reads back as two rows and the unflagged file's two records as four, so a comparison of
 	// raw read-back rows reports the selected document as missing a call although the file holds the one
 	// invocation it wrote (round 9's finding 2 -- the finding's cited test stopped at the written
-	// envelopes and never ran the read-back). The check compares invocation units -- the file's own
-	// `function_call` records -- so the selected conversion verifies; the negative arm holds the fold to
-	// the file: a document claiming one invocation against a file holding two actual call envelopes is
-	// still reported.
+	// envelopes and never ran the read-back). The check compares invocation units -- the file's own call
+	// records -- for a document a selection produced, so the selected conversion verifies; the negative
+	// arm holds the fold to the file (a document claiming one invocation against a file holding two
+	// actual call envelopes is still reported), and round 10's finding 2 holds it to the *document*: the
+	// same check run unflagged keeps the rows-against-items verdict its revisions before the fold had.
 	installAndVerify := func(t *testing.T, arm string, rollout CodexRollout) (StructureVerification, []byte) {
 		t.Helper()
 		home := t.TempDir()
@@ -2915,9 +3251,27 @@ func TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers(t *te
 			"projection of one `apply_patch` record shows", selectedRows)
 	}
 	unflaggedVerification, unflaggedInstalled := installAndVerify(t, "unflagged", unflaggedRollout)
-	if unflaggedVerification.State != VerificationStateVerified {
-		t.Errorf("the unflagged codex conversion verifies as %s: %s", unflaggedVerification.State,
-			unflaggedVerification.Detail)
+	// The fold is the reduction's (codexRoundTripReader(rollout.SelectionReduced)), and this arm is the
+	// half of goal 0009's D4 that keeps it so: the unflagged comparison reads the reader's per-file rows
+	// as calls and reports the file's extra rows, exactly as every revision before the fold did. The
+	// verdict, the warning that restates it and the CLI exit status that follows from it are the default
+	// path's own; the round-10 finding 2 measured them moving when the fold ran unflagged, and the
+	// before/after probe (docs/evidence/0009-d4-probe.txt) is the record of both revisions.
+	if unflaggedVerification.State != VerificationStateNotVerified {
+		t.Errorf("the unflagged codex conversion verifies as %s, want the not-verified verdict every "+
+			"revision before the fold answered: the fold is the reduction's, and a run without a "+
+			"selection keeps the comparison, the verdict and the exit status it has always had",
+			unflaggedVerification.State)
+	}
+	if !strings.Contains(unflaggedVerification.Detail, "is in the file but was not written") {
+		t.Errorf("the unflagged detail = %q, want the reader's per-file rows reported as calls the "+
+			"document did not write", unflaggedVerification.Detail)
+	}
+	if roundTrip := compareCodexRoundTrip(unflaggedRollout,
+		Conversation{Messages: codexReadBackMessages(t, unflaggedRollout)},
+		unflaggedInstalled); len(roundTrip.differences) == 0 {
+		t.Error("the unflagged comparison folded the reader's per-file rows into the file's records: " +
+			"the invocation-unit fold belongs to a document a selection produced")
 	}
 	if roundTrip := compareCodexRoundTrip(selectedRollout,
 		Conversation{Messages: codexReadBackMessages(t, unflaggedRollout)},
@@ -3011,11 +3365,13 @@ func TestSelectionCountsACallWithOnlyProgressEventsUndischarged(t *testing.T) {
 // TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters pins the writers' half of the progress
 // rule on a reduced document: a recorded result whose status says the call is still running is not an
 // answer -- the selection's own count reads the event that way -- so it must not leave the outstanding
-// set a reduced writer's id-less inference reads either. The read records call A, a `running` event of
-// A, call B, and an id-less result on the same path: both calls are outstanding where the result stands,
-// so the result is omitted and counted while the progress event itself travels as the recorded evidence
-// it is. The default path keeps the ledger's file-wide set, which the running event clears (goal 0009's
-// D4: a run without a selection keeps the answer its writers had).
+// set a reduced writer's id-less inference reads either, and the writers must not present it as the
+// call's outcome. The read records call A, a `running` event of A, call B, and an id-less result on the
+// same path: both calls are outstanding where the result stands, so the result is omitted and counted,
+// and the progress event itself is omitted and named on every route -- Codex's function_call_output,
+// Claude's tool_result block, the Pi family's toolResult message and OpenCode's tool part all carry an
+// outcome or nothing, so a written event would read back as the call's *answer* (round 10's finding 5;
+// the default arm below is the half of goal 0009's D4 that keeps writing it on the unflagged path).
 func TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters(t *testing.T) {
 	const progressText = "Still working"
 	const outcomeText = "the late output"
@@ -3059,6 +3415,17 @@ func TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters(t *testing.T) {
 				"outstanding (A's only recorded event is progress), so the inference had no single call "+
 				"to name", target)
 		}
+		if strings.Contains(data, progressText) {
+			t.Errorf("%s: the written document holds the recorded progress event as the call's output: "+
+				"the format carries an outcome or nothing, so the words would read back as the call's "+
+				"answer", target)
+		}
+		// The event is omitted and named on every route's own vocabulary: the target's outcome shape
+		// cannot hold a call that is still running, so the text does not travel and the count says so.
+		if count := lossCount(t, converted.Losses, "nonterminal_tool_events").Count; count != 1 {
+			t.Errorf("%s: nonterminal_tool_events = %d, want the one recorded progress event the "+
+				"format cannot carry as progress", target, count)
+		}
 		if count := lossCount(t, converted.Losses, "unpaired_tool_results").Count; count != 1 {
 			t.Errorf("%s: unpaired_tool_results = %d, want the one result no single call answers",
 				target, count)
@@ -3066,26 +3433,14 @@ func TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters(t *testing.T) {
 		if count := lossCount(t, converted.Losses, "generated_call_ids").Count; count != 0 {
 			t.Errorf("%s: generated_call_ids = %d, want 0: the inference picked no call", target, count)
 		}
-		if target == TargetOpenCode {
-			// This target's tool part holds an outcome or nothing, so the progress event is not written
-			// -- it is counted under the route's own category rather than presented as the call's
-			// outcome.
-			if count := lossCount(t, converted.Losses, "nonterminal_tool_events").Count; count != 1 {
-				t.Errorf("opencode: nonterminal_tool_events = %d, want the one recorded progress event "+
-					"the harness's tool states cannot hold", count)
-			}
-			continue
-		}
-		if !strings.Contains(data, progressText) {
-			t.Errorf("%s: the written document does not hold the recorded progress event: it is evidence "+
-				"the read carries, and the rule is about what answers a call", target)
-		}
 	}
 	// The default path keeps the ledger's own answer: the running event clears the call's id there, so
 	// the one outstanding id is B's and the result is written under it -- the writer's answer before
-	// selections existed, which a run without the flag must keep (goal 0009's D4). OpenCode is left out
-	// of this arm: its plan already refuses a progress event as an outcome, so its ledger holds A and B
-	// and its default path omits the result too.
+	// selections existed, which a run without the flag must keep (goal 0009's D4). The progress event
+	// itself is written there too, which is the same answer those writers have always had and the other
+	// half of the round-10 finding 5's scoping: the omission above is the reduction's. OpenCode is left
+	// out of this arm: its plan already refuses a progress event as an outcome, so its ledger holds A and
+	// B and its default path omits the result too.
 	for _, target := range []string{TargetClaude, TargetPi, TargetOMP, TargetCodex} {
 		route, err := targetRouteFor(target)
 		if err != nil {
@@ -3098,6 +3453,18 @@ func TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters(t *testing.T) {
 		if !strings.Contains(string(converted.Data), outcomeText) {
 			t.Errorf("%s: the unflagged conversion drops the id-less result: the ledger's id-keyed set "+
 				"is the default path's answer", target)
+		}
+		if !strings.Contains(string(converted.Data), progressText) {
+			t.Errorf("%s: the unflagged conversion drops the recorded progress event: a run without a "+
+				"selection keeps writing it, which is the answer its writer has always had", target)
+		}
+		// The category is the reduction's own, as the colliding-id and coalesced-projection rows are: a
+		// zero row may not be added to the default path's report (goal 0009's D4, whole report included).
+		for _, loss := range converted.Losses {
+			if loss.Category == "nonterminal_tool_events" {
+				t.Errorf("%s: the unflagged conversion carries the reduction's own "+
+					"nonterminal_tool_events row", target)
+			}
 		}
 	}
 }

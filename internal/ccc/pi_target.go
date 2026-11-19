@@ -580,6 +580,7 @@ type piSessionBuilder struct {
 	lossUnresolvedDialogue    int
 	lossUnprojectedDialogue   int
 	lossUnpaired              int
+	lossNonterminal           int
 	lossEmptyResults          int
 	lossWhitespaceRes         int
 	lossResultFallbacks       int
@@ -1373,6 +1374,19 @@ func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolRe
 		// writer had).
 		delete(b.pendingCalls, callID)
 	}
+	if b.selectionReduced && !resultStatesAnOutcome(result.Status) {
+		// The read records a call's progress as events of the call's own beside its outcome
+		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
+		// chunk. This family's toolResult message carries the text and an `isError` flag and no outcome
+		// status, so a written message reads back as the call's *answer* -- the family's reader takes a
+		// toolResult for the call's outcome -- and the file would claim a completion the source had not
+		// recorded when it wrote those words. A document a selection produced omits the event and names
+		// it here (the same disposition OpenCode's plan takes, where the harness's tool states hold no
+		// progress); a run without a selection keeps writing it, which is the answer it has always had
+		// (goal 0009's D4; round 10's finding 5).
+		b.lossNonterminal++
+		return false
+	}
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks
 	if strings.TrimSpace(text) == "" {
@@ -1797,6 +1811,25 @@ func (b *piSessionBuilder) losses() []Loss {
 				"toolResult to the call whose block registered the id), so the occurrence was written " +
 				"under an id generated from its own place and the file does not state the id the " +
 				"source recorded for it",
+		})
+		// The progress category is reduction-scoped as well: only a document a selection produced omits
+		// a recorded progress event, because only there does the writer act on the read's own rule -- a
+		// call still running is not answered -- and the default path keeps writing the message, which is
+		// the answer it has always had (goal 0009's D4), so its report keeps its own category list
+		// unchanged. The count is zero on a reduced document with no progress event, so within the
+		// selection surface the completeness rule holds as the other rows' does.
+		losses = append(losses, Loss{
+			Category:    "nonterminal_tool_events",
+			Disposition: DispositionOmitted,
+			Count:       b.lossNonterminal,
+			Detail: "the read records a call's progress as events of its own beside the call's outcome " +
+				"(the shape the inherited termination rule reads: a Codex subagent's `running` " +
+				"notification streams in while its call is still executing, and the RooCode/Kilo chunk " +
+				"readers record streamed chunks the same way). The family's toolResult message carries " +
+				"the text and an isError flag and no outcome status, so a written message reads back as " +
+				"the call's *answer* -- the family's reader takes a toolResult for the call's outcome -- " +
+				"and the file would claim a completion the source had not recorded when it wrote those " +
+				"words",
 		})
 	}
 	return losses

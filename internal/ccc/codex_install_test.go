@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -165,6 +167,117 @@ func TestCodexRoundTripAssertsTheOwningCallOfEachResult(t *testing.T) {
 			t.Errorf("difference = %q, want none about the calls or their results: each output is read "+
 				"back on the occurrence it was written for", difference)
 		}
+	}
+}
+
+// TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute pins the tenth round's fourth finding: the
+// invocation-unit fold answers the reader's per-file projection of one written record, so it may fold
+// only the rows that record accounts for. A `custom_tool_call` appended under the id of the one
+// `function_call` the selected document wrote is an invocation the inherited reader reads (it is a call
+// row with its own name and input) but the fold's units -- the writer's own `function_call` envelopes --
+// do not account for, and folding the id wholesale discarded the read-back's rows in favor of the single
+// unit, so the extra invocation produced no difference at all. The case drives the real writer, the real
+// installer and the inherited reader: the control arm is the untampered file, where the fold is taken and
+// the conversion holds no call difference, and the tampered arm must report the invocation the file
+// states and the document does not.
+func TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute(t *testing.T) {
+	const extraCommand = "the extra invocation's own command"
+	patch := readFixtureConversation(t, codexPatchFixtureRef)
+	selected, _, err := Select(patch, "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the whole read: %v", err)
+	}
+	rollout, err := ConvertToCodexRollout(selected, CodexTargetOptions{CLIVersion: "selection-test-0.0"})
+	if err != nil {
+		t.Fatalf("converting the whole selected read to codex: %v", err)
+	}
+	if !rollout.SelectionReduced {
+		t.Fatal("the converted document does not say it is one a selection produced: the fold is gated " +
+			"on that answer")
+	}
+	home := t.TempDir()
+	if _, _, err := InstallCodexRollout(rollout, home); err != nil {
+		t.Fatalf("installing the rollout: %v", err)
+	}
+	installed, err := os.ReadFile(filepath.Join(home, codexSessionsSubdir,
+		filepath.FromSlash(rollout.Directory), rollout.FileName))
+	if err != nil {
+		t.Fatalf("reading the installed rollout: %v", err)
+	}
+	callID, callName, callInput := "", "", ""
+	for _, item := range rollout.Items {
+		if item.Kind == ItemToolCall {
+			callID, callName, callInput = item.CallID, item.ToolName, item.InputJSON
+		}
+	}
+	if callID == "" {
+		t.Fatal("the converted document holds no call item to attach the extra invocation to")
+	}
+
+	noCallDifference := func(t *testing.T, arm string, differences []string) {
+		t.Helper()
+		for _, difference := range differences {
+			if strings.Contains(difference, categoryToolCall) || strings.Contains(difference, categoryToolResult) {
+				t.Errorf("%s: difference = %q, want none about the calls or their results", arm, difference)
+			}
+		}
+	}
+	control := compareCodexRoundTrip(rollout,
+		Conversation{Messages: codexReadBackMessages(t, rollout)}, installed)
+	noCallDifference(t, "control", control.differences)
+
+	// The extra invocation is a `custom_tool_call` the inherited reader reads as a call of its own: the
+	// record type the writer never writes, under the id the document's own call holds.
+	extra := codexInstalledLine(t, codexRecordResponseItem, codexFunctionCallPayload{
+		Type:      codexItemCustomToolCall,
+		CallID:    callID,
+		Name:      "Bash",
+		Arguments: `{"command":"` + extraCommand + `"}`,
+	})
+	tampered := []byte(strings.TrimRight(string(installed), "\n") + "\n" + extra)
+	tamperedRollout := CodexRollout{Directory: rollout.Directory, FileName: rollout.FileName, Data: tampered}
+	roundTrip := compareCodexRoundTrip(rollout,
+		Conversation{Messages: codexReadBackMessages(t, tamperedRollout)}, tampered)
+	reported := false
+	for _, difference := range roundTrip.differences {
+		if strings.Contains(difference, "to Bash") {
+			reported = true
+		}
+		if strings.Contains(difference, extraCommand) {
+			t.Errorf("difference = %q, want the extra invocation named without its text", difference)
+		}
+	}
+	if !reported {
+		t.Errorf("differences = %q, want the invocation the file's own `custom_tool_call` states and "+
+			"the document does not: the fold may discard only the rows the file's own records account "+
+			"for", roundTrip.differences)
+	}
+
+	// The same shape with the extra call's own name and input equal to the document's: the reader's rows
+	// for the two records are equal in every field the comparison keys a call by, so nothing in the rows
+	// says which record a row came from -- the file's own records are what tell them apart. A fold that
+	// reads the id alone drops the units this record states because its rows look like the document's
+	// own, so the extra invocation must be reported here too.
+	sameKey := codexInstalledLine(t, codexRecordResponseItem, codexFunctionCallPayload{
+		Type:      codexItemCustomToolCall,
+		CallID:    callID,
+		Name:      callName,
+		Arguments: callInput,
+	})
+	tamperedSame := []byte(strings.TrimRight(string(installed), "\n") + "\n" + sameKey)
+	sameRollout := CodexRollout{Directory: rollout.Directory, FileName: rollout.FileName, Data: tamperedSame}
+	sameRoundTrip := compareCodexRoundTrip(rollout,
+		Conversation{Messages: codexReadBackMessages(t, sameRollout)}, tamperedSame)
+	namedExtra := false
+	for _, difference := range sameRoundTrip.differences {
+		if strings.Contains(difference, categoryToolCall) {
+			namedExtra = true
+		}
+	}
+	if !namedExtra {
+		t.Errorf("differences = %q, want the second call record reported although its reader's rows "+
+			"hold the id, the name and the input the document's own call holds: the file states two "+
+			"records and the document one", sameRoundTrip.differences)
 	}
 }
 

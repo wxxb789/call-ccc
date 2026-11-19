@@ -3203,6 +3203,10 @@ supersede it with a newer one and say which it supersedes.
 
 ## Q-0009-12 — The structural check compares a Codex file's invocation units, the reduced id-less inference reads writable summaries, and the generated-id walk stays reduction-scoped
 
+> Superseded in part by [Q-0009-13](#q-0009-13--the-codex-fold-is-the-reductions-own-a-written-recorded-result-reserves-its-slot-a-selected-progress-event-is-omitted-and-a-tree-owner-follows-the-installed-chain):
+> the invocation-unit fold is now the reduction's own — an unflagged run keeps the rows-against-items
+> verdict this entry's default moved — while the entry's other defaults stand.
+
 - **Status:** open (defaults taken: the Codex structural comparison answers the call evidence of an id the
   installed file states a `function_call` record under from the file's own records — one record, one
   invocation unit — while the read-back's rows stand for unstated ids and for an id the read-back holds
@@ -3248,3 +3252,52 @@ supersede it with a newer one and say which it supersedes.
   the plan will install, the default path keeps its ledger's answer and the plain positional spelling, and
   a tree owner assertion reads the result's recorded ancestry" and "each of those is decided the other
   way".
+
+## Q-0009-13 — The Codex fold is the reduction's own, a written recorded result reserves its slot, a selected progress event is omitted, and a tree owner follows the installed chain
+
+- **Status:** open (defaults taken: the Codex structural comparison installs its invocation-unit fold only
+  for a document a selection produced, so an unflagged conversion keeps the rows-against-items verdict,
+  the warning, the report digest and the CLI exit status every revision before the fold answered; where a
+  target's part holds one outcome per call, a recorded result a reduced document *writes* reserves its call
+  occurrence against the id-less inference, while a result the conversion does not write (an off-line,
+  subagent or compaction-boundary record's, one whose text or status the tool states cannot spell) reserves
+  nothing and a reserved occurrence still counts as unanswered where the id-less result stands; on a
+  reduced document the four writers omit a recorded progress event and count it
+  (`nonterminal_tool_events`, a row the default path's report does not carry) rather than write it as the
+  call's outcome; the fold folds an id's rows only where every row's key is one the file's own call records
+  state and every record states one, so a call record the reader reads under that id — a type whose key
+  this build does not restate included — is reported rather than folded away; and a tree owner assertion
+  follows the installed file's own entry chain past an entry the read-back holds no message for).
+- **Question:** may a *check* keep a comparison a later revision proved wrong for a document whose bytes
+  did not move, and may a reduced document omit recorded evidence (a progress event) whose format cannot
+  carry its status, while the default path keeps writing it?
+- **Default taken:** each change is the smallest one that keeps goal 0009's D4 — "a run without a selection
+  flag is byte-identical to the same run before the change" — true at the surface the probe measures
+  (written bytes *and* the whole folded report), and each is disclosed rather than silent. The eleventh
+  review round's findings measured the five shapes: the fold running unflagged moved the committed
+  two-file `apply_patch` fixture's verdict `not-verified` → `verified` for a conversion whose bytes did not
+  move, which also flips the CLI's exit status under `--verify none` (the finding's P1; scoping the fold to
+  the reduction makes §4's 1183-line shared diff silent again); OpenCode's plan wrote whatever result
+  reached a call's one slot first, so a reduced window keeping a call and both its result records let an
+  id-less event displace the recorded result, which was then counted as a repeat (fixed by reserving the
+  slot; the other four routes hold one outcome per call in the document's own order and write both events,
+  so nothing is displaced there); the reduced writers counted a `running` event as progress but still wrote
+  its text as the call's output, which these formats read back as the call's answer (fixed by omitting and
+  counting it on the reduced path; the default path keeps writing it); the fold replaced every row under an
+  id the writer's `function_call` records stated, so a `custom_tool_call` appended under that id produced
+  no difference (fixed by folding only rows the file's records account for); and the owner walk stopped at
+  a uuid the Claude reader's merge had removed from the read-back although the installed chain reached the
+  invocation (fixed by stepping through the file's own entry relations).
+- **Reversal:** the pre-fix behaviour returns by making `codexRoundTripReader` install `codexCallEvidence`
+  unconditionally, dropping `reserveResultSlots` and the `reservedSlots` test in `soleInferablePlannedCall`,
+  removing the four writers' progress guard, restoring the id-count rule in `codexFoldableRows` and the
+  `function_call`-only unit scan, and clearing the Claude reader's `entryParents` — each reopens the
+  failure its mutation records (`docs/evidence/0009-selective-context.md`, eleventh round, `M1`-`M14`). The
+  stronger alternatives — writing a progress event as the call's outcome on the reduced path, keeping the
+  fold's verdict change on the default path, or letting an inference take a reserved slot — are the
+  operator's decision, not this build's.
+- **Settled by:** an operator decision between "the Codex fold is the reduction's own (the default path
+  keeps its historical verdict and exit status), a written recorded result reserves its call's slot against
+  the inference, a reduced document omits a progress event its format cannot carry and counts it, the fold
+  folds only the rows the file's own records account for, and a tree owner follows the installed chain past
+  a merged-away entry" and "each of those is decided the other way".

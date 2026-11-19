@@ -320,8 +320,8 @@ func roundTripOwnerResultKey(ownerKey string, known bool, callID, text string) s
 // readResultOwnerKeys answers, per result occurrence of a read-back, the call occurrence the target's own
 // reader attaches it to, keyed by the result's place in the read-back.
 //
-// ownersByAncestry says the read-back's reader answers its records' parent relations (the Pi family and
-// the Claude transcript): the owner is then the call occurrence the result's own written ancestry
+// reader.ownersByAncestry says the read-back's reader answers its records' parent relations (the Pi family
+// and the Claude transcript): the owner is then the call occurrence the result's own written ancestry
 // reaches (readResultOwnerKeysByAncestry), so a result whose recorded relation reaches a sibling's
 // message is reported rather than accepted because an earlier call in file order shares its id (round
 // 9's finding 4). Otherwise the rule these formats' flat readers take stands: the last call the read-back
@@ -330,9 +330,9 @@ func roundTripOwnerResultKey(ownerKey string, known bool, callID, text string) s
 // Codex reader keeps the last call registered for an id) -- so a result a conversion wrote under an id
 // two occurrences share answers a different invocation than the writer intended, and comparing the owner
 // is what shows it.
-func readResultOwnerKeys(readBack Conversation, ownersByAncestry bool) map[resultOccurrence]string {
-	if ownersByAncestry {
-		return readResultOwnerKeysByAncestry(readBack)
+func readResultOwnerKeys(readBack Conversation, reader roundTripReader, installed []byte) map[resultOccurrence]string {
+	if reader.ownersByAncestry {
+		return readResultOwnerKeysByAncestry(readBack, reader, installed)
 	}
 	owners := map[resultOccurrence]string{}
 	lastUnderID := map[string]string{}
@@ -363,12 +363,27 @@ func readResultOwnerKeys(readBack Conversation, ownersByAncestry bool) map[resul
 // format's shape, which keeps the file-order rule above. A chain the file's records cannot answer (an
 // unknown parent id, a record without one) ends the walk; the cycle bound keeps a file whose relations
 // loop from walking forever.
-func readResultOwnerKeysByAncestry(readBack Conversation) map[resultOccurrence]string {
+//
+// A parent the read-back does not hold as a message of its own is not the end of the walk: the reader
+// merges some records into others (the Claude reader puts the assistant entries of one message id back
+// into the run's last entry, which keeps that entry's parent -- a uuid held by the entry that was merged
+// away), and the chain the *file* records steps through that entry to the ancestor the merged message
+// really hangs off. Where the route answers the installed file's own entry relations
+// (roundTripReader.entryParents), the walk follows that chain past such an entry rather than stopping at
+// it, so a result whose invocation stands above a merged entry is not reported missing although the
+// installed ancestry reaches it (round 10's finding 3).
+func readResultOwnerKeysByAncestry(
+	readBack Conversation, reader roundTripReader, installed []byte,
+) map[resultOccurrence]string {
 	position := map[string]int{}
 	for index, message := range readBack.Messages {
 		if id := strings.TrimSpace(message.SourceUUID); id != "" {
 			position[id] = index
 		}
+	}
+	fileParents := map[string]string{}
+	if reader.entryParents != nil {
+		fileParents = reader.entryParents(installed)
 	}
 	lastUnderID := func(message Message, callID string) (string, bool) {
 		owner := ""
@@ -386,10 +401,13 @@ func readResultOwnerKeysByAncestry(readBack Conversation) map[resultOccurrence]s
 	for index, message := range readBack.Messages {
 		for resultIndex, result := range message.ToolResults {
 			parent := strings.TrimSpace(message.SourceParentUUID)
-			for steps := 0; parent != "" && steps <= len(readBack.Messages); steps++ {
+			for steps := 0; parent != "" && steps <= len(readBack.Messages)+len(fileParents); steps++ {
 				next, ok := position[parent]
 				if !ok {
-					break
+					// The entry produced no message of its own (the reader merged it into another): the
+					// file's own relation is what says where the message continues.
+					parent = strings.TrimSpace(fileParents[parent])
+					continue
 				}
 				if owner, ok := lastUnderID(readBack.Messages[next], result.ToolUseID); ok {
 					owners[resultOccurrence{message: index, result: resultIndex}] = owner
@@ -416,7 +434,7 @@ func readRoundTripEvidence(
 	evidence.dialogue = readBackDialogueKeys(readBack, reader)
 	owners := map[resultOccurrence]string{}
 	if ownersStated {
-		owners = readResultOwnerKeys(readBack, reader.ownersByAncestry)
+		owners = readResultOwnerKeys(readBack, reader, installed)
 	}
 	var calls []readBackCall
 	for index, message := range readBack.Messages {
@@ -473,6 +491,14 @@ type roundTripReader struct {
 	// (readResultOwnerKeysByAncestry). False is the flat format (the Codex rollout), whose read-back
 	// answers no such relations.
 	ownersByAncestry bool
+	// entryParents answers the installed file's own entry relations -- each record's identity and the
+	// identity it hangs off -- for a format whose reader merges some records into others: the Claude
+	// reader puts the assistant entries of one message id back into the run's last entry, which keeps
+	// that entry's parent, so the read-back holds no message for the entry that parent names and the
+	// ancestry walk follows the file's own chain past it (readResultOwnerKeysByAncestry). Nil leaves the
+	// walk bounded by the read-back's own messages, which is every format whose records the reader
+	// answers one message for.
+	entryParents func(installed []byte) map[string]string
 }
 
 // readBackCall is one call row of a read-back: the id its file's own record is keyed by, and the
@@ -520,31 +546,48 @@ func readBackDialogueKeys(readBack Conversation, reader roundTripReader) []strin
 // injected-context classification, because a block that opens with an envelope is that context rather
 // than a turn (internal/parser's preprocessCodexUserTextBlocks).
 func compareCodexRoundTrip(rollout CodexRollout, readBack Conversation, installed []byte) roundTripComparison {
-	return compareRoundTrip(rollout.Items, readBack, codexRoundTripReader(),
+	return compareRoundTrip(rollout.Items, readBack, codexRoundTripReader(rollout.SelectionReduced),
 		installedDialogueRecords(installed), installed)
 }
 
 // codexRoundTripReader is the Codex reader's rules for the read-back walk: the shared plain reader, plus
 // the invocation-unit fold (codexCallEvidence) the reader's per-file projection of one `apply_patch`
 // call requires.
-func codexRoundTripReader() roundTripReader {
+//
+// reduced says the document being compared is one a selection produced (CodexRollout.SelectionReduced).
+// The fold is gated on it because the shape it answers exists only there: the writer coalesces the
+// reader's per-file rows into one `function_call` exactly on the reduced path, so a reduced document
+// needs the fold, while a run without a selection writes the rows it has always written and keeps the
+// comparison -- and the verdict, the warning and the CLI exit status that follow from it -- its earlier
+// revisions had (goal 0009's D4; round 10's finding 2).
+func codexRoundTripReader(reduced bool) roundTripReader {
 	reader := plainRoundTripReader()
-	reader.callEvidence = codexCallEvidence
+	if reduced {
+		reader.callEvidence = codexCallEvidence
+	}
 	return reader
 }
 
-// codexInstalledCallUnit is one invocation unit the installed file's own bytes state: the id its
-// `function_call` record registers and the call key the comparison uses.
+// codexInstalledCallUnit is one invocation unit the installed file's own records state: the id its record
+// registers the call under and, where this build can state it, the call key the comparison uses. The
+// writer writes every call as a `function_call` record, so a unit of that type is keyed; a record of
+// another type the inherited reader reads as a call (`custom_tool_call`, `image_generation_call`) is a
+// unit all the same -- the file states an invocation there -- but its key is the reader's own reading of
+// the record's fields, which this build does not restate. An unkeyed unit is never folded
+// (codexFoldableRows), so the read-back's rows stand for that id rather than disappearing behind a fold
+// the comparison cannot attribute (round 10's finding 4).
 type codexInstalledCallUnit struct {
-	id  string
-	key string
+	id    string
+	key   string
+	keyed bool
 }
 
-// codexInstalledCallUnits answers the invocation units the installed file's own `function_call` records
-// state, in the file's own order: one unit per record, keyed the way both sides spell a call
-// (roundTripCallKey). The inherited reader projects one `apply_patch` record into one call row per file
-// it names, so the read-back's rows are the reader's view of these records; the records themselves are
-// what the file holds, and a file holding two `function_call` records under one id states two units.
+// codexInstalledCallUnits answers the invocation units the installed file's own records state, in the
+// file's own order: one unit per record the inherited reader reads as a call, keyed the way both sides
+// spell a call (roundTripCallKey) where the record is the writer's own `function_call` envelope. The
+// inherited reader projects one `apply_patch` record into one call row per file it names, so the
+// read-back's rows are the reader's view of these records; the records themselves are what the file
+// holds, and a file holding two call records under one id states two units (round 9's finding 2).
 func codexInstalledCallUnits(installed []byte) []codexInstalledCallUnit {
 	var units []codexInstalledCallUnit
 	for _, line := range bytes.Split(installed, []byte("\n")) {
@@ -555,28 +598,40 @@ func codexInstalledCallUnits(installed []byte) []codexInstalledCallUnit {
 		if err := json.Unmarshal(line, &record); err != nil {
 			continue
 		}
-		if record.Type != codexRecordResponseItem || record.Payload.Type != codexItemFunctionCall {
+		if record.Type != codexRecordResponseItem {
 			continue
 		}
-		units = append(units, codexInstalledCallUnit{
-			id:  record.Payload.CallID,
-			key: roundTripCallKey(record.Payload.CallID, record.Payload.Name, record.Payload.Arguments),
-		})
+		switch record.Payload.Type {
+		case codexItemFunctionCall:
+			units = append(units, codexInstalledCallUnit{
+				id:    record.Payload.CallID,
+				key:   roundTripCallKey(record.Payload.CallID, record.Payload.Name, record.Payload.Arguments),
+				keyed: true,
+			})
+		case codexItemCustomToolCall:
+			units = append(units, codexInstalledCallUnit{id: record.Payload.CallID})
+		case codexItemImageGenerationCall:
+			units = append(units, codexInstalledCallUnit{id: record.Payload.ID})
+		}
 	}
 	return units
 }
 
 // codexCallEvidence answers the read-back's call evidence as the installed file's own invocation units:
-// for every id the file states one or more `function_call` records under, the file's units -- as many as
-// it holds, and no more (two actual call envelopes are two units) -- and for every id the file states
-// none under, the read-back's own rows, exactly as the comparison has always read them.
+// for every id the file's call records and the read-back's rows agree about, the file's units -- as many
+// as it holds, and no more (two actual call envelopes are two units) -- and, for every other id, the
+// read-back's own rows, exactly as the comparison has always read them.
 //
 // The file's records stand for the read-back's rows under a stated id because one record is one written
 // invocation and the reader's rows are its per-file projection of it: a document that wrote one
 // invocation matches the one envelope however many rows the reader shows, while a second envelope is
-// never folded into the first (round 9's finding 2). Where the read-back holds *fewer* rows under a
-// stated id than the file holds records, some record's rows are not in the read-back at all, and the
-// read-back's own rows stand for the comparison so the document's unmatched call is reported.
+// never folded into the first (round 9's finding 2). The fold is taken only where the rows really are
+// that projection (codexFoldableRows): a row the file's call records do not account for -- a call the
+// reader read from another record under the same id, whose key the units do not state -- is evidence of
+// an invocation the document did not write, and the id's rows then stand for the comparison instead of
+// being discarded in favor of the units (round 10's finding 4). Where the read-back holds *fewer* rows
+// under a stated id than the file holds records, some record's rows are not in the read-back at all, and
+// the read-back's own rows stand for the comparison so the document's unmatched call is reported.
 func codexCallEvidence(rows []readBackCall, installed []byte) []string {
 	units := codexInstalledCallUnits(installed)
 	if len(units) == 0 {
@@ -586,33 +641,74 @@ func codexCallEvidence(rows []readBackCall, installed []byte) []string {
 		}
 		return keys
 	}
-	unitsUnderID := map[string]int{}
+	unitsUnderID := map[string][]codexInstalledCallUnit{}
 	for _, unit := range units {
-		unitsUnderID[unit.id]++
+		unitsUnderID[unit.id] = append(unitsUnderID[unit.id], unit)
 	}
-	rowsUnderID := map[string]int{}
+	rowsUnderID := map[string][]readBackCall{}
 	for _, row := range rows {
-		rowsUnderID[row.id]++
+		rowsUnderID[row.id] = append(rowsUnderID[row.id], row)
 	}
 	keys := make([]string, 0, len(units)+len(rows))
+	handled := map[string]bool{}
 	for _, unit := range units {
-		if rowsUnderID[unit.id] < unitsUnderID[unit.id] {
+		if handled[unit.id] {
 			continue
 		}
-		keys = append(keys, unit.key)
+		handled[unit.id] = true
+		idUnits, idRows := unitsUnderID[unit.id], rowsUnderID[unit.id]
+		if codexFoldableRows(idUnits, idRows) {
+			for _, folded := range idUnits {
+				keys = append(keys, folded.key)
+			}
+			continue
+		}
+		for _, row := range idRows {
+			keys = append(keys, row.key)
+		}
 	}
 	for _, row := range rows {
-		if unitsUnderID[row.id] > 0 && rowsUnderID[row.id] >= unitsUnderID[row.id] {
-			continue
+		if !handled[row.id] {
+			keys = append(keys, row.key)
 		}
-		keys = append(keys, row.key)
 	}
 	return keys
 }
 
+// codexFoldableRows answers whether the read-back's rows under one stated id are the reader's projection
+// of the file's call records under it: every unit states a key this build can compare, the read-back
+// holds at least as many rows as the file holds records, and every row's key is one a unit states. A row
+// whose key no unit states is a call the reader read from a record these units do not account for, so
+// folding the id's rows into the units would hide it; an unkeyed unit (a record type whose call key this
+// build does not restate) leaves the id's rows standing for the same reason.
+func codexFoldableRows(units []codexInstalledCallUnit, rows []readBackCall) bool {
+	if len(rows) < len(units) {
+		return false
+	}
+	for _, unit := range units {
+		if !unit.keyed {
+			return false
+		}
+	}
+	for _, row := range rows {
+		attributed := false
+		for _, unit := range units {
+			if unit.key == row.key {
+				attributed = true
+				break
+			}
+		}
+		if !attributed {
+			return false
+		}
+	}
+	return true
+}
+
 // codexInstalledCallRecord is the part of one installed line the invocation-unit walk reads: the
-// record's own type and its function call's id, name and arguments. It declares no field for anything
-// else, so reading a large session copies no payload the walk does not ask about.
+// record's own type, its function call's id, name and arguments, and the `id` an image generation call
+// registers its call under. It declares no field for anything else, so reading a large session copies no
+// payload the walk does not ask about.
 type codexInstalledCallRecord struct {
 	Type    string `json:"type"`
 	Payload struct {
@@ -620,6 +716,7 @@ type codexInstalledCallRecord struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 		CallID    string `json:"call_id"`
+		ID        string `json:"id"`
 	} `json:"payload"`
 }
 

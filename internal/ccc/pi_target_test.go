@@ -1086,6 +1086,13 @@ func TestPiSessionOmitsWhatItCannotExpress(t *testing.T) {
 // TestPiSessionReportsEveryLossCategory pins the report's own completeness rule: every category is
 // listed on every run, with its count and its disposition, so a caller never has to infer what a run
 // left out. A category that disappeared from the report would make a loss invisible.
+//
+// The categories scoped to a document a selection produced are not listed here: this case converts the
+// read unflagged, and such a row may not be added to that report (goal 0009's D4). Each is pinned by the
+// selection case that asserts its presence and count on a reduced document (and the unflagged run's
+// absence, where the case carries that arm), so a row cannot be lost in either direction:
+// `coalesced_tool_call_projections` and `colliding_call_ids` by the selection cases that name them, and
+// `nonterminal_tool_events` by `TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters`.
 func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 	session, err := ConvertToPiSession(piFixtureConversation(), PiTargetOptions{})
 	if err != nil {

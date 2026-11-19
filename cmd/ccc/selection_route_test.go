@@ -432,13 +432,14 @@ func TestContinueWithoutASelectionReportsNoSelection(t *testing.T) {
 		t.Errorf("the whole-read selection converted %+v, want the unflagged run's %+v",
 			selected.Conversion.Carried, document.Conversion.Carried)
 	}
-	// The reduction's own writer vocabulary: the Codex writer reports the coalesced-projection and
-	// colliding-id categories only on a document a selection produced (the default path's report is
-	// byte-identical to the same run before selections existed -- goal 0009's D4 -- so a zero row cannot
-	// be added to every codex report). The whole-read selection's report therefore holds exactly those two
-	// extra rows, and every other row is the unflagged run's own; the test names the difference instead of
-	// requiring none, so a third reduction-only row would fail here as well.
-	reductionRows := []string{"coalesced_tool_call_projections", "colliding_call_ids"}
+	// The reduction's own writer vocabulary: the Codex writer reports the coalesced-projection,
+	// colliding-id and progress categories only on a document a selection produced (the default path's
+	// report is byte-identical to the same run before selections existed -- goal 0009's D4 -- so a zero
+	// row cannot be added to every codex report). The whole-read selection's report therefore holds
+	// exactly those three extra rows, and every other row is the unflagged run's own; the test names the
+	// difference instead of requiring none, so a fourth reduction-only row would fail here as well.
+	reductionRows := []string{"coalesced_tool_call_projections", "colliding_call_ids",
+		"nonterminal_tool_events"}
 	if len(selected.Conversion.Losses) != len(document.Conversion.Losses)+len(reductionRows) {
 		t.Errorf("the whole-read selection reports %d loss row(s), want the unflagged run's %d plus the "+
 			"reduction's own %s rows", len(selected.Conversion.Losses), len(document.Conversion.Losses),

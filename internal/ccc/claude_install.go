@@ -1,6 +1,7 @@
 package ccc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -89,6 +90,7 @@ func claudeRoundTripReader() roundTripReader {
 	return roundTripReader{
 		classifiesAway:   func(message Message) bool { return message.IsSystem },
 		ownersByAncestry: true,
+		entryParents:     claudeInstalledEntryParents,
 		kindOf: func(message Message) (TargetItemKind, bool) {
 			switch parser.RoleType(message.Role) {
 			case parser.RoleUser:
@@ -100,6 +102,32 @@ func claudeRoundTripReader() roundTripReader {
 			}
 		},
 	}
+}
+
+// claudeInstalledEntryParents answers the installed transcript's own entry relations: each record's
+// `uuid` and the `parentUuid` it hangs off. The ancestry walk reads it where the read-back holds no
+// message for a record the file records, which is what the reader's merge of one message id's assistant
+// entries leaves behind: the merged entry keeps the parent uuid of the entry that was merged away, and
+// the file's own chain steps through that entry to the ancestor the merged message hangs off. It
+// declares no field but the two identities, so reading a large transcript copies nothing else.
+func claudeInstalledEntryParents(installed []byte) map[string]string {
+	parents := map[string]string{}
+	for _, line := range bytes.Split(installed, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var record struct {
+			UUID       string `json:"uuid"`
+			ParentUUID string `json:"parentUuid"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if id := strings.TrimSpace(record.UUID); id != "" {
+			parents[id] = strings.TrimSpace(record.ParentUUID)
+		}
+	}
+	return parents
 }
 
 // claudeInstalledRecord is the part of one installed line the dialogue walk reads: the record's own type,

@@ -105,6 +105,13 @@ type CodexRollout struct {
 	Items      []TargetItem `json:"-"`
 	Carried    Carried      `json:"carried"`
 	Losses     []Loss       `json:"losses"`
+	// SelectionReduced says the document this conversion walks is one Select produced
+	// (Conversation.selectionReduced). The structural check reads it to gate what the reduction alone
+	// changed: the invocation-unit fold answers the writer's coalescing of the reader's per-file call
+	// projections, which a document a selection produced writes as one `function_call`, while a run
+	// without a selection keeps the comparison -- and with it the structure verdict and the CLI's exit
+	// status -- it has always had (goal 0009's D4; round 10's finding 2).
+	SelectionReduced bool `json:"-"`
 }
 
 // CodexTargetOptions configures one conversion. SessionID and CLIVersion are normally left empty: the
@@ -209,25 +216,32 @@ type codexAgentMessagePayload struct {
 
 // Record type names, as the target writes them.
 const (
-	codexRecordSessionMeta   = "session_meta"
-	codexRecordTurnContext   = "turn_context"
-	codexRecordResponseItem  = "response_item"
-	codexRecordEventMsg      = "event_msg"
-	codexRecordCompacted     = "compacted"
-	codexEventUserMessage    = "user_message"
-	codexEventAgentMessage   = "agent_message"
-	codexItemMessage         = "message"
-	codexItemFunctionCall    = "function_call"
-	codexItemFunctionOutput  = "function_call_output"
-	codexRoleUser            = "user"
-	codexRoleAssistant       = "assistant"
-	codexContentInputText    = "input_text"
-	codexContentOutputText   = "output_text"
-	codexOriginator          = "ccc"
-	codexSourceCLI           = "cli"
-	codexThreadSourceUser    = "user"
-	codexGeneratedCallPrefix = "call_ccc_"
-	codexGeneratedTurnPrefix = "turn_ccc_"
+	codexRecordSessionMeta  = "session_meta"
+	codexRecordTurnContext  = "turn_context"
+	codexRecordResponseItem = "response_item"
+	codexRecordEventMsg     = "event_msg"
+	codexRecordCompacted    = "compacted"
+	codexEventUserMessage   = "user_message"
+	codexEventAgentMessage  = "agent_message"
+	codexItemMessage        = "message"
+	codexItemFunctionCall   = "function_call"
+	codexItemFunctionOutput = "function_call_output"
+	// codexItemCustomToolCall and codexItemImageGenerationCall are two further record types the inherited
+	// reader reads as a call (internal/parser/codex.go's handleResponseItem). This build writes neither --
+	// every call it writes is a `function_call` -- and its structural check counts them as the installed
+	// file's own invocation units, so a file holding one under an id a call item names is reported as the
+	// extra invocation it is instead of being folded away (codexInstalledCallUnits).
+	codexItemCustomToolCall      = "custom_tool_call"
+	codexItemImageGenerationCall = "image_generation_call"
+	codexRoleUser                = "user"
+	codexRoleAssistant           = "assistant"
+	codexContentInputText        = "input_text"
+	codexContentOutputText       = "output_text"
+	codexOriginator              = "ccc"
+	codexSourceCLI               = "cli"
+	codexThreadSourceUser        = "user"
+	codexGeneratedCallPrefix     = "call_ccc_"
+	codexGeneratedTurnPrefix     = "turn_ccc_"
 )
 
 // defaultMaxToolNames bounds how many distinct tool names a report spells out by default.
@@ -290,16 +304,17 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 	carried := builder.carried
 	carried.Bytes = builder.buffer.Len()
 	rollout := CodexRollout{
-		SessionID:  sessionID,
-		CLIVersion: cliVersion,
-		FileName:   codexRolloutFileName(sessionID, startedAt),
-		Directory:  codexRolloutDirectory(startedAt),
-		Cwd:        source.Cwd,
-		StartedAt:  startedAt,
-		Data:       bytes.Clone(builder.buffer.Bytes()),
-		Items:      builder.items,
-		Carried:    carried,
-		Losses:     builder.losses(),
+		SessionID:        sessionID,
+		CLIVersion:       cliVersion,
+		FileName:         codexRolloutFileName(sessionID, startedAt),
+		Directory:        codexRolloutDirectory(startedAt),
+		Cwd:              source.Cwd,
+		StartedAt:        startedAt,
+		Data:             bytes.Clone(builder.buffer.Bytes()),
+		Items:            builder.items,
+		Carried:          carried,
+		Losses:           builder.losses(),
+		SelectionReduced: conv.selectionReduced(),
 	}
 	return rollout, nil
 }
@@ -385,6 +400,7 @@ type codexRolloutBuilder struct {
 	lossUnresolvedDialogue  int
 	lossUnprojectedDialogue int
 	lossUnpairedResults     int
+	lossNonterminal         int
 	lossUnresolved          int
 	lossOutcomes            int
 	lossPreBoundary         int
@@ -972,6 +988,18 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 		// writer had).
 		delete(b.pendingCalls, callID)
 	}
+	if b.selectionReduced && !resultStatesAnOutcome(result.Status) {
+		// The read records a call's progress as events of the call's own beside its outcome
+		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
+		// chunk. This format's output carries text and no outcome status, so a written event would read
+		// back as the call's *answer* -- the check's own reader takes an output for the call's outcome --
+		// and the file would claim a completion the source had not recorded when it wrote those words. A
+		// document a selection produced omits the event and names it here (the same disposition OpenCode's
+		// plan takes, where the harness refuses any state but completed/error); a run without a selection
+		// keeps writing it, which is the answer it has always had (goal 0009's D4; round 10's finding 5).
+		b.lossNonterminal++
+		return
+	}
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks
 	if strings.TrimSpace(text) == "" {
@@ -1444,6 +1472,24 @@ func (b *codexRolloutBuilder) losses() []Loss {
 				"attaches a function_call_output to the last call registered for the id), so the " +
 				"occurrence was written under an id generated from its own place and the file does " +
 				"not state the id the source recorded for it",
+		})
+		// The progress category is reduction-scoped for the same reason: only a document a selection
+		// produced omits a recorded progress event, because only there does the writer act on the read's
+		// own rule -- a call still running is not answered -- and the default path keeps writing the
+		// event, which is the answer it has always had (goal 0009's D4), so its report keeps its own
+		// category list unchanged. The count is zero on a reduced document with no progress event, so
+		// within the selection surface the completeness rule holds as the other rows' does.
+		losses = append(losses, Loss{
+			Category:    "nonterminal_tool_events",
+			Disposition: DispositionOmitted,
+			Count:       b.lossNonterminal,
+			Detail: "the read records a call's progress as events of its own beside the call's outcome " +
+				"(the shape the inherited termination rule reads: a Codex subagent's `running` " +
+				"notification streams in while its call is still executing, and the RooCode/Kilo chunk " +
+				"readers record streamed chunks the same way). The target's output record carries text " +
+				"and no outcome status, so a written event reads back as the call's *answer* -- the " +
+				"check's own reader takes an output for the call's outcome -- and the file would claim a " +
+				"completion the source had not recorded when it wrote those words",
 		})
 	}
 	return losses

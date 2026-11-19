@@ -673,3 +673,62 @@ measurement that decided it, followed by the review round's own:
       the result entry's parent relation to the sibling's entry, and requires the check to report it while
       the unmutated control verifies (Pi, OMP and Claude). Two executed mutations (each reader's ancestry
       flag cleared) fail it.
+
+17. **The eleventh review round's five findings.** The review of `9242e49..88478b6` found two P1s and
+    three P2s; all five are fixed, and the round's surface is pinned by fourteen executed mutations
+    (recorded in the evidence record and the stage report).
+
+    * **an id-less inference may not take the slot a recorded result is owed** (review 1/5, a P1):
+      OpenCode's part holds one outcome per call, and the plan installed whatever result reached the entry
+      first, so on a reduced document whose window kept call A and *both* its result records -- an id-less
+      one before the one naming A -- the id-less event took A's only slot and the recorded result was
+      counted `repeated_tool_results`: an inference displacing a recorded pairing although both halves of
+      it travelled. `reserveResultSlots` answers the occurrences whose outcome the document states through
+      a result the conversion *writes* (its record on the plan's line and published, its text and status
+      spellable by the tool states: `openCodeResultWritable`, which already refuses every progress word),
+      and `soleInferablePlannedCall` neither offers such an occurrence nor lets it look answered -- it
+      still counts among the unanswered, so an ambiguous window omits the id-less event rather than
+      binding it to another call. `TestSelectionReservesARecordedResultsSlotFromAnIdLessInference` pins
+      the finding's window, the ambiguity arm and the unwritable-result control;
+      `TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite` pins the reservation's own conditions
+      (off-line, subagent, compaction-boundary and progress arms). Four executed mutations (the candidate
+      test dropped; a reserved occurrence skipped as answered; the writability guard removed; the
+      reservation keyed by the result's own place) fail them, and three more (each plan-writes condition
+      dropped) fail the conditions case.
+    * **the Codex invocation-unit fold is the reduction's own** (review 2/5, a P1): round 9's fold ran on
+      every comparison, so the committed two-file `apply_patch` fixture's *unflagged* conversion moved from
+      the `not-verified` verdict its revisions before the fold answered to `verified` -- a report, warning
+      and CLI-exit-status change on the default path, contrary to D4. `CodexRollout` now states whether the
+      document is one a selection produced, and `codexRoundTripReader(reduced)` installs the fold only
+      there; the D4 probe's shared-document diff is silent over all 1183 lines again (§4).
+      `TestSelectionCountsTheCallUnitsTheWritersCoalesceAndThePairingAnswers` requires the unflagged
+      comparison to report the reader's rows (and its verdict to stay `not-verified`) while the selected one
+      verifies; one executed mutation (the fold ungated) fails it.
+    * **the fold folds only the rows a file's own records account for** (review 4/5, a P2): the units were
+      the writer's own `function_call` envelopes alone and the fold replaced *every* row under an id the
+      units stated, so a `custom_tool_call` appended under that id -- a call the inherited reader reads --
+      produced no difference at all. `codexInstalledCallUnits` now counts every record type the reader
+      reads as a call (the writer's envelope keyed; a type whose key this build does not restate as an
+      unkeyed unit, which never folds), and `codexFoldableRows` folds an id only where every row's key is
+      one a unit states and every unit is keyed. `TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute`
+      pins the finding's differing-name case and the same-key case (the file states two records under one
+      id and the reader's rows cannot tell them apart); two executed mutations (the attribution rule
+      reverted; the unit scan restricted to the writer's envelope) fail it.
+    * **a tree owner is resolved through the installed chain** (review 3/5, a P2): the Claude reader merges
+      the assistant entries of one message id into the run's last entry, which keeps the parent of the entry
+      it merged away, so the owner walk -- bounded by the read-back's own messages -- stopped at that
+      absent uuid and reported a correct conversion as missing the invocation its installed chain reaches.
+      `roundTripReader.entryParents` answers the installed file's own entry relations (the Claude reader's
+      `uuid`/`parentUuid`) and the walk steps through an entry the read-back holds no message for;
+      `TestClaudeRoundTripResolvesAResultOwnerThroughAMergedAssistantRecord` pins the finding's shape, and one
+      executed mutation (the reader's `entryParents` cleared) fails it; the reparenting case stays the
+      negative control (its own mutation arm still reports a broken link).
+    * **a selected progress event is omitted, not written as an outcome** (review 5/5, a P2): the writers
+      left a `running` call outstanding in their inference but still serialized the event's text as an
+      ordinary output, and these formats carry an outcome or nothing, so the artifact claimed an answer the
+      source had not recorded. On a reduced document Codex, Claude and Pi/OMP now omit the event and count
+      it (`nonterminal_tool_events`, a row scoped to the reduction as `coalesced_tool_call_projections` is,
+      because a zero row may not be added to the default path's report); a run without a selection keeps
+      writing it (D4). `TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters` pins the omission, the
+      count on all five routes, the absent row on the default path and the event's continued travel there;
+      two executed mutations (the guard removed; its scoping removed) fail it.

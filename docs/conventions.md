@@ -176,7 +176,9 @@ obligation ships no citations file, rather than an empty one.
   paired it with, not the last write for a reused id; and the Codex writer writes the one invocation the
   count reads, folding a message's projected rows sharing an id into one `function_call` and reporting
   `coalesced_tool_call_projections` — a category a reduced document's report carries and the default
-  path's does not. A written call occurrence whose recorded id an earlier written occurrence already
+  path's does not (so the Codex structural check reads the file's own record units for a document a
+  selection produced and the reader's rows for one it did not: an unflagged conversion keeps the verdict,
+  the warning and the CLI exit status the rows-against-items comparison has always answered). A written call occurrence whose recorded id an earlier written occurrence already
   holds is written under an id generated from its own place (`colliding_call_ids`, scoped the same way —
   a run without a selection keeps the recorded ids), and every result is written under the owning
   occurrence's emitted id, so an id two occurrences share cannot rebind an output — and a generated id is
@@ -187,9 +189,14 @@ obligation ships no citations file, rather than an empty one.
   for and the read-back's own attachment under the result's id is compared with it — while a document
   that states no owner keeps the id-and-text comparison the default path has always had, a reader that
   projects one call record into several rows (the Codex reader reads one `apply_patch` as one call per
-  file it names) has its calls compared as the file's own record units rather than the rows, and an owner
+  file it names) has its calls compared as the file's own record units rather than the rows — and only
+  where every row under the id is a projection of one of those records: a call record of a type whose key
+  this build does not state, or a row whose key no record under the id states, leaves the read-back's rows
+  standing for the comparison rather than being folded away — and an owner
   a tree format states (the Pi family, the Claude transcript) is resolved through the result's own
-  recorded ancestry rather than by file order. A call whose read
+  recorded ancestry rather than by file order, following the installed file's own entry chain where a
+  parent names an entry the read-back holds no message for (the Claude reader's merge of one message id's
+  assistant entries keeps the parent of the entry it merged away). A call whose read
   holds no
   recorded outcome (no result at all, only progress events such as a Codex subagent's `running`
   notification, or an id-less progress event) is counted `calls_undischarged`, read from the pairing walk
@@ -199,13 +206,22 @@ obligation ships no citations file, rather than an empty one.
   pairing left unanswered — while an archive read's own summary of an outcome on the call itself
   (`ToolCall.ResultContent`) is outcome evidence where the read holds no recorded result event of the
   call, so that shape is not counted. The reduced writers read the same rule on their side: a progress
-  event is not an answer in the outstanding set an id-less result is inferred against, only an outcome
+  event is not an answer in the outstanding set an id-less result is inferred against and the event itself
+  is omitted and counted there (`nonterminal_tool_events`, a row scoped to the reduction as
+  `coalesced_tool_call_projections` is, because these formats carry an outcome or nothing and a written
+  event would read back as the call's answer), only an outcome
   the document *states* answers a call there — a result whose text the output field cannot carry is
   omitted and counted and leaves its call outstanding — and a summary the read stored on a call is
   written for that call's own occurrence rather than inferred, and a writable summary answers the call on
   the written path (a later id-less result is omitted rather than inferred onto the call the summary is
-  owed to) while a summary the part cannot state leaves the call unanswered, while a run without
-  a selection keeps the ledger's own answer (the status clears the call's id there). What a target's own format does with such a call is
+  owed to) while a summary the part cannot state leaves the call unanswered, and where a target's part
+  holds one outcome per call the same slot is reserved against the inference for a written recorded result
+  (OpenCode `reserveResultSlots`: a result whose record the conversion publishes evidence from and whose
+  text and status the tool states can hold reserves its call occurrence, while one the conversion does not
+  write — an off-line, subagent or compaction-boundary record's, one with no spellable status — reserves
+  nothing and a reserved occurrence still counts as unanswered where the id-less result stands), while a
+  run without a selection keeps the ledger's own answer (the status clears the call's id there) and keeps
+  writing the event. What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it

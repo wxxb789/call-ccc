@@ -55,9 +55,18 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   owner keeps the id-and-text comparison the default path has always had — a reader that projects one call
   record into several rows (the Codex reader reads one `apply_patch` as one call per file it names) has its
   calls compared as the file's own record units, one record per invocation, so a file holding several call
-  envelopes is not read as one however many rows the reader shows — and an owner a tree format states (the
+  envelopes is not read as one however many rows the reader shows — *for a document a selection produced*:
+  the coalescing the fold answers exists only there, so a run without a selection keeps the
+  rows-against-items comparison and with it the verdict, the warning and the CLI exit status it has always
+  had (D4), and the fold itself may only replace rows the file's own records account for — a call record
+  the reader reads under an id the document's call holds, of a type whose key this build does not state, or
+  a row whose key no record under that id states, leaves the read-back's rows standing for the comparison
+  rather than disappearing behind the fold — and an owner a tree format states (the
   Pi family, the Claude transcript) is resolved through the result's own recorded ancestry, never by file
-  order). A check whose target harness is absent exits 2 naming the
+  order, following the *installed file's* own entry chain where a parent names an entry the read-back holds
+  no message for: the Claude reader merges the assistant entries of one message id into the run's last
+  entry, which keeps the parent of the entry merged away, so a result whose invocation stands above such an
+  entry is not reported missing). A check whose target harness is absent exits 2 naming the
   harness it needs — the Pi, OMP and OpenCode checks end their run with `RESULT: INCOMPLETE` and the
   reason, the Codex and Claude checks print the reason on stderr — so a partial run is never quoted as a
   pass. The Pi and OMP
@@ -322,7 +331,14 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   call's own occurrence and never inferred — a *writable* summary answers the call on the written path, so
   a later id-less result is omitted rather than inferred onto the call the summary is owed to, while a
   summary the part cannot state leaves the call unanswered and a run without a selection keeps the
-  ledger's id-keyed answer, which the summary was never part of — and a written call occurrence whose
+  ledger's id-keyed answer, which the summary was never part of — and where a target's part holds one
+  outcome per call, the slot a *written* recorded result is owed is reserved against the inference
+  (OpenCode `reserveResultSlots`: a result a reduced document carries, whose text and status the target can
+  state and whose record the conversion publishes evidence from, reserves its call occurrence, so an
+  inference may not fill the slot and leave the recorded result to be counted as a repeat), while a result
+  the conversion does not write — an off-line or subagent record's, a compaction boundary's, one whose text
+  or status has no shape — reserves nothing, and a reserved occurrence still counts as unanswered where the
+  id-less result stands, so an ambiguous window omits the event rather than binding it — and a written call occurrence whose
   recorded id an
   earlier written occurrence already holds is written under an id generated from its own place
   (`colliding_call_ids`, a category the default path's report does not carry), with every result written
@@ -338,8 +354,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   result whose recorded status says the call is still running (a Codex subagent's `running` notification,
   a streamed chunk) is progress, not an outcome, so such a call is counted undischarged — and the reduced
   writers read it the same way: a progress event is not an answer in the outstanding set an id-less result
-  is inferred against, while a run without a selection keeps the ledger's own answer (the status clears its
-  id there) — and an archive
+  is inferred against, and the event itself is omitted and counted there (`nonterminal_tool_events`, a row
+  scoped to the reduction as `coalesced_tool_call_projections` is) because Codex's `function_call_output`,
+  Claude's `tool_result` block and the Pi family's toolResult message carry an outcome or nothing, so a
+  written event would read back as the call's answer — while a run without a selection keeps the ledger's
+  own answer (the status clears its id there) and keeps writing the event — and an archive
   read's own summary of an outcome on the call itself (`ToolCall.ResultContent`) is outcome evidence where
   the read holds no recorded result event of the call, so that shape is not counted; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
