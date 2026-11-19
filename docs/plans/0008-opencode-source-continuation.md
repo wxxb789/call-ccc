@@ -1,6 +1,6 @@
 # Plan — 0008 Continue OpenCode history in other harnesses
 
-Contract: [`docs/goals/0008-opencode-source-continuation.md`](../goals/0008-opencode-source-continuation.md).
+Contract: [`docs/goals/archive/0008-opencode-source-continuation.md`](../goals/archive/0008-opencode-source-continuation.md).
 Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Shape reference: increment 0003 ([`docs/plans/0003-codex-to-claude-continuation.md`](0003-codex-to-claude-continuation.md))
 for a *source* direction over a previously accepted target, and 0007

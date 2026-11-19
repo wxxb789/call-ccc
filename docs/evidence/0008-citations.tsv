@@ -3,7 +3,7 @@
 # One row per rule of this increment that a gate-runnable Go test discharges, in the four id spaces the
 # increment's rules come from:
 #   D1–D4   the goal's four `Done when` clauses, in order
-#           (docs/goals/0008-opencode-source-continuation.md);
+#           (docs/goals/archive/0008-opencode-source-continuation.md);
 #   B1–B2   the goal's two `Bounds` clauses, in order;
 #   S1–S6   the rules of AGENTS.md's OpenCode-source paragraph ("OpenCode is a source whose session is a row
 #           in that harness's own store"), in the paragraph's own order — the inherited provider and its two

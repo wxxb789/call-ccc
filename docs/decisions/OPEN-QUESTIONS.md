@@ -1016,9 +1016,13 @@ supersede it with a newer one and say which it supersedes.
 
 ## Q-0002-22 — The ordinary review budget, and the one authorized acceptance audit
 
-- **Status:** open (one-time authorization taken; the audit's result is not yet known). This entry takes a
+- **Status:** resolved (owner, 2026-11-19 — the default taken stands). This entry takes a
   **new** id because `Q-0002-01` is already the provider-binding entry above; nothing about this entry
   rewrites or supersedes it, and `Q-0000-01` (merge authority) is untouched.
+- **Confirmed (owner, 2026-11-19):** no change to the existing behaviour. The ordinary budget's exhaustion
+  behaviour is unchanged (stop → cross-family consult → design fork to the owner), and the Stop condition
+  below governs as written; this confirmation neither amends it nor endorses any particular count of past
+  audit rounds.
 - **Question:** twelve ordinary machine-review rounds have run on goal 0002's pull request
   (`feat/0002-claude-to-codex-continuation`) and **every one of them returned findings** —
   8 · 3 · 4 · 1 · 2 · 2 · 2 · 3 · 2 · 2 · 2 · 2 = **33 findings**, all closed, **no clean ordinary
@@ -1055,7 +1059,8 @@ supersede it with a newer one and say which it supersedes.
 
 ## Q-0002-23 — Whether the response stream is bounded too, and by what
 
-- **Status:** open (default taken: no change to the response path; a measured limitation is recorded).
+- **Status:** resolved (owner, 2026-11-19 — the default taken stands).
+- **Confirmed (owner, 2026-11-19):** no code change; the measured limitation stands as recorded.
 - **Question:** the sweep of 2026-11-16 (see
   [`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), E6) bounded the
   *diagnostics* both harnesses keep — the Go client's app-server stderr and the resume turn's two pipes,
@@ -1085,7 +1090,9 @@ supersede it with a newer one and say which it supersedes.
 
 ## Q-0002-24 — Whether a conversion reserves its new identity against the target home's own ids
 
-- **Status:** open (default taken: the claim was corrected to what is enforced; no code change).
+- **Status:** resolved (owner, 2026-11-19 — the default taken stands).
+- **Confirmed (owner, 2026-11-19):** the claim stays corrected to what the checks enforce; the residual
+  stands.
 - **Question:** obligation D1's frozen sentence read "the target session id is a fresh UUID v7, never the
   source's session id and never an id already present in the target home"
   ([`docs/evidence/0002-obligation-matrix.md`](../evidence/0002-obligation-matrix.md), D1). The shipped
