@@ -34,6 +34,9 @@ internal/ccc/opencodefixture  the store a test builds when it needs one the inhe
                     can open (a fixture, not a writer of this build's: OpenCode sessions exist only
                     inside the harness's own SQLite store)
 internal/ccc/testdata/fixtures  committed native-shaped sessions, written by internal/ccc/fixturegen
+                    (fixtures/opencode/ holds the harness's own export document for one session, the
+                    source direction's fixture: that provider's session is a row in a store only the
+                    harness writes)
 internal/ccc/testdata/growth    committed fragments a run appends to a *copy* of one fixture, so one
                     source session grows; the same generator writes and pins them
 docs/core-design/   the long-lived product and engineering boundaries
@@ -45,8 +48,8 @@ docs/upstream.md    the carried AgentsView pin, its declared deviations and the 
 docs/decisions/     append-only record of decisions taken and defaults chosen
 scripts/            harness entry points (gate, knobs, carry importer, parity, comparison,
                     codex-native-check, claude-native-check, pi-native-check, omp-native-check and
-                    opencode-native-check: the target-side native verifications, deliberately not gate
-                    steps)
+                    opencode-native-check, whose two directions are 0007's claude-to-opencode and 0008's
+                    opencode-to-codex: the native verifications, deliberately not gate steps)
 ```
 
 Inherited AgentsView packages keep their upstream paths and stay where upstream put them. The carry is
@@ -217,6 +220,21 @@ obligation ships no citations file, rather than an empty one.
   bisecting the message's members), and a tool part's `state.input` is stored with the JSON value and the
   recorded key order and without the recorded whitespace, so the comparison canonicalizes that member's
   JSON on both sides while every other member is compared as recorded.
+- **A source that is one member of a container states that boundary, and its records are what a check
+  re-reads.** The same store read *as a source* (goal 0008) resolves through the inherited provider — by
+  `opencode:<session id>` under its configured root, or by the provider's own virtual path
+  `<database>#<session id>` — and the conversion reports the boundary it cannot take:
+  `source.boundary.state` is `not-taken`, naming the store and the member, and
+  `installation.source_check_state` is `not-verified`, because the container's bytes hold every member and
+  move with the harness's WAL handling. "The source is unchanged" is therefore measured on the harness's
+  own records (`session export` before and after, byte-identical), never on the database file, and a Go
+  case digests the store's whole directory around a conversion (no write, no journal created). What the
+  read answers is the reader's own and is never re-derived here: the OpenCode v2 reader renders a
+  `reasoning` part into the record's `Content` and records no trace text and no dialogue projection (so
+  every written message is `unprojected_dialogue`, carried-with-caveat, and nothing is removed by
+  inference), a `completed` tool part yields a textless progress event beside its terminal one (left out of
+  the target and counted), and the store's `idle`/switch records are session controls rather than messages
+  (nothing is counted for them because the read never held them).
 - **Fixtures are sanitized native shapes.** Small, version-identified, committed fixtures — one
   provider directory per source (`fixtures/claude/`, `fixtures/codex/`, `fixtures/pi/`,
   `fixtures/omp/`) — with no real
@@ -226,12 +244,17 @@ obligation ships no citations file, rather than an empty one.
   one project directory below its provider root, because that provider's own discovery requires that
   level for this agent (measured: a file at the root is not discovered for `omp`, while the Pi provider
   accepts one there); the directory name is the absolute `--…--` spelling, the one branch of OMP's own
-  rule that does not depend on the machine the generator runs on. OpenCode has **no fixture directory of
-  its own**: a session is a row in one store rather than a file, so a committed fixture could only be a
-  store the harness (not this build) writes. Its shapes are pinned instead as the document bytes the
-  writer produces (`internal/ccc/opencode_target_test.go`) and as a store the tests build through
-  `internal/ccc/opencodefixture`, and the native check materialises a real session through the harness's
-  own importer.
+  rule that does not depend on the machine the generator runs on. OpenCode has **no committed store and no
+  store-shaped fixture directory**: a session is a row in one store rather than a file, so a fixture could
+  only be a store the harness (not this build) writes. What is committed is the harness's own **export
+  document** for one session (`internal/ccc/testdata/fixtures/opencode/<session>.json`, written by
+  `internal/ccc/fixturegen` with the one canonical encoding every other fixture line goes through — compact,
+  measured: the importer stores a tool input as the parsed value and drops the recorded whitespace, so a
+  pretty-printed fixture would make a store built from it answer an input spelling no harness store holds).
+  A consumer materialises the store: the Go cases and `cmd/ccc`'s route cases through
+  `internal/ccc/opencodefixture`, the native check through the harness's own `session import`. The target
+  direction's own shapes are pinned as the document bytes the writer produces
+  (`internal/ccc/opencode_target_test.go`).
 - **Comments and docs state what the code does, not what it was meant to do.** A comment or test name
   claiming a rule the code no longer implements is a correctness defect.
 - **A test pins the rule it names, on every platform and every Python 3 these docs name.** An

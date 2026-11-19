@@ -3,7 +3,7 @@
 # One row per rule of this increment that a gate-runnable Go test discharges, in the three id spaces the
 # increment's rules come from:
 #   D1–D4   the goal's four `Done when` clauses, in order
-#           (docs/goals/0007-opencode-target-continuation.md);
+#           (docs/goals/archive/0007-opencode-target-continuation.md);
 #   B1–B3   the goal's three `Bounds` clauses, in order;
 #   O1–O12  the rules of AGENTS.md §"OpenCode is a target whose store only the harness writes", in the
 #           paragraph's own order;

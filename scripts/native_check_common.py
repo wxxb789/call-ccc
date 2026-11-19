@@ -367,7 +367,9 @@ def spelled_as_invocation(command: str, home_env: str, also: dict[str, str] | No
     is not a fix to one of those routes and a silent drift for the others; the Claude and Codex checks
     keep readings of their own (`claude-native-check.spelled_as_invocation`,
     `codex-native-check.reads_as_assignment`), which apply the same rule to their own lines and their own
-    variables.
+    variables, and the OpenCode check's *source* direction reads a **Codex** line and keeps its own copy of
+    that reading too (`opencode-native-check.reads_as_a_codex_invocation`, which discloses the provenance): a
+    route reads the line it prints, and no check imports another entry point.
     """
     text = unquoted_text(command)
     if text is None:

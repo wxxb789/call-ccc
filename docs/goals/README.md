@@ -12,8 +12,8 @@ The normal feedback window is approximately 12 hours of agent work. If a goal pr
 | [0004](archive/0004-repeatable-evolving-session-handoffs.md) | Repeat conversion as a source session grows | 0002 | Accepted: merged onto `main` as `8a8265a`; archived |
 | [0005](archive/0005-pi-continuation.md) | Native two-way Pi continuation | 0003 | Accepted: merged onto `main` as `731dd1d`; archived |
 | [0006](archive/0006-omp-continuation.md) | Native two-way Oh My Pi continuation | 0005 | Accepted: merged onto `main` as `338df94`; archived |
-| [0007](0007-opencode-target-continuation.md) | Continue existing conversations in OpenCode | 0002 | Implemented on `feat/0007-opencode-target-continuation`; awaiting operator acceptance |
-| [0008](0008-opencode-source-continuation.md) | Continue OpenCode history in other agents | 0007 and 0003 | Ready |
+| [0007](archive/0007-opencode-target-continuation.md) | Continue existing conversations in OpenCode | 0002 | Accepted: merged onto `main` as `e68f18a`; archived |
+| [0008](0008-opencode-source-continuation.md) | Continue OpenCode history in other agents | 0007 and 0003 | Implemented on `feat/0008-opencode-source-continuation`; awaiting operator acceptance |
 | [0009](0009-selective-context.md) | Select which source history travels | 0003 | Provisional |
 | [0010](0010-selective-compaction.md) | Compress selected regions while protecting others | 0009 | Provisional |
 | [0011](0011-context-summaries.md) | Produce explicit reusable summaries | 0009 | Provisional; independent of 0010 |

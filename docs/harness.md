@@ -511,10 +511,13 @@ says so.
   script builds `ccc` into `bin/ccc-native-check-omp` (`.gitignore` covers `bin/`), takes the same
   `--resume-prompt`/`--expect`/`--keep`/`--json` flags as its siblings, and prints the turn's own answer
   under `TURN_OUTPUT_MARKER`.
-- `scripts/opencode-native-check.py` — the target-side native verification for goal 0007, and
+- `scripts/opencode-native-check.py` — the native verification for both OpenCode routes: goal 0007's
+  target direction (`claude-to-opencode`, this paragraph) and goal 0008's source direction
+  (`opencode-to-codex`, below). It is
   **deliberately not a gate step** for the same reason the others are not: it needs the OpenCode binary
-  installed (this route's installation *is* that harness's own importer, so a host without it has no
-  offline half to verify at all — the run ends as `RESULT: INCOMPLETE`, exit 2, before any check) and, for
+  installed (that target route's installation *is* that harness's own importer, so a host without it has no
+  offline half to verify at all — the run ends as `RESULT: INCOMPLETE`, exit 2, before any check; the
+  source direction needs both harnesses and names whichever is absent) and, for
   a real turn, model access. It takes a **copy** of the committed Claude fixture with only its recorded
   working directory rewritten mechanically to a directory the run owns — measured: the harness's importer
   refuses a session whose `location.directory` does not exist (`LocationNotFoundError`) — plants an
@@ -578,8 +581,45 @@ says so.
   directory, and a spelling that means different programs in the two is refused by the report's vector
   reading, which names both words. The script builds `ccc` into
   `bin/ccc-native-check-opencode` (`.gitignore` covers `bin/`),
-  takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json`, and prints
+  takes `--opencode`/`--source`/`--target-home`/`--resume-prompt`/`--expect`/`--keep`/`--json` (and
+  `--codex` for the source direction), and prints
   each check's own state.
+  Its **second direction**, `--direction opencode-to-codex` (goal 0008), is the same product from the
+  source side, and it needs both binaries: the OpenCode binary writes the *source* store (a session is a
+  row inside it, so only that harness's own importer can plant the session the run converts) and Codex is
+  the target whose own loader answers. It plants the committed fixture document
+  (`internal/ccc/testdata/fixtures/opencode/<session>.json`, the harness's own export shape) through the
+  harness's own `session import … --directory <workspace>` — no working directory is rewritten, because
+  `--directory` is what places the session, and the importer (measured) rewrites only `info.projectID`,
+  `info.location.directory` and `info.time.updated` — reads it back with the harness's own `session export`
+  and compares the two documents over the members this comparison reads — the user texts, each tool part's
+  name, its recorded input value, its terminal text, and each record's rendered text (a store holding
+  another conversation is reported, not converted) — converts through the CLI **at the load level** (`ccc continue opencode:<id> --to codex
+  --verify load --json`, `OPENCODE_DIR` naming the scratch root), and then reads the *installed Codex
+  rollout's own records* against the *fixture document's own bytes*: the user texts, each tool call's name,
+  its recorded input value (canonicalized — a rollout writes the arguments as a JSON string and the store
+  keeps the parsed value) and its recorded result text, one output per call (the textless progress event a
+  completed OpenCode tool part produces is not a second output), and the assistant texts, which are the
+  inherited reader's own **rendering** of a record that carries a persisted reasoning trace
+  (`[Thinking]\n<trace>\n[/Thinking]` + the record's text) — compared byte for byte, never by containment,
+  so a target that dropped the trace is a difference. It records the container-member boundary the report
+  can and cannot state (`not-taken`, the store and member named, `source_check_state: not-verified`), asks
+  the harness's own reader for an id nothing installed (the control arm), reads both printed Codex lines
+  against this run's own home and session as a POSIX shell reads them (the `CODEX_HOME` assignment first
+  and unquoted — a quoted assignment is the *program* to a shell), and re-reads the source's own records
+  afterwards (`session export`, byte-identical) — never the database file's bytes, which move with the
+  harness's WAL handling. `--codex` names the target harness (default `codex` on `PATH`), and
+  `--target-home` is that direction's **Codex** home; the OpenCode side is always the run's own scratch
+  store, because the harness's own importer is what writes it. With `--resume-prompt` it runs one real turn
+  itself, through the report's own `exec_resume_arguments` read against the harness this run probed and the
+  session it converted (plus its own isolation flags: no git repository, a read-only sandbox, no
+  approvals), and records what the harness answered — the answer printed under `TURN_OUTPUT_MARKER`, the
+  rollout's own records grown, the conversion's own records unchanged, and the prompt in what the file now
+  holds; a refused turn is a **failed** check naming the harness's own words, never a pass and never a skip.
+  Measured on this host: a Codex turn in a *scratch* home answers `401 Unauthorized` (its credential is the
+  caller's own store and this build copies no credential), the same boundary the Codex route's own check
+  shows — the load half is what is verified here, and the INCOMPLETE verdict (exit 2, zero checks) names
+  whichever of the two harnesses is absent.
 - `scripts/native_check_common.py` — the mechanism the native checks share, so none keeps its own
   copy of it: the file digests (`sha256`, `tree_digest`), the check recorder (`record`, `RESULTS`), the
   subprocess runner (`run`, which a check can hand a command's *whole* environment instead of an overlay

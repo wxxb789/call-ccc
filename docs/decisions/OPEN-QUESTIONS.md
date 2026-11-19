@@ -2643,3 +2643,99 @@ supersede it with a newer one and say which it supersedes.
   onto `Message`; named reader ∧ a trace was recorded as existing ∧ no trace text → `dialogueUnestablished`,
   verified reader by reader) is **not** authorized by this letter and belongs to 0008. Options (B) (do it inside
   0007) and (C) (a new upstream pin first) were offered in the same form and not taken.
+
+## Q-0008-01 — The dialogue arm for a reader that renders a trace without recording it (Q-0007-12's deferred mechanism arm)
+
+- **Status:** resolved (unattended default taken; Q-0007-12's status names the mechanism arm as deferred
+  to goal 0008)
+- **Question:** Q-0007-12's resolution deferred its *mechanism arm* to goal 0008: carry
+  `parser.ParsedMessage.HasThinking` onto `Message` and treat (named rendering reader ∧ a trace was recorded
+  as existing ∧ no trace text) as `dialogueUnestablished` — writing nothing for the record and counting it
+  `unresolved_dialogue` — verified reader by reader. Goal 0008 is the increment where that becomes live,
+  because OpenCode is read as a *source*: the OpenCode v2 reader renders a `reasoning` part into the
+  record's `Content` and records no trace text, so every one of its records carries a rendering.
+- **Default taken:** the shipped arm, unchanged for this increment. The rendering travels as the record's
+  text and is counted `unprojected_dialogue` (carried-with-caveat) on both target routes — measured on the
+  committed fixture: 4 of 4 carried messages, and the target's own records hold the rendering byte for byte.
+  Two reasons, one of them measured: the mechanism arm cannot be a blanket rule (Q-0007-12's own finding:
+  `internal/parser`'s Goose reader sets `HasThinking` from `redactedThinking` with no block and no text, so
+  "a trace was recorded as existing but its text is empty" is not evidence that `Content` holds a rendering),
+  and for this route it would *omit* the record's own words — the answer text a reader of a resumed session
+  needs — where the shipped arm carries them with the caveat disclosed per run. Goal 0008's own clauses ask
+  that available content survive where supported and that unsupported content be reported rather than
+  silently omitted; the shipped arm does both, and the report names the state on every run.
+- **Reversal:** carry `HasThinking` onto `Message` and ask the rendering arm as (reader named ∧ trace
+  recorded as existing ∧ `Thinking == ""`), after verifying per reader that its empty-`HasThinking` shape is
+  the rendering one — one clause in `dialogueOf` plus the per-reader evidence Q-0007-12 requires.
+- **Settled by:** an owner letter authorizing the mechanism arm (with the per-reader verification), or an
+  upstream reader change that records the trace's own text for these readers.
+
+## Q-0008-02 — The native direction verifies Codex, and the Claude half rests on the accepted route
+
+- **Status:** resolved (unattended default taken)
+- **Question:** goal 0008's first clause allows a continued OpenCode session to be verified against **Claude
+  Code or Codex**. Which target does the native direction drive?
+- **Default taken:** Codex (`scripts/opencode-native-check.py --direction opencode-to-codex`). Measured on
+  this host: Codex 0.170.0 is installed and its own loader (`codex app-server`'s `thread/resume`) opens the
+  converted session offline — an actual target-native **load** result — while no Claude Code binary exists
+  here at all (a direction that drove it would end `RESULT: INCOMPLETE` on every run of this host). The
+  Claude half is covered where it already is: both targets are exercised offline by the Go cases (conversion,
+  installation, the inherited reader's structural read-back over the installed transcript), and 0003's
+  accepted native check drives Claude Code's own loader on a host that has the binary.
+- **Reversal:** add the symmetric `opencode-to-claude` direction (the pipeline is identical; only the target
+  binary and the printed line differ) when a host has Claude Code installed.
+- **Settled by:** the operator's own host inventory or an instruction to prefer the Claude direction.
+
+## Q-0008-03 — The OpenCode fixture is the harness's own export document, not a store
+
+- **Status:** resolved (unattended default taken)
+- **Question:** an OpenCode session is a row in the harness's SQLite store, so what does a committed fixture
+  look like?
+- **Default taken:** the harness's own **export document**
+  (`internal/ccc/testdata/fixtures/opencode/<session>.json`, written by `internal/ccc/fixturegen` from the
+  shape a real `session export` writes on 2.2.5, one canonical compact encoding). A committed *store* is not
+  an option — only the harness writes one — and the document is the harness's own interchange format: the
+  Go cases and `cmd/ccc`'s route cases materialise it through `internal/ccc/opencodefixture`, and the native
+  check plants it through the harness's own `session import`, which also validates the shape against the
+  real importer on every native run (measured: the import accepts it, and the store's own reader returns the
+  document member for member apart from `info.projectID`, `info.location.directory` and
+  `info.time.updated`).
+- **Reversal:** none needed; the fixture is one file and its consumers are two constructors.
+- **Settled by:** nothing pending; recorded because it changes the rule `docs/conventions.md` stated when
+  OpenCode was a target only ("no fixture directory of its own").
+
+## Q-0008-04 — No parity/oracle case is added for the OpenCode source
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `internal/ccc/parity`'s oracle compares a read against a pristine checkout at the pin over
+  *file*-shaped fixture roots. Should this increment add an OpenCode case?
+- **Default taken:** no. An OpenCode source is a store, and the oracle's fixture mechanism reads a file per
+  case; making it materialise a store would extend the oracle (a separate change with its own evidence).
+  What covers the goal's third clause instead: the gate's required `parity` step proves the carried reader,
+  provider and schema are the pin's bytes, and the native direction reads a store the harness itself wrote —
+  the strongest available statement that the inherited reader reads *that* harness's rows.
+- **Reversal:** teach the oracle to materialise a store for a case (`internal/ccc/opencodefixture` exists and
+  could be borrowed) and record a dump from a pristine checkout.
+- **Settled by:** a later increment that wants byte-level cross-tree evidence for the OpenCode reader (0001's
+  argument for Pi applied to this provider).
+
+## Q-0008-05 — A requested turn on a host whose Codex store holds no credential is recorded, not worked around
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `--resume-prompt` asks for one real turn in the installed session. Measured on this host: a
+  Codex turn under a **scratch** `CODEX_HOME` answers `401 Unauthorized` — the credential lives in the
+  caller's own `~/.codex/auth.json`, and this build never copies a credential or login store — while the same
+  boundary is already disclosed by `scripts/codex-native-check.py`'s own turn (0007's record quotes it). May
+  the check seed the scratch home from the caller's, or drive the turn in the caller's own home, to obtain a
+  turn?
+- **Default taken:** no. The check runs its one turn through the report's own vector with its own isolation
+  flags and records what the harness answered; on this host that is a **failed** check naming the harness's
+  own words (never a pass, never a skip the verdict ignores), and the load half — Codex's own `thread/resume`
+  through the app server, offline — is what the PASS run verifies. Seeding a credential into a scratch home
+  is forbidden by the design's own rule; installing into a caller-named home to reach their credential is
+  what the repository's rules reserve for the caller to do deliberately (`--target-home`).
+- **Reversal:** run the check with `--target-home` naming a home that holds the caller's own credential (the
+  printed resume line then names exactly that home), or seed a provider whose authentication is
+  environment-backed (`env_key`) into the scratch home once such a provider is configured.
+- **Settled by:** an operator instruction to spend a turn in their own Codex home, or a host whose scratch
+  home can authenticate without a copied credential.

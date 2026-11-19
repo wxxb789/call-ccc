@@ -9,7 +9,8 @@ import (
 )
 
 // fixtureRoot is the committed fixture tree: one directory per provider, each of which is that
-// provider's source root.
+// provider's source root (the tree's `opencode/` entry holds that provider's export document instead, and
+// no case in Cases reads it: a case for it would ask the inherited reader for a store, not a path).
 func fixtureRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", "testdata", "fixtures"))

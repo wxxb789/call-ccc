@@ -60,7 +60,10 @@ var (
 )
 
 // fixtureRoot is the directory the committed sanitized fixtures live in; each provider subdirectory
-// is that provider's configured source root, with the layout that provider's discovery expects.
+// is that provider's configured source root, with the layout that provider's discovery expects -- except
+// `opencode/`, which holds that provider's own **export document** rather than a source root: an OpenCode
+// session is a row in a store only its harness writes, so a case materialises one from the document
+// (internal/ccc/opencodefixture) and points the reader at that store's directory.
 func fixtureRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("testdata", "fixtures"))

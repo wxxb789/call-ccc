@@ -183,6 +183,37 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   as often as it is published, because a check that left its fixture behind would make every later run's
   planting meet `Session already exists` (measured: the pre-fix check ended `RESULT: FAIL` there and the
   fixture stayed).
+- **OpenCode is a source whose session is a row in that harness's own store.** A reference
+  (`opencode:<session id>` under the provider's configured root — `OPENCODE_DIR`, the configuration's
+  `opencode_dirs`, else `~/.local/share/opencode`, the directory holding `opencode.db` — or the provider's
+  own virtual path `<database>#<session id>`) is resolved by the inherited AgentsView OpenCode provider
+  and read by its reader: this build adds no SQL reader, no second parser and no store writer of its own,
+  and a caller who wants to convert an OpenCode session names the root it lives in, exactly as the other
+  sources name `CLAUDE_PROJECTS_DIR`/`CODEX_SESSIONS_DIR`/… . What one read answers is the reader's own, and
+  the routes report it as such: the OpenCode v2 reader renders a `reasoning` part into the record's
+  `Content` (`[Thinking]\n<trace>\n[/Thinking]`, joined with the record's `text` parts) and records **no**
+  trace text and **no** dialogue projection, so every written message is carried-with-caveat
+  (`unprojected_dialogue`) and nothing is removed from `Content` by inference; a `completed` tool part
+  yields the part's own `time.ran` as a textless **progress event** beside the terminal event that carries
+  its recorded content, so the writers leave the progress event out and count it
+  (`empty_tool_results` on the Codex and Claude routes) while the terminal event's text is what the target
+  holds; and the store's session controls (an `idle` marker, agent and model switches) are not messages the
+  reader returns, so nothing is counted for them — the read never held them. A member of that store is a
+  **container** member: `source.boundary` is `not-taken` naming the store and the member,
+  `installation.source_check_state` is `not-verified`, and "the source is unchanged" is measured on the
+  harness's own *records* (`session export` before and after), never on the database file's bytes, which
+  move with the harness's WAL handling. Its committed fixture is therefore a **document**, not a store
+  (`internal/ccc/testdata/fixtures/opencode/<session>.json`, written by `internal/ccc/fixturegen` from the
+  shape a real `session export` writes, one canonical encoding, compact so the tool input's JSON value is
+  the one the store holds) — a store can only be written by the harness, so tests materialise one through
+  `internal/ccc/opencodefixture` and the native check plants the same document through the harness's own
+  importer. `scripts/opencode-native-check.py --direction opencode-to-codex` is that direction: it plants
+  the fixture, converts through the CLI at the **load** level, reads the installed Codex rollout's own
+  records against the fixture's own bytes (prompts, call name, recorded input value, recorded result text —
+  one output per call — and the reader's rendering of the reasoning record), reads the printed Codex line as
+  a POSIX invocation naming `CODEX_HOME` and the session, and — with `--resume-prompt` — runs one real turn
+  through the report's own vector, recording what the harness answered (a refused turn is a failed check,
+  never a skip).
 - **A conversion writes a fresh native identity and replaces nothing.** The install is exclusive, the
   source is never opened for writing, no credential or login store is copied, and a target data
   directory nobody named is an error rather than a directory invented here. Tests and demos use
@@ -241,12 +272,16 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   parameterized by `piFamilyShape`), and the OpenCode target's `opencode_target.go`, `opencode_install.go`
   and `opencode_verify.go` (whose store a test builds through `internal/ccc/opencodefixture` — a fixture
   package, because a real OpenCode session exists only inside the harness's own store); its committed
-  native-shaped fixtures are `internal/ccc/testdata/fixtures/` and the growth fragments a run appends to
+  native-shaped fixtures are `internal/ccc/testdata/fixtures/` — one provider directory per source, except
+  `fixtures/opencode/`, which holds the harness's own **export document** for one session rather than a
+  source root, because that provider's session is a row in a store only the harness writes — and the growth
+  fragments a run appends to
   a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
   pinned against it) are what makes one source session grow; `cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
   (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`,
-  `scripts/omp-native-check.py`, `scripts/opencode-native-check.py`) is
+  `scripts/omp-native-check.py`, `scripts/opencode-native-check.py`, whose two directions are
+  0007's `claude-to-opencode` and 0008's `opencode-to-codex`) is
   registered in `docs/harness.md`, re-runnable, and deliberately not a gate step. A target whose own
   loader resolves a session id through the process's working directory — Claude Code, and Pi — is
   installed under the project spelling of the source read's recorded working directory, and a source that

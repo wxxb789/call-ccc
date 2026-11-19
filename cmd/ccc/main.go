@@ -39,7 +39,12 @@ usage:
   the provider's own session id, or the path to the session's source file -- absolute, or relative to
   one of that provider's configured source roots. An id may carry a host (host~<id>): that is a
   session synced from another machine, which has no source file here, so only an archive can answer
-  it.
+  it. A provider's own root is what its discovery reads: the environment variable that names it
+  (CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR, PI_DIR, OPENCODE_DIR, …), else the same key in the
+  AgentsView configuration (claude_project_dirs, codex_sessions_dirs, pi_dirs, opencode_dirs, …),
+  else that provider's default directory. An OpenCode session is a row inside that harness's own store
+  (<root>/opencode.db), which only the harness writes: an OpenCode source is read from the store as it
+  stands, and the OpenCode target's installation is that harness's own importer.
 
   continue reads that session through the inherited AgentsView reader, writes it as a NEW native
   session of the target harness, installs it where that harness keeps its sessions, and reports the
@@ -52,6 +57,7 @@ usage:
       ccc continue omp:01a1eb89-363f-7049-85cc-33c574dc5183 --to claude    # Oh My Pi → Claude Code
       ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to omp     # Claude Code → Oh My Pi
       ccc continue claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 --to opencode # Claude Code → OpenCode
+      ccc continue opencode:ses_5f2a1c47d9e34b6a8f0c1d2e3b4a5c6d --to codex # OpenCode → Codex (its store)
   and the result says which command resumes it (for Codex: CODEX_HOME=<dir> codex resume <session-id>;
   for Claude Code: cd <dir> && CLAUDE_CONFIG_DIR=<dir> claude --resume <session-id>; for Pi:
   cd <dir> && PI_CODING_AGENT_DIR=<dir> pi --session <session-id>; for Oh My Pi:

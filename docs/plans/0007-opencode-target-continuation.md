@@ -1,6 +1,6 @@
 # Plan — 0007 Continue supported conversations in OpenCode
 
-Contract: [`docs/goals/0007-opencode-target-continuation.md`](../goals/0007-opencode-target-continuation.md).
+Contract: [`docs/goals/archive/0007-opencode-target-continuation.md`](../goals/archive/0007-opencode-target-continuation.md).
 Governing design: [`docs/core-design/README.md`](../core-design/README.md).
 Shape reference: increment 0006 ([`docs/plans/0006-omp-continuation.md`](0006-omp-continuation.md)) — the last
 target route — with 0002 for the route contract and 0004 for the source-boundary rules (unchanged here).

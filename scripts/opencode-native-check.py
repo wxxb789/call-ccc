@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Verify the OpenCode route natively, against the installed OpenCode binary.
+"""Verify the OpenCode routes natively, against the installed OpenCode binary.
 
-This is the target-side native verification for goal 0007 (OpenCode continuation), and it is deliberately
-**not** a gate step, exactly like ``scripts/claude-native-check.py``, ``scripts/codex-native-check.py``,
-``scripts/pi-native-check.py`` and ``scripts/omp-native-check.py``: it needs the OpenCode binary installed,
-and a real turn (``--resume-prompt``) needs model access. The gate keeps deciding the offline half (the
-inherited reader's round trip, the install rules, the reported losses and the CLI shape).
+This is the native verification for the two OpenCode routes: goal 0007's **target** direction
+(``--direction claude-to-opencode``, the eight steps below, where the harness's own importer *is* the
+installation) and goal 0008's **source** direction (``--direction opencode-to-codex``, where the harness's
+own importer writes the *source* store and the target harness is Codex -- see "The source direction"
+below). Like ``scripts/claude-native-check.py``, ``scripts/codex-native-check.py``,
+``scripts/pi-native-check.py`` and ``scripts/omp-native-check.py`` it is deliberately **not** a gate step:
+it needs the OpenCode binary installed, and a real turn (``--resume-prompt``) needs model access. The gate
+keeps deciding the offline half (the inherited reader's round trip, the install rules, the reported losses
+and the CLI shape).
 
 What it does:
 
@@ -74,6 +78,48 @@ own records (measured: identical rows and identical exported documents around it
 leaves the store without that session; and ``run --session <id>`` appends its own records while *creating* a
 session for an id the store does not hold -- which is why no level of this check drives ``run`` as a load,
 and why the control arm asks about an id nothing installed.
+
+The source direction (``--direction opencode-to-codex``, goal 0008) is the same product from the other
+side, and it needs both binaries: the OpenCode binary is the writer of the **source** store -- a session is
+a row inside it, so only that harness's own importer can plant the session this run converts -- and Codex is
+the target whose own loader opens what the conversion installed. It:
+
+1. reads the committed fixture document (``internal/ccc/testdata/fixtures/opencode/``, written by
+   ``internal/ccc/fixturegen``) and **plants it through the harness's own importer**
+   (``session import <document> --directory <workspace> --standalone``) into a scratch data root, so the
+   source session is one the harness itself wrote; the *working directory* needs no rewriting here, unlike
+   the target direction's Claude copy: ``--directory`` is what places the session, and the importer (measured)
+   rewrites exactly three members -- ``info.projectID``, ``info.location.directory`` and
+   ``info.time.updated`` -- while every message comes back as the document wrote it;
+2. reads the planted session back with the harness's own reader (``session export``) and compares what *it*
+   holds with the fixture document's own bytes over the members this comparison reads -- the user texts, each
+   tool part's name, its recorded input value, its terminal text, and each record's rendered text: the
+   planting answers for the conversation this run converts, and a store holding something else is reported
+   rather than converted;
+3. converts through the CLI (``ccc continue opencode:<id> --to codex --target-home <codex home>
+   --target-binary <codex> --verify load --json``, ``OPENCODE_DIR`` naming the scratch root), reading the
+   report's three states rather than trusting them -- the **load** level only: the one real turn a
+   ``--resume-prompt`` asks for is this check's own (step 6), so asking for the resume level too would run
+   and bill a second turn and would write its records into the rollout before step 4 reads it;
+4. compares the **installed rollout's own records** with the **fixture document's own bytes** -- the user
+   texts, each tool call's name and recorded input value, its recorded result text (one output per call: the
+   textless progress event a completed OpenCode tool part produces is not a second output), the assistant
+   texts, and the persisted reasoning trace the reader renders into one of them -- so a writer that mangled
+   either member cannot pass by agreeing with itself;
+5. records what the report says a **container member** can state: the boundary is ``not-taken`` naming the
+   store and the member (no file holds the conversation's bytes; the database file holds every member and
+   moves with the harness's WAL handling), and the source comparison is reported as one that did not run;
+6. asks the harness's own reader for an id nothing installed (the control arm: it must refuse, naming the
+   id), reads the printed resume line as a POSIX invocation naming the Codex home and the session, and, with
+   ``--resume-prompt``, runs one real turn itself through the report's own argument vector -- the rollout's
+   own records are re-read afterwards, so the turn can be shown to have been appended to the installed
+   session, and what the harness answered is recorded as it answered it (a refused turn is a failed check,
+   never a pass and never a skip);
+7. removes the planted session through the harness's own ``session delete`` and shows its absence.
+
+The source direction's store is always this run's own scratch one (the harness's own importer writes it), so
+``--target-home`` names the **Codex** home for that direction and the OpenCode data root for the target
+direction.
 """
 
 from __future__ import annotations
@@ -93,6 +139,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_check_common import (  # noqa: E402
     PROMPT_PLACEHOLDER,
     RESULTS,
+    SHELL_SYNTAX_CHARACTERS,
+    TURN_OUTPUT_MARKER,
     bounded,
     print_answer,
     record,
@@ -100,7 +148,9 @@ from native_check_common import (  # noqa: E402
     reported_invocation as _shared_reported_invocation,
     rewrite_source_cwd,
     run,
+    shell_words,
     tree_digest,
+    unquoted_text,
 )
 
 #: Where this repository keeps its committed native-shaped fixtures.
@@ -108,6 +158,15 @@ FIXTURE_ROOT = Path("internal/ccc/testdata/fixtures")
 SOURCE_PROVIDER = "claude"
 SOURCE_SESSION = "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"
 TARGET_PROVIDER = "opencode"
+
+#: The two directions this check verifies, and the names each one's own part is spelled by. The first is
+#: goal 0007's target direction: a Claude session becomes an OpenCode one, and the OpenCode binary is the
+#: installation's own importer. The second is goal 0008's source direction: the harness's own importer
+#: plants the *source* store from the committed fixture document, and Codex is the target.
+TARGET_DIRECTION = f"{SOURCE_PROVIDER}-to-{TARGET_PROVIDER}"
+CODEX_TARGET_PROVIDER = "codex"
+SOURCE_DIRECTION = f"{TARGET_PROVIDER}-to-{CODEX_TARGET_PROVIDER}"
+DIRECTIONS = (TARGET_DIRECTION, SOURCE_DIRECTION)
 
 GO_TAGS = "fts5"
 
@@ -122,9 +181,21 @@ BINARY = Path("bin", "ccc-native-check-opencode")
 #: which is also what the printed resume line does, and why that line names the database file inside the
 #: root too: a printed shell line can only set variables, never remove an inherited `OPENCODE_DB`, and an
 #: inherited override would send the pasted command to another store.
-SOURCE_ROOT_ENV = {"claude": "CLAUDE_PROJECTS_DIR"}
+SOURCE_ROOT_ENV = {"claude": "CLAUDE_PROJECTS_DIR", "opencode": "OPENCODE_DIR"}
 OPENCODE_DATA_ROOT_ENV = "XDG_DATA_HOME"
 OPENCODE_DB_ENV = "OPENCODE_DB"
+
+#: The environment variable the target harness of the source direction takes its data directory from: Codex
+#: has no flag for it, so the printed line's assignment is what makes a pasted command read the home this
+#: run installed into.
+CODEX_HOME_ENV = "CODEX_HOME"
+
+#: The committed fixture the source direction plants: the harness's own export document for one invented
+#: conversation (internal/ccc/fixturegen's `opencodeSession`), which is the only file-shaped native
+#: artifact this provider has -- a session is a row inside the harness's own store, so the document is what
+#: is committed and the harness's own importer materialises the store from it.
+OPENCODE_SOURCE_FIXTURE = Path("opencode", "ses_0008opencodefixture00000001.json")
+OPENCODE_SOURCE_SESSION = "ses_0008opencodefixture00000001"
 
 #: The names the harness resolves its store under, below the data root.
 OPENCODE_DATA_DIR = "opencode"
@@ -452,7 +523,8 @@ def plant_unrelated(opencode: str, data_root: Path, scratch: Path) -> tuple[bool
     return False, bounded(answer, 300)
 
 
-def remove_planted(opencode: str, data_root: Path, published: bool) -> None:
+def remove_planted(opencode: str, data_root: Path, published: bool,
+                   session_id: str = UNRELATED_SESSION) -> None:
     """Remove the session **this run published** through the harness's own `session delete`, and show that
     it is gone.
 
@@ -465,14 +537,14 @@ def remove_planted(opencode: str, data_root: Path, published: bool) -> None:
     other sessions are not this check's to delete."""
     if not published:
         return
-    completed = ask_opencode(opencode, ["session", "delete", UNRELATED_SESSION], data_root)
+    completed = ask_opencode(opencode, ["session", "delete", session_id], data_root)
     answer = (completed.stdout or "") + (completed.stderr or "")
     record("the planted session is removed through the harness's own session delete",
-           completed.returncode == 0 and f"Session {UNRELATED_SESSION} deleted" in answer,
+           completed.returncode == 0 and f"Session {session_id} deleted" in answer,
            bounded(answer, 200))
-    after, words, status = export_document(opencode, data_root, UNRELATED_SESSION)
+    after, words, status = export_document(opencode, data_root, session_id)
     record("the removed session no longer resolves",
-           after is None and status != 0 and UNRELATED_SESSION in words,
+           after is None and status != 0 and session_id in words,
            f"exit {status}; {bounded(words, 200)}")
 
 
@@ -687,27 +759,39 @@ def document_compactions(document: dict) -> list[dict]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--direction", choices=(f"{SOURCE_PROVIDER}-to-{TARGET_PROVIDER}",),
-                        default=f"{SOURCE_PROVIDER}-to-{TARGET_PROVIDER}",
-                        help="the route this run verifies; this target has one direction, because the "
-                             "harness's own reader is already the source side's (the inherited reader "
-                             "reads its store, so an OpenCode source needs no second parser)")
+    parser.add_argument("--direction", choices=DIRECTIONS, default=TARGET_DIRECTION,
+                        help="the route this run verifies: claude-to-opencode is goal 0007's target "
+                             "direction (the OpenCode binary's own importer *is* the installation), and "
+                             "opencode-to-codex is goal 0008's source direction (the same harness's own "
+                             "importer writes the source store, read through the inherited reader, and "
+                             "Codex is the target)")
     parser.add_argument("--opencode", default="opencode",
-                        help="the OpenCode binary to verify against (default: opencode on PATH)")
+                        help="the OpenCode binary this run drives (default: opencode on PATH). It is the "
+                             "target harness of claude-to-opencode and the writer of the *source* store "
+                             "in opencode-to-codex, where only its own importer can plant the session")
+    parser.add_argument("--codex", default="codex",
+                        help="the Codex binary opencode-to-codex verifies against (default: codex on "
+                             "PATH): the target harness whose own loader opens the installed session")
     parser.add_argument("--source", default=None,
-                        help=f"the source session to convert (default: the committed {SOURCE_SESSION} "
-                             f"Claude fixture)")
+                        help=f"the source to convert: for claude-to-opencode, the committed "
+                             f"{SOURCE_SESSION} Claude fixture's session id (default), or another id "
+                             f"below the committed {SOURCE_PROVIDER} fixtures; for opencode-to-codex, the "
+                             f"path to an OpenCode export document to plant (default: the committed "
+                             f"opencode fixture document)")
     parser.add_argument("--target-home", type=Path,
-                        help="the harness's data root (default: a scratch one). A directory whose own name "
-                             "is `opencode` is the data directory itself -- the rule the route itself "
-                             "applies, whose parent then becomes the root -- so the conversion and this "
-                             "check read the same store: the conversion is handed this argument's own "
-                             "spelling and each side applies the rule once. A caller's own root is used "
-                             "exactly as it is found: nothing is installed into it but the converted "
-                             "session, and the unrelated session this run plants is removed again -- an "
-                             "id the store already holds is removed first only where its own document "
-                             "shows it to be an earlier run's leftover of this same check, and a session "
-                             "holding anything else stops the run untouched")
+                        help="the target's home directory (default: a scratch one). For claude-to-opencode "
+                             "it is the harness's data root, and a directory whose own name is `opencode` "
+                             "is the data directory itself -- the rule the route itself applies, whose "
+                             "parent then becomes the root -- so the conversion and this check read the "
+                             "same store: the conversion is handed this argument's own spelling and each "
+                             "side applies the rule once. A caller's own root is used exactly as it is "
+                             "found: nothing is installed into it but the converted session, and the "
+                             "unrelated session this run plants is removed again -- an id the store "
+                             "already holds is removed first only where its own document shows it to be an "
+                             "earlier run's leftover of this same check, and a session holding anything "
+                             "else stops the run untouched. For opencode-to-codex it is the CODEX_HOME "
+                             "the conversion installs into; the OpenCode side is always this run's own "
+                             "scratch store, because the harness's importer is what writes it")
     parser.add_argument("--resume-prompt",
                         help="run one real turn in the installed session with this prompt")
     parser.add_argument("--expect", help="require the resume turn's answer to contain this text")
@@ -719,14 +803,26 @@ def main(argv: list[str] | None = None) -> int:
     fixture_root = repo / FIXTURE_ROOT
     opencode = harness_executable(args.opencode)
     if opencode is None:
+        role = ("this route's installation *is* the harness's own importer, so there is nothing to verify "
+                "without it" if args.direction == TARGET_DIRECTION else
+                "this route's *source* store is written by that harness's own importer, so there is "
+                "nothing to plant or read without it")
         print(f"RESULT: INCOMPLETE — 0 check(s) ran; {args.opencode} is not on PATH, so the native half of "
-              f"the {TARGET_PROVIDER} route could not run (this route's installation *is* the harness's own "
-              f"importer, so there is nothing to verify without it)")
+              f"{args.direction} could not run ({role})")
         return 2
     go = shutil.which("go")
     if go is None:
         print("go is not on PATH: this harness builds ccc with the Go toolchain", file=sys.stderr)
         return 2
+    if args.direction == SOURCE_DIRECTION:
+        codex = harness_executable(args.codex)
+        if codex is None:
+            print(f"RESULT: INCOMPLETE — 0 check(s) ran; {args.codex} is not on PATH, so the native half of "
+                  f"{args.direction} could not run (that route's target harness is Codex, whose own loader "
+                  f"is what a load or resume verdict rests on)")
+            return 2
+        scratch = Path(tempfile.mkdtemp(prefix="ccc-opencode-source-check-")).resolve()
+        return run_source_direction(args, repo, go, opencode, codex, scratch)
 
     source_session = args.source or SOURCE_SESSION
     candidates = sorted((fixture_root / SOURCE_PROVIDER).rglob(f"*{source_session}.jsonl"))
@@ -1132,12 +1228,517 @@ def _run_turn(args: argparse.Namespace, target: dict, opencode: str, data_root: 
            + f" {needle[:160]!r}")
 
 
+# --- the source direction (goal 0008): the harness writes the source store, Codex is the target --------
+
+
+def fixture_document(path: Path) -> dict:
+    """The committed fixture document, parsed: the harness's own export document for one invented
+    conversation, which this direction plants through the harness's own importer."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"{path} is not a readable OpenCode document: {exc}") from exc
+    if not isinstance(document, dict) or not str((document.get("info") or {}).get("id") or ""):
+        raise SystemExit(f"{path} carries no info.id, so it names no session")
+    return document
+
+
+def canonical_json_value(value: object) -> str:
+    """One JSON value's canonical spelling. A string that is *itself* JSON is read as the value it carries
+    (a Codex rollout writes a call's arguments as a JSON string), so a comparison asks about the value
+    rather than about which side wrote the whitespace -- which is the rule the route's own structure check
+    applies to the same member (measured: the harness's importer stores a tool input as the parsed value,
+    keeping the recorded key order and dropping the recorded whitespace)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def opencode_tool_call_input(part: dict) -> str:
+    """The argument value a conversion writes for one tool part: the part's recorded ``input``, canonicalized
+    (``canonical_json_value``), and the empty object where the read holds none.
+
+    The read holds none for a ``pending``/``streaming`` part (the reader blanks the call's input while its
+    state is still open -- ``internal/parser``'s ``openCodeV2ToolCall``) and for a part that recorded no
+    input at all, and each writer then writes ``{}`` and counts it (``empty_inputs``): a comparison that
+    expected the document's own member there would report a difference that is not one."""
+    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+    if str(state.get("status") or "") in ("pending", "streaming"):
+        raw: object = ""
+    else:
+        raw = state.get("input")
+    return "{}" if raw in (None, "") else canonical_json_value(raw)
+
+
+def opencode_tool_state_text(part: dict) -> str:
+    """The text a conversion writes for one tool part's terminal state: its ``content`` blocks' own text
+    joined with newlines, and -- for the ``read`` tool alone -- the structured UTF-8 content the part
+    carries, which is the rule the inherited reader applies (``internal/parser``'s ``openCodeV2ToolCall``
+    appends that member only where the part's name is ``read`` and its encoding is ``utf8``).
+
+    A part whose content carries a ``file`` block answers no text: the reader turns the part's text into
+    result *blocks* there, which the target writers hold no field for and count
+    (``unrepresentable_result_blocks``), so the text does not reach the target at all. Every rule is read
+    from the document here, so the comparison asks what a target can hold rather than what a conversion's
+    own reading of one document happened to answer."""
+    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+    content = [block for block in state.get("content") or [] if isinstance(block, dict)]
+    if any(block.get("type") == "file" for block in content):
+        return ""
+    texts = [block["text"] for block in content
+             if block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"]]
+    structured = state.get("structured")
+    if (str(part.get("name") or "") == "read" and isinstance(structured, dict)
+            and structured.get("encoding") == "utf8"
+            and isinstance(structured.get("content"), str) and structured["content"]):
+        texts.append(structured["content"])
+    return "\n".join(texts)
+
+
+def opencode_reader_text(message: dict) -> str:
+    """The text the inherited reader answers for one OpenCode message's ``content``, built the way the
+    reader builds it (``internal/parser``'s ``loadOpenCodeV2Messages``): every ``text`` part's own text and
+    every ``reasoning`` part as the reader's ``[Thinking]\\n<trace>\\n[/Thinking]`` block, joined with
+    newlines in the parts' own order.
+
+    Building the rendering here -- rather than reading the parts apart and comparing a target's text against
+    one of them -- is what makes one expectation comparable with a target harness's own records: a Codex
+    rollout holds exactly this text for the record, rendering and all, and a target that wrote only the
+    record's own words has dropped the persisted trace without saying so."""
+    texts: list[str] = []
+    for part in message.get("content") or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text" and isinstance(part.get("text"), str) and part["text"]:
+            texts.append(part["text"])
+        elif part.get("type") == "reasoning" and isinstance(part.get("text"), str) and part["text"]:
+            texts.append(f"[Thinking]\n{part['text']}\n[/Thinking]")
+    return "\n".join(texts)
+
+
+def opencode_document_evidence(document: dict) -> dict[str, list[str]]:
+    """What one OpenCode document records, in the members a target's own records are compared by: the user
+    texts, each tool part's name, its recorded input value and the text its terminal state carries, and the
+    assistant records' texts -- the reader's own rendering of each record, as a target holds it.
+
+    Every member is the value a conversion *writes* for the document, read through the reader's own rules
+    (``opencode_tool_call_input``, ``opencode_tool_state_text``): the tool input is canonicalized -- the
+    harness's own importer stores it as the parsed value and each target's writer encodes the value its own
+    way -- and a result contributes a member only where its text is one the writers write, because a
+    textless, block-only or whitespace-only result is counted and left out of the target rather than written
+    as an empty output."""
+    evidence: dict[str, list[str]] = {"user_texts": [], "call_names": [], "call_inputs": [],
+                                      "call_results": [], "assistant_texts": []}
+    for message in document.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        kind = message.get("type")
+        if kind == "user":
+            if isinstance(message.get("text"), str) and message["text"]:
+                evidence["user_texts"].append(message["text"])
+            continue
+        if kind != "assistant":
+            continue
+        if rendering := opencode_reader_text(message):
+            evidence["assistant_texts"].append(rendering)
+        for part in message.get("content") or []:
+            if not isinstance(part, dict) or part.get("type") != "tool":
+                continue
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            evidence["call_names"].append(str(part.get("name") or ""))
+            evidence["call_inputs"].append(opencode_tool_call_input(part))
+            # The reader answers a result for a completed part and for an errored one (its own switch), and
+            # the writers write an output only where the text is one they can write.
+            if str(state.get("status") or "") in ("completed", "error"):
+                text = opencode_tool_state_text(part)
+                if text.strip():
+                    evidence["call_results"].append(text)
+    return evidence
+
+
+def rollout_records(path: Path) -> list[dict]:
+    """Every record of one installed Codex rollout, in the file's own order."""
+    records: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
+def rollout_evidence(records: list[dict]) -> dict[str, list[str]]:
+    """What one installed Codex rollout records, in the same members the OpenCode side is read by: its
+    message items' texts and each ``function_call``'s name, recorded arguments and ``function_call_output``
+    text. A record that is not a ``response_item`` payload (a ``turn_context``, an ``event_msg``, the
+    ``session_meta`` line) carries no member this comparison asks about and is skipped."""
+    evidence: dict[str, list[str]] = {"user_texts": [], "call_names": [], "call_inputs": [],
+                                      "call_results": [], "assistant_texts": []}
+    for record in records:
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("type")
+        if kind == "message":
+            text = "\n".join(block.get("text") or "" for block in payload.get("content") or []
+                             if isinstance(block, dict))
+            if payload.get("role") == "user":
+                evidence["user_texts"].append(text)
+            else:
+                evidence["assistant_texts"].append(text)
+        elif kind == "function_call":
+            evidence["call_names"].append(str(payload.get("name") or ""))
+            evidence["call_inputs"].append(canonical_json_value(payload.get("arguments")))
+        elif kind == "function_call_output":
+            evidence["call_results"].append(str(payload.get("output") or ""))
+    return evidence
+
+
+def evidence_differences(expected: dict[str, list[str]], got: dict[str, list[str]]) -> list[str]:
+    """Every member of one source-against-target comparison that does not hold, worded for a reader.
+
+    Both sides are read into the same members (``opencode_document_evidence`` for the source document and
+    ``rollout_evidence`` for an installed Codex rollout), so every member is compared member for member: the
+    user texts, each tool call's name, its recorded input value and its recorded result text -- one result
+    per call, because the textless progress event a completed OpenCode tool part produces beside its
+    terminal one is not a second output -- and the assistant texts, the reader's own rendering of a persisted
+    reasoning trace among them. Nothing is compared by containment: a target that wrote the record's own
+    words where the source's read carries the rendering has dropped the trace, and that is a difference."""
+    differences: list[str] = []
+    for key, label in (("user_texts", "user text"), ("call_names", "tool name"),
+                       ("call_inputs", "recorded tool input"), ("call_results", "recorded tool result"),
+                       ("assistant_texts", "assistant text")):
+        if expected[key] != got[key]:
+            differences.append(f"the {label}(s) are {bounded(json.dumps(got[key]), 160)}, the source "
+                               f"recorded {bounded(json.dumps(expected[key]), 160)}")
+    return differences
+
+
+def plant_fixture(opencode: str, data_root: Path, fixture: Path, workspace: Path, session_id: str,
+                  ) -> tuple[bool, str]:
+    """Plant one fixture document **through the harness's own importer**, which is the only writer of an
+    OpenCode store: the source session this run converts is then one the harness itself published.
+
+    The acknowledgment is read in the route's own order (``internal/ccc/opencode_install.go``): the
+    harness's own ``Imported session: <id>`` line first, and -- where the process failed or overran its
+    deadline after committing, which the route reconciles the same way -- the harness's own reader, whose
+    answered document says the store holds the session. A planting that published nothing is a failed
+    check, and the caller stops rather than converting a session nothing wrote."""
+    completed = ask_opencode(
+        opencode, ["session", "import", str(fixture), "--directory", str(workspace)], data_root,
+        cwd=workspace)
+    answer = (completed.stdout or "") + (completed.stderr or "")
+    if harness_line_names(answer, IMPORT_ACKNOWLEDGMENT, session_id):
+        return True, f"the harness answered `Imported session: {session_id}` (exit {completed.returncode})"
+    reconciled, words, status = export_document(opencode, data_root, session_id, cwd=workspace)
+    if reconciled is not None:
+        return True, (f"the import exited {completed.returncode}, and the harness's own reader answers the "
+                      f"session it committed: exit {status}; id "
+                      f"{reconciled.get('info', {}).get('id')!r}")
+    return False, (f"exit {completed.returncode}; the import answered {bounded(answer or 'nothing', 200)} "
+                   f"and the harness's own reader answers exit {status}: {bounded(words or 'nothing', 200)}")
+
+
+def reads_as_a_codex_invocation(line: str, home: Path, arguments: list[str]) -> bool:
+    """Whether one printed line is ``CODEX_HOME=<home> <arguments>`` as a POSIX shell reads it. Codex takes
+    its data directory from ``CODEX_HOME`` alone -- it has no flag for it -- so the assignment being first
+    and exact is what makes a pasted line resume the session this run installed. The words alone do not
+    answer it: a quoted assignment reads back as the very same words while a shell takes it as the *program*
+    word (resuming the caller's own home instead), and a character a shell acts on left unquoted makes the
+    line a different command than it looks like. The spelling is therefore read before the quoting is
+    removed -- the reading ``scripts/codex-native-check.py`` applies to Codex's own lines, kept here because
+    this direction reads a Codex line."""
+    text = unquoted_text(line)
+    if text is None or not text.startswith(f"{CODEX_HOME_ENV}="):
+        return False
+    if set(text).intersection(SHELL_SYNTAX_CHARACTERS):
+        return False
+    return shell_words(line) == [f"{CODEX_HOME_ENV}={home}", *arguments]
+
+
+def record_codex_invocation(target: dict, home: Path) -> None:
+    """Record that the printed lines resume this run's own session in this run's own home: the report's
+    argument vectors against what this check knows on its own (the session it converted, the home it
+    passed), and both rendered lines read the way a shell reads them."""
+    session_id = str(target.get("session_id") or "")
+    resume_arguments = [str(word) for word in (target.get("resume_arguments") or [])]
+    exec_arguments = [str(word) for word in (target.get("exec_resume_arguments") or [])]
+    environment = target.get("resume_environment") or {}
+    record("the printed resume lines name this run's own home and session",
+           bool(session_id) and session_id in resume_arguments and session_id in exec_arguments
+           and environment.get(CODEX_HOME_ENV) == str(home)
+           and reads_as_a_codex_invocation(str(target.get("resume_command") or ""), home, resume_arguments)
+           and reads_as_a_codex_invocation(str(target.get("exec_resume_command") or ""), home, exec_arguments),
+           bounded(f"{target.get('resume_command')} | {target.get('exec_resume_command')}", 300))
+
+
+def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode: str, codex: str,
+                         scratch: Path) -> int:
+    """Goal 0008's direction, end to end: the harness's own importer plants the fixture's store, the CLI
+    converts it into a Codex session, the target harness's own loader opens what was installed, and this
+    check's own readings of the installed rollout and of the source's records are what the verdict rests on."""
+    fixture = Path(args.source).resolve() if args.source else repo / FIXTURE_ROOT / OPENCODE_SOURCE_FIXTURE
+    if not fixture.is_file():
+        print(f"{fixture} is not a file: this direction plants the committed OpenCode fixture document, or "
+              f"the one --source names", file=sys.stderr)
+        return 2
+    source = fixture_document(fixture)
+    session_id = str(source["info"]["id"])
+    if args.source is None and session_id != OPENCODE_SOURCE_SESSION:
+        print(f"the committed fixture {fixture} names {session_id}, not "
+              f"{OPENCODE_SOURCE_SESSION}: internal/ccc/fixturegen and this check's own identity have "
+              f"drifted apart, and the run would plant a session it does not know", file=sys.stderr)
+        return 2
+    expected = opencode_document_evidence(source)
+
+    workspace = scratch / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    data_root = scratch / "opencode-data"
+    data_dir = data_root / OPENCODE_DATA_DIR
+    data_dir.mkdir(parents=True, exist_ok=True)
+    store = data_dir / OPENCODE_STORE
+    codex_home = args.target_home.resolve() if args.target_home else scratch / "codex-home"
+
+    version = deadline_run([opencode, "--version"]).stdout.strip()
+    codex_version = deadline_run([codex, "--version"]).stdout.strip()
+    print(f"repo:        {repo}")
+    print(f"direction:   {args.direction} ({TARGET_PROVIDER}:{session_id} → {CODEX_TARGET_PROVIDER})")
+    print(f"source:      {fixture.relative_to(repo)} (planted through the harness's own importer; the "
+          f"store is materialised by the harness, not committed)")
+    print(f"workspace:   {workspace} (the directory the session is planted under: the harness's own "
+          f"importer refuses one that does not exist)")
+    print(f"data root:   {data_root} (a scratch one this run made); the harness's own data directory is "
+          f"{data_dir}, its store {store.name}")
+    print(f"target:      {codex} ({codex_version[:60] or 'no version line'}); its home {codex_home}")
+    print(f"opencode:    {opencode} ({version[:60] or 'no version line'})")
+    print()
+
+    parsed: dict = {}
+    published = False
+    target_session = ""
+
+    def stop() -> int:
+        """End the run on whatever state it reached: the session this run planted is removed through the
+        harness's own verb while the store still exists, and the report -- which removes the scratch tree --
+        comes after."""
+        remove_planted(opencode, data_root, published, session_id)
+        return finish(args, scratch, parsed, target_session)
+
+    build_parent = (repo / BINARY).parent
+    build_parent.mkdir(parents=True, exist_ok=True)
+    build = deadline_run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+    if build.returncode != 0:
+        record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
+        return stop()
+    record("ccc builds with the flags upstream ships", True)
+
+    published, detail = plant_fixture(opencode, data_root, fixture, workspace, session_id)
+    record("the source session is planted through the harness's own importer", published, detail)
+    if not published:
+        return stop()
+
+    planted, words, status = export_document(opencode, data_root, session_id, cwd=workspace)
+    record("the harness's own reader answers the planted session's document",
+           planted is not None and (planted.get("info") or {}).get("id") == session_id,
+           f"exit {status}; {bounded(words, 200)}" if planted is None
+           else f"exit {status}; id {(planted.get('info') or {}).get('id')!r}, "
+                f"{len(planted.get('messages') or [])} message(s)")
+    if planted is None:
+        return stop()
+    planting_differences = evidence_differences(expected, opencode_document_evidence(planted))
+    record("the store holds the fixture document's own conversation",
+           not planting_differences,
+           bounded("; ".join(planting_differences) if planting_differences
+                   else f"{len(planted.get('messages') or [])} message(s), {len(expected['call_names'])} "
+                        f"tool call(s) and their recorded results compared with the fixture's own bytes", 400))
+
+    # The conversion runs at the load level: the one real turn a `--resume-prompt` asks for is this check's
+    # own (below), so asking the CLI's resume verification as well would run and bill two turns for one
+    # request -- and it would put records of its own in the rollout *before* this check compares the
+    # installed file with the fixture's bytes (measured: a Codex turn writes records of its own into the
+    # session it opens, an environment-context user message among them).
+    command = [str(repo / BINARY), "continue", f"{TARGET_PROVIDER}:{session_id}", "--to",
+               CODEX_TARGET_PROVIDER, "--target-home", str(codex_home), "--target-binary", codex,
+               "--verify", "load", "--json"]
+    convert = deadline_run(command, cwd=repo, env={SOURCE_ROOT_ENV[TARGET_PROVIDER]: str(data_dir)})
+    try:
+        document = json.loads(convert.stdout)
+    except json.JSONDecodeError:
+        record("ccc continue writes one JSON result document", False,
+               bounded(convert.stdout or convert.stderr, 400))
+        return stop()
+    record("ccc continue writes one JSON result document", True)
+    parsed = document
+
+    conversion = document.get("conversion") or {}
+    installation = document.get("installation") or {}
+    target = document.get("target_session") or {}
+    verification = document.get("verification") or {}
+    source_report = document.get("source") or {}
+    carried = conversion.get("carried") or {}
+    losses = {loss.get("category"): loss.get("count") for loss in conversion.get("losses") or []}
+    record("the conversion reports the conversation it carried and every loss category",
+           conversion.get("state") == "converted" and carried.get("messages", 0) > 0 and bool(losses),
+           f"carried {carried.get('messages')} message(s), {carried.get('tool_calls')} call(s), "
+           f"{carried.get('tool_results')} result(s); loss categories named: {len(losses)}")
+    record("ccc continue exits 0", convert.returncode == 0,
+           f"exit {convert.returncode}; stderr {bounded(convert.stderr, 300)}")
+
+    target_session = str(target.get("session_id") or "")
+    rollout = Path(str(target.get("path") or ""))
+    record("the installation names the target's own mechanism and the installed rollout",
+           installation.get("state") == "installed" and bool(target_session) and rollout.is_file(),
+           f"{installation.get('state')} [{installation.get('mechanism')}] -> {target.get('path')!r}")
+    structure = verification.get("structure") or {}
+    record("the structural read-back verified the installed session",
+           structure.get("state") == "verified", bounded(structure.get("detail") or "", 400))
+    load = verification.get("load") or {}
+    record("the target harness's own loader verified the installed session",
+           load.get("state") == "verified", bounded(load.get("detail") or "", 400))
+
+    # What a container member can state: the member's bytes are the store's rows, so the boundary names the
+    # member and the container and claims no digest of a file, and the source comparison is reported as one
+    # that did not run rather than as a check that passed.
+    boundary = source_report.get("boundary") or {}
+    record("the conversion reports the container-member boundary it does not claim a file for",
+           boundary.get("state") == "not-taken" and session_id in str(boundary.get("detail") or "")
+           and store.name in str(boundary.get("detail") or "")
+           and installation.get("source_check_state") == "not-verified",
+           bounded(f"{boundary.get('state')}: {boundary.get('detail')}", 300))
+
+    # This check's own reading of the installed rollout against the fixture's own bytes: the source's own
+    # prompts, tool call, recorded arguments and result text, and the assistant texts -- the reader's
+    # rendering of the record that carries a reasoning trace among them. The rollout holds exactly what the
+    # conversion wrote here, because the conversion ran no turn.
+    records: list[dict] = []
+    if rollout.is_file():
+        records = rollout_records(rollout)
+        rollout_differences = evidence_differences(expected, rollout_evidence(records))
+        record("the installed rollout holds the fixture's own prompts, tool call, result text and texts",
+               not rollout_differences,
+               bounded("; ".join(rollout_differences) if rollout_differences
+                       else f"{len(records)} record(s); {len(expected['user_texts'])} prompt(s), "
+                            f"{len(expected['call_names'])} call(s) and their recorded results compared "
+                            f"with the fixture's own bytes", 400))
+    else:
+        record("the installed rollout holds the fixture's own prompts, tool call, result text and texts",
+               False, f"the report names no installed rollout ({target.get('path')!r})")
+
+    record_codex_invocation(target, codex_home)
+
+    refusal, refusal_words, refusal_status = export_document(opencode, data_root, UNKNOWN_SESSION)
+    record("the unknown-id control arm reports no such session, naming the id",
+           refusal is None and refusal_status != 0 and UNKNOWN_SESSION in refusal_words,
+           f"exit {refusal_status}; {bounded(refusal_words, 200)}")
+
+    if args.resume_prompt:
+        run_source_turn(args, target, codex, codex_home, rollout, records)
+    else:
+        record("a real turn was requested (--resume-prompt)", False,
+               "not requested: this run verifies the offline half (the planting, the conversion, the "
+               "target's own loader, the installed rollout's records and the printed invocation) and runs "
+               "no model turn", skipped=True)
+
+    planted_after, after_words, after_status = export_document(opencode, data_root, session_id, cwd=workspace)
+    record("the source session's own records are unchanged",
+           planted_after is not None and planted_after == planted,
+           f"exit {after_status}; its document is "
+           + ("byte-identical before and after" if planted_after == planted
+              else bounded(after_words, 200)) +
+           " (the database file's own bytes are not claimed: this harness's writes move them with its WAL"
+           " handling, which is why the boundary names no digest for a member of a store)")
+
+    return stop()
+
+
+def read_codex_turn_vector(target: dict, codex: str) -> tuple[list[str], str]:
+    """The words one real turn runs, read against what this check knows on its own rather than against the
+    report's other fields: the harness this run probed, the ``exec resume`` subcommand, this conversion's
+    own session id, and the placeholder a caller replaces with the prompt. It answers the identity words
+    (empty when the vector does not hold) and the rule it breaks. A vector that only agreed with the
+    report's own words could name another harness or another session while every printed-line check
+    compared it with nothing but itself."""
+    session_id = str(target.get("session_id") or "")
+    words = [str(word) for word in (target.get("exec_resume_arguments") or [])]
+    if not words:
+        return [], "the report printed no exec_resume_arguments"
+    if Path(words[0]) != Path(codex):
+        return [], f"its program word is {words[0]!r}, not the harness this run probed ({codex})"
+    if words[1:3] != ["exec", "resume"]:
+        return [], f"its subcommand is {words[1:3]!r}, not the turn subcommand `exec resume`"
+    if not session_id or words[3:4] != [session_id]:
+        return [], (f"it names {words[3:4]!r} rather than this conversion's own session "
+                    f"{session_id!r}")
+    if len(words) != 5 or words[4] != PROMPT_PLACEHOLDER:
+        return [], (f"it does not end with the single {PROMPT_PLACEHOLDER!r} placeholder: "
+                    f"{bounded(json.dumps(words), 200)}")
+    return words[1:4], ""
+
+
+def run_source_turn(args: argparse.Namespace, target: dict, codex: str, codex_home: Path, rollout: Path,
+                    records_before: list[dict]) -> None:
+    """One real turn in the installed session, through the report's own argument vector, and the readings
+    that make it evidence: the harness's own answer printed under the marker, the rollout's own records
+    grown, and the records the conversion wrote left as they were.
+
+    The flags this check adds are its own isolation (no git repository, a read-only sandbox, no approvals)
+    and belong to the check, not to the reported command -- the rule ``scripts/codex-native-check.py``'s own
+    turn applies, and the reason the words compared here stop at the identity. A turn the harness refuses is
+    recorded as a failed check naming the harness's own words: never a pass, and never a skip the verdict
+    ignores. Measured on this host: a Codex turn in a *scratch* home answers 401 (its credential is the
+    caller's own store, and this build never copies one), which is the same boundary the Codex route's own
+    check discloses -- the load half is what is verified here."""
+    identity, problem = read_codex_turn_vector(target, codex)
+    if problem:
+        record("a real turn continues from the installed session", False, problem)
+        return
+    cwd = Path(str(target.get("cwd"))) if target.get("cwd") else None
+    before_size = rollout.stat().st_size if rollout.is_file() else 0
+    turn = deadline_run([codex, *identity, args.resume_prompt, "--skip-git-repo-check",
+                         "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"'],
+                        cwd=cwd, env={CODEX_HOME_ENV: str(codex_home)}, timeout=TURN_TIMEOUT)
+    after_size = rollout.stat().st_size if rollout.is_file() else 0
+    answer = (turn.stdout or "").strip()
+    record("a real turn continues from the installed session",
+           turn.returncode == 0 and after_size > before_size,
+           f"exit {turn.returncode}, session {before_size} -> {after_size} bytes")
+    print()
+    print(TURN_OUTPUT_MARKER)
+    for line in (turn.stdout or turn.stderr).splitlines():
+        print("   ", line)
+    if args.expect:
+        record(f"the turn's answer contains {args.expect!r}", args.expect in answer,
+               bounded(answer, 160))
+    after_records = rollout_records(rollout) if rollout.is_file() else []
+    unchanged = after_records[:len(records_before)] == records_before
+    texts = (rollout_evidence(after_records)["user_texts"]
+             + rollout_evidence(after_records)["assistant_texts"]) if after_records else []
+    holds_prompt = any(args.resume_prompt in text for text in texts)
+    record("the turn was appended to the installed session",
+           len(after_records) > len(records_before) and unchanged and holds_prompt,
+           f"{len(records_before)} record(s) before the turn, {len(after_records)} after; the records the "
+           f"conversion wrote are {'unchanged' if unchanged else 'rewritten'}; the prompt is "
+           f"{'in' if holds_prompt else 'not in'} the records it now holds")
+
+
 def finish(args: argparse.Namespace, scratch: Path, document: dict, session_id: str) -> int:
     """The run's own end: the report, then the verdict computed from the one list every check recorded
     into. A failure is FAIL (exit 1); a run with no failures is PASS (exit 0). The absent harness is
     INCOMPLETE (exit 2), decided before any check runs, because this route's installation is the harness's
     own importer: there is no offline half to verify without it."""
-    report(args, scratch, document, {"target_provider": TARGET_PROVIDER} if session_id else None)
+    provider = CODEX_TARGET_PROVIDER if args.direction == SOURCE_DIRECTION else TARGET_PROVIDER
+    report(args, scratch, document, {"target_provider": provider} if session_id else None)
     failures = [name for name, state, _ in RESULTS if state == "FAIL"]
     if failures:
         print(f"RESULT: FAIL — {len(failures)} check(s) failed: {', '.join(failures)}")

@@ -20,7 +20,8 @@ import (
 )
 
 func main() {
-	fixtures := flag.String("fixtures", "", "directory holding one subdirectory per provider")
+	fixtures := flag.String("fixtures", "", "directory holding one subdirectory per provider (the OpenCode "+
+		"export document under opencode/ is not a source root, and no case reads it)")
 	workDir := flag.String("work-dir", "", "isolated directory the archive is written into")
 	provider := flag.String("provider", "", "fixture to compare")
 	fixture := flag.String("fixture", "", "the session file to read, relative to the provider's root")
