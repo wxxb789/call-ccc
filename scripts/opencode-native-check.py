@@ -107,18 +107,25 @@ the target whose own loader opens what the conversion installed. It:
    and bill a second turn and would write its records into the rollout before step 4 reads it;
 4. compares the **installed rollout's own records** with the **fixture document's own bytes** -- the user
    texts, each tool call's name and recorded input value, its recorded result text (one output per call: the
-   textless progress event a completed OpenCode tool part produces is not a second output), the assistant
-   texts, and the persisted reasoning trace the reader renders into one of them -- so a writer that mangled
-   either member cannot pass by agreeing with itself;
+   textless progress event a completed OpenCode tool part produces is not a second output), and the
+   assistant texts a conversion *writes*: the persisted reasoning trace the reader renders into one of them,
+   and no text for a record that carries a call (the read establishes no dialogue for such a record, every
+   writer omits the text and counts it ``unresolved_dialogue``, and the equality comparison reports a target
+   that wrote the rendering anyway) -- so a writer that mangled a member, or published one the source's own
+   read never established, cannot pass by agreeing with itself. The planting's own comparison in step 2 is
+   document against document and keeps the stricter reading: there the record's text is recorded by both
+   sides, and a store whose assistant record lost a part must stay a difference;
 5. records what the report says a **container member** can state: the boundary is ``not-taken`` naming the
    store and the member (no file holds the conversation's bytes; the database file holds every member and
    moves with the harness's WAL handling), and the source comparison is reported as one that did not run;
 6. asks the harness's own reader for an id nothing installed (the control arm: it must refuse, naming the
-   id), reads the printed resume line as a POSIX invocation naming the Codex home and the session, and, with
-   ``--resume-prompt``, runs one real turn itself through the report's own argument vector -- the rollout's
-   own records are re-read afterwards, so the turn can be shown to have been appended to the installed
-   session, and what the harness answered is recorded as it answered it (a refused turn is a failed check,
-   never a pass and never a skip);
+   id), reads the printed resume line as a POSIX invocation naming the Codex home and the session, and reads
+   **both** of the report's argument vectors against this run's own harness and session -- in the load-only
+   run too, where no turn reads them, so a consistently rendered pair naming another program cannot pass as
+   a session this check has not shown resumable -- and, with ``--resume-prompt``, runs one real turn itself
+   through the report's own argument vector -- the rollout's own records are re-read afterwards, so the turn
+   can be shown to have been appended to the installed session, and what the harness answered is recorded as
+   it answered it (a refused turn is a failed check, never a pass and never a skip);
 7. removes the planted session through the harness's own ``session delete`` and shows its absence.
 
 The source direction's store is always this run's own scratch one (the harness's own importer writes it), so
@@ -1514,11 +1521,14 @@ def opencode_reader_text(message: dict) -> str:
 
 
 def opencode_document_evidence(document: dict) -> dict[str, list[str]]:
-    """What one OpenCode document records, in the members a target's own records are compared by: the user
+    """What one OpenCode document *records*, in the members a target's own records are compared by: the user
     texts, each tool part's name, its recorded input value and the text its terminal state carries, and the
-    assistant records' texts -- the reader's own rendering of each record, as a target holds it.
+    assistant records' texts -- the reader's own rendering of each record. This is the reading the
+    *planting's* comparison uses (the harness's own export of the store against the planted document's own
+    bytes, both documents): a store whose assistant record lost a part renders a different text, and that
+    has to stay a difference rather than be excused as one a conversion cannot write.
 
-    Every member is the value a conversion *writes* for the document, read through the reader's own rules
+    Every member is the value the read answers for the document, read through the reader's own rules
     (``opencode_user_text``, ``opencode_tool_call_input``, ``opencode_tool_state_text``): each user record
     as the reader renders it -- the message's own text and its recorded attachments -- and only where the
     reader's own filter keeps the record, the tool input canonicalized (the harness's own importer stores
@@ -1526,9 +1536,43 @@ def opencode_document_evidence(document: dict) -> dict[str, list[str]]:
     a member only where its text is one the writers write, because a textless, block-only or whitespace-only
     result is counted and left out of the target rather than written as an empty output.
 
+    The reading a target's own records are compared by is ``opencode_written_evidence``: the two differ in
+    one member, the text of a record that carries a tool call, which no target holds.
+
     A document carrying a message kind this comparison does not model is refused, never compared as a
     subset: the kinds in ``OPENCODE_UNMODELLED_MESSAGE_KINDS`` produce records a target holds that no
     member of this comparison carries, and a refusal names the kind before anything is planted."""
+    return _opencode_evidence(document, as_a_conversion_writes=False)
+
+
+def opencode_written_evidence(document: dict) -> dict[str, list[str]]:
+    """What a conversion *writes* for one OpenCode document, in the members an installed target's own
+    records are compared by: the document's own reading (``opencode_document_evidence``) with the text of
+    every record that carries a tool call left out, because the read establishes no dialogue for such a
+    record and no writer writes one.
+
+    The OpenCode reader renders a persisted reasoning trace into the record's ``Content`` and records no
+    trace text of its own and no dialogue projection, so a record carrying calls reaches ``dialogueOf``'s
+    third state -- nothing separates the reader's rendering (or a call's own inlined rendering) from the
+    record's own words -- and every route omits the record's text, counts it (``unresolved_dialogue``) and
+    writes the call and its recorded result beside it. Measured on this host (one text part beside one
+    completed tool part, converted to Codex): the read answers ``Content`` = the text, ``Thinking`` empty,
+    no projection and one call; the rollout holds the ``function_call`` and its ``function_call_output``,
+    no assistant message for the record, and the loss table names ``unresolved_dialogue = 1``.
+
+    The expectation holds none of that text, and the comparison is by equality, so the omission is *pinned*
+    rather than excused: a target that wrote the rendering holds an assistant text the source's own read
+    never established, and that is a difference. A record the document gives no tool part keeps the
+    document's own reading -- ``Content`` is the record's own bytes for it, the writers write it, and a
+    target that dropped it is a difference."""
+    return _opencode_evidence(document, as_a_conversion_writes=True)
+
+
+def _opencode_evidence(document: dict, *, as_a_conversion_writes: bool) -> dict[str, list[str]]:
+    """Both readings of one document's members, in one walk so the members cannot drift apart: the reading
+    the document records (``opencode_document_evidence``) and the reading a conversion writes
+    (``opencode_written_evidence``), told apart by ``as_a_conversion_writes`` -- the text of a record that
+    carries a tool call, which the document records and no target holds."""
     evidence: dict[str, list[str]] = {"user_texts": [], "call_names": [], "call_inputs": [],
                                       "call_results": [], "assistant_texts": []}
     for message in document.get("messages") or []:
@@ -1548,9 +1592,20 @@ def opencode_document_evidence(document: dict) -> dict[str, list[str]]:
             continue
         if kind != "assistant":
             continue
-        if rendering := opencode_reader_text(message):
-            evidence["assistant_texts"].append(rendering)
-        for part in message.get("content") or []:
+        parts = message.get("content") or []
+        carries_call = any(isinstance(part, dict) and part.get("type") == "tool" for part in parts)
+        # The one member the two readings are told apart by: a record carrying a tool call has no dialogue
+        # the read establishes (the reader renders a trace into Content and records no trace text and no
+        # projection, so nothing separates the rendering from the record's own words), every writer omits
+        # its text and counts it (unresolved_dialogue), and the call travels on its own below. The reading a
+        # conversion writes therefore holds no text for such a record -- which *pins* the omission, because
+        # the comparison is by equality: a target that wrote the rendering holds an assistant text the
+        # source's own read never established, and that is a difference.
+        if not (as_a_conversion_writes and carries_call):
+            rendering = opencode_reader_text(message)
+            if rendering:
+                evidence["assistant_texts"].append(rendering)
+        for part in parts:
             if not isinstance(part, dict) or part.get("type") != "tool":
                 continue
             state = part.get("state") if isinstance(part.get("state"), dict) else {}
@@ -1595,13 +1650,17 @@ def rollout_evidence(records: list[dict]) -> dict[str, list[str]]:
 def evidence_differences(expected: dict[str, list[str]], got: dict[str, list[str]]) -> list[str]:
     """Every member of one source-against-target comparison that does not hold, worded for a reader.
 
-    Both sides are read into the same members (``opencode_document_evidence`` for the source document and
-    ``rollout_evidence`` for an installed Codex rollout), so every member is compared member for member: the
-    user texts, each tool call's name, its recorded input value and its recorded result text -- one result
-    per call, because the textless progress event a completed OpenCode tool part produces beside its
-    terminal one is not a second output -- and the assistant texts, the reader's own rendering of a persisted
-    reasoning trace among them. Nothing is compared by containment: a target that wrote the record's own
-    words where the source's read carries the rendering has dropped the trace, and that is a difference."""
+    Both sides are read into the same members (``opencode_written_evidence`` for the source document -- what
+    a conversion writes for it -- and ``rollout_evidence`` for an installed Codex rollout, or
+    ``opencode_document_evidence`` on both sides for the planting's document-against-document one), so every
+    member is compared member for member: the user texts, each tool call's name, its recorded input value
+    and its recorded result text -- one result per call, because the textless progress event a completed
+    OpenCode tool part produces beside its terminal one is not a second output -- and the assistant texts,
+    the reader's own rendering of a persisted reasoning trace among them, and the text of a record that
+    carries a call where the document has one and no target may hold it (``opencode_written_evidence``).
+    Nothing is compared by containment: a target that wrote the record's own words where the source's read
+    carries the rendering has dropped the trace, and a target that wrote a record's text where the read
+    established no dialogue has published what the source never recorded -- both are differences."""
     differences: list[str] = []
     for key, label in (("user_texts", "user text"), ("call_names", "tool name"),
                        ("call_inputs", "recorded tool input"), ("call_results", "recorded tool result"),
@@ -1654,20 +1713,60 @@ def reads_as_a_codex_invocation(line: str, home: Path, arguments: list[str]) -> 
     return shell_words(line) == [f"{CODEX_HOME_ENV}={home}", *arguments]
 
 
-def record_codex_invocation(target: dict, home: Path) -> None:
-    """Record that the printed lines resume this run's own session in this run's own home: the report's
-    argument vectors against what this check knows on its own (the session it converted, the home it
-    passed), and both rendered lines read the way a shell reads them."""
+def read_codex_resume_vector(target: dict, codex: str) -> tuple[list[str], str]:
+    """The report's *interactive* argument vector -- the one printed beside the exec form, ``<codex> resume
+    <session>`` -- read against what this check knows on its own: the harness this run probed and this
+    conversion's own session. It answers the vector (empty when it does not hold) and the rule it breaks.
+
+    The words are the whole rule: the route prints the session and nothing else there
+    (``internal/ccc/targets.go``'s own invocation), so a vector that added or dropped a word would print a
+    line whose behaviour this check has never read. Its companion form -- the one a caller hands a prompt --
+    is read by ``read_codex_turn_vector``, whose own placeholder rule is what a caller substitutes the
+    prompt into.
+
+    Both readings exist because a vector that only agreed with the report's own words could name another
+    program or another session while every printed-line check compared it with nothing but itself, and
+    without ``--resume-prompt`` nothing else reads the vectors at all."""
+    session_id = str(target.get("session_id") or "")
+    words = [str(word) for word in (target.get("resume_arguments") or [])]
+    if not words:
+        return [], "the report printed no resume_arguments"
+    if Path(words[0]) != Path(codex):
+        return [], f"its program word is {words[0]!r}, not the harness this run probed ({codex})"
+    if words[1:2] != ["resume"]:
+        return [], f"its subcommand is {words[1:2]!r}, not the resume subcommand `resume`"
+    if not session_id or words[2:] != [session_id]:
+        return [], (f"it names {words[2:]!r} rather than this conversion's own session {session_id!r} "
+                    f"and nothing else")
+    return words, ""
+
+
+def record_codex_invocation(target: dict, codex: str, home: Path) -> None:
+    """Record that the printed lines resume this run's own session in this run's own home: both of the
+    report's argument vectors read against what this check knows on its own -- the harness this run probed
+    and the session it converted (``read_codex_resume_vector`` for the interactive form,
+    ``read_codex_turn_vector`` for the exec form) -- the environment naming this run's own home, and both
+    rendered lines read the way a shell reads them.
+
+    Both vectors are read on every run, the load-only one included: with no ``--resume-prompt`` no later
+    step reads them (``run_source_turn`` is where the exec vector was read before), so a run that compared
+    each printed line with the report's own vector alone accepted a pair naming a program the caller cannot
+    resume with, and reported PASS for a session it had not shown to be resumable (finding 2 of the round's
+    review)."""
     session_id = str(target.get("session_id") or "")
     resume_arguments = [str(word) for word in (target.get("resume_arguments") or [])]
     exec_arguments = [str(word) for word in (target.get("exec_resume_arguments") or [])]
     environment = target.get("resume_environment") or {}
+    resume_vector, resume_problem = read_codex_resume_vector(target, codex)
+    exec_vector, exec_problem = read_codex_turn_vector(target, codex)
+    problem = resume_problem or exec_problem
+    detail = f"{target.get('resume_command')} | {target.get('exec_resume_command')}"
     record("the printed resume lines name this run's own home and session",
-           bool(session_id) and session_id in resume_arguments and session_id in exec_arguments
+           bool(session_id) and bool(resume_vector) and bool(exec_vector) and not problem
            and environment.get(CODEX_HOME_ENV) == str(home)
            and reads_as_a_codex_invocation(str(target.get("resume_command") or ""), home, resume_arguments)
            and reads_as_a_codex_invocation(str(target.get("exec_resume_command") or ""), home, exec_arguments),
-           bounded(f"{target.get('resume_command')} | {target.get('exec_resume_command')}", 300))
+           bounded(f"{problem}: {detail}" if problem else detail, 300))
 
 
 def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode: str, codex: str,
@@ -1699,7 +1798,13 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
                       f"{OPENCODE_SOURCE_SESSION}: internal/ccc/fixturegen and this check's own identity "
                       f"have drifted apart, and the run would plant a session it does not know")
     try:
+        # Two readings of one document, for the two comparisons this run makes: the document's own members
+        # (`expected`) for the planting, where both sides are documents and a part the harness's importer
+        # dropped has to stay a difference, and the members a conversion writes (`written`) for the
+        # installed rollout, where the text of a record carrying a tool call is held by no target
+        # (`opencode_written_evidence`). One walk builds both, so the two cannot drift apart.
         expected = opencode_document_evidence(source)
+        written = opencode_written_evidence(source)
     except SystemExit as exc:
         # The comparison refuses a document carrying a message kind it does not model, naming the kind;
         # the refusal stands before the planting, so nothing is published for a document it will not read.
@@ -1813,25 +1918,29 @@ def run_source_direction(args: argparse.Namespace, repo: Path, go: str, opencode
            and installation.get("source_check_state") == "not-verified",
            bounded(f"{boundary.get('state')}: {boundary.get('detail')}", 300))
 
-    # This check's own reading of the installed rollout against the fixture's own bytes: the source's own
-    # prompts, tool call, recorded arguments and result text, and the assistant texts -- the reader's
-    # rendering of the record that carries a reasoning trace among them. The rollout holds exactly what the
-    # conversion wrote here, because the conversion ran no turn.
+    # This check's own reading of the installed rollout against what a conversion writes for the fixture's
+    # own bytes: the source's own prompts, tool call, recorded arguments and result text, and the assistant
+    # texts -- the reader's rendering of the record that carries a reasoning trace among them, and no text
+    # for a record that carries a call, which the read establishes no dialogue for and no writer writes
+    # (`opencode_written_evidence`). The rollout holds exactly what the conversion wrote here, because the
+    # conversion ran no turn.
     records: list[dict] = []
     if rollout.is_file():
         records = session_records(rollout.read_text(encoding="utf-8"))
-        rollout_differences = evidence_differences(expected, rollout_evidence(records))
-        record("the installed rollout holds the fixture's own prompts, tool call, result text and texts",
+        rollout_differences = evidence_differences(written, rollout_evidence(records))
+        record("the installed rollout holds what a conversion writes of the fixture's own prompts, tool "
+               "call, result text and texts",
                not rollout_differences,
                bounded("; ".join(rollout_differences) if rollout_differences
                        else f"{len(records)} record(s); {len(expected['user_texts'])} prompt(s), "
                             f"{len(expected['call_names'])} call(s) and their recorded results compared "
                             f"with the fixture's own bytes", 400))
     else:
-        record("the installed rollout holds the fixture's own prompts, tool call, result text and texts",
+        record("the installed rollout holds what a conversion writes of the fixture's own prompts, tool "
+               "call, result text and texts",
                False, f"the report names no installed rollout ({target.get('path')!r})")
 
-    record_codex_invocation(target, codex_home)
+    record_codex_invocation(target, codex, codex_home)
 
     refusal, refusal_words, refusal_status = export_document(opencode, data_root, UNKNOWN_SESSION)
     record("the unknown-id control arm reports no such session, naming the id",
@@ -1864,7 +1973,9 @@ def read_codex_turn_vector(target: dict, codex: str) -> tuple[list[str], str]:
     own session id, and the placeholder a caller replaces with the prompt. It answers the identity words
     (empty when the vector does not hold) and the rule it breaks. A vector that only agreed with the
     report's own words could name another harness or another session while every printed-line check
-    compared it with nothing but itself."""
+    compared it with nothing but itself -- and a load-only run (no ``--resume-prompt``) runs no turn from
+    it either, so ``record_codex_invocation`` reads both vectors on every run and answers the same rule
+    there; the turn is what this reading's identity words are handed to."""
     session_id = str(target.get("session_id") or "")
     words = [str(word) for word in (target.get("exec_resume_arguments") or [])]
     if not words:

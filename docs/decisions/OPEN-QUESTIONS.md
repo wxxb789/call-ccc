@@ -2764,3 +2764,38 @@ supersede it with a newer one and say which it supersedes.
   decide from that measurement.
 - **Settled by:** an operator instruction, or a measurement against an installed harness that makes the
   modelling arm's rules measurable.
+
+## Q-0008-07 — The mixed-record disposition in the source-direction comparison: modelled, not refused
+
+- **Status:** resolved (unattended default taken)
+- **Question:** `scripts/opencode-native-check.py`'s source direction compares an OpenCode document with
+  the installed Codex rollout over members both sides are read into. An assistant record that carries a
+  text part **beside** a tool part (a shape a caller's `--source` document may hold; the committed fixture
+  does not) contributes text to the document's own reading, while the read establishes no dialogue for such
+  a record — the OpenCode reader renders a persisted reasoning trace into `Content` and records no trace
+  text and no projection, so nothing separates the rendering from the record's own words — every writer
+  omits the text and counts it `unresolved_dialogue`, and the call and its recorded result travel on their
+  own. The second review round's first finding (P2) named both dispositions as acceptable: model the
+  conversion's disposition in the target expectation, or explicitly refuse the shape (as the comparison
+  already refuses a `shell` record, Q-0008-06). Which one?
+- **Default taken:** **model** it, in a second reading (`opencode_written_evidence`) beside the document's
+  own (`opencode_document_evidence`). Measured on this host through the carried reader and the route's own
+  writer (a throw-away Go probe, deleted again): the read answers `Content` = the text, `Thinking` empty,
+  no projection and one call; the rollout holds the `function_call` and its `function_call_output` and **no**
+  assistant message for the record, and the loss table names `unresolved_dialogue = 1` (the record with a
+  reasoning part and no call beside it keeps its rendering as its own text, counted `unprojected_dialogue`).
+  The expectation therefore holds no text for such a record, and because the comparison is by equality the
+  omission is *pinned* rather than excused: a target that wrote the rendering holds an assistant text the
+  source's read never established and is a difference. The planting's own comparison — document against
+  document — keeps the stricter reading, so a store whose assistant record lost a part stays a difference.
+  A refusal was rejected because mixed records are the common shape in a real session: refusing would make
+  `--source` unusable on the documents this direction exists to compare, while the modelled reading keeps
+  every member the read does establish under comparison.
+- **Reversal:** refuse the shape by name before anything is planted — the finding's other named disposition
+  (the `OPENCODE_UNMODELLED_MESSAGE_KINDS` arm's shape), at the cost of refusing a real session's common
+  shape; or drop the assistant-text member for such a document, which is reversible but no longer pins the
+  omission.
+- **Settled by:** an operator instruction, or a measurement against an installed harness whose reader
+  records the record's trace text (or projects a dialogue) for a call-bearing record — that would make the
+  text established and the reading here too narrow; the reader is carried (`internal/parser`), so the
+  measurement belongs to an upstream revision bump.

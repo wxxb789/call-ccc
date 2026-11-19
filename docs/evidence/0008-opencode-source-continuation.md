@@ -74,10 +74,13 @@ The three states the core design keeps apart are separate lines of that run: the
 `converted` and its counted losses), the *installation* (the target's own mechanism, `[hard-link]`, and the
 rollout's path), and the target-native **load** (`the target harness's own loader verified the installed
 session` — Codex's own app server, `thread/resume`, answering with the session's own id and path, offline).
-The comparison the goal's second clause asks for is the `PASS: the installed rollout holds the fixture's own
-prompts, tool call, result text and texts` line: the *installed rollout's own records* are read against the
-*fixture document's own bytes*, so a writer that mangled a name, an argument or a result cannot pass by
-agreeing with itself.
+The comparison the goal's second clause asks for is the rollout line: the *installed rollout's own records*
+are read against the *fixture document's own bytes*, over every member a conversion writes for it, so a
+writer that mangled a name, an argument or a result cannot pass by agreeing with itself. (The line's own
+name is `the installed rollout holds what a conversion writes of the fixture's own prompts, tool call,
+result text and texts` since the second review round — §6's own section is where the two readings and the
+shape that made them necessary are measured; the block above is the run as it stood on the head it was
+recorded on.)
 
 ## 2. The same direction with a real turn requested (the harness's own answer on this host)
 
@@ -539,6 +542,111 @@ the earlier ones (`37c0a10`, `1a476e0`, `524a20f`, `4cd0567`). No
 goal file moves: 0008 is still the increment on its branch, awaiting acceptance. No new OPEN-QUESTIONS
 entry: both shapes are rules the docs already bound in spirit (a case must hold on every platform), so no
 owner-only default was taken.
+
+### The second review round's findings (`r1`, on `7ab7ab2` + working tree), fixed and re-measured
+
+`review-findings-r1.md` carried two P2 findings, both about `scripts/opencode-native-check.py`'s source
+direction. Each was reproduced before anything was changed — in-process against the shipped module, and, for
+the first one, against the route's own *writer* through a throw-away Go probe
+(`internal/ccc/zz_r1_probe_test.go`, deleted again before the gate) so the expectation the comparison now
+holds is a measurement rather than a deduction. Both fixes are pinned by cases in
+`scripts/tests/test_opencode_native_check.py` that fail on the pre-fix file.
+
+**R1-1 — a record that carries a tool call: the expectation held a text no target holds.** The reading a
+document records was the reading the *installed rollout* was compared with, but the two are not the same for
+one shape: an assistant record with a text part beside a tool part. The probe (the committed fixture with one
+such record appended, read by the inherited provider and written by `ConvertToCodexRollout`) measured both
+halves:
+
+```
+--- PASS: TestZZR1ProbeMixedDialogue/text_and_tool
+    read: ordinal 5 role assistant content "Let me check the policy file too." thinking "" renders=true projected=false dialogue="" calls=1
+    item: kind tool_call text "" tool "read"
+    item: kind tool_result text "38: // policy.go\n40: const maxAttempts = 4" tool ""
+    loss: unresolved_dialogue = 1 (omitted)
+--- PASS: TestZZR1ProbeMixedDialogue/reasoning,_text_and_tool
+    read: ordinal 5 role assistant content "[Thinking]\nThe policy file holds the attempt cap.\n[/Thinking]\nLet me check the policy file too." thinking "" renders=true projected=false dialogue="" calls=1
+```
+with the second record's own text (a record carrying no call) written as an `assistant_message` and counted
+`unprojected_dialogue` — i.e. the text of a *call-bearing* record is what no target holds, for both part
+orders. In-process, the comparison as it stood reported a difference a correct conversion cannot avoid:
+
+```
+finding1 expectation: {"user_texts": ["prompt"], "call_names": ["read"], "call_inputs": ["{\"path\":\"/x\"}"],
+                       "call_results": ["38: // policy.go"], "assistant_texts": ["Let me check the policy file too."]}
+finding1 rollout    : {"user_texts": [], "call_names": ["read"], "call_inputs": ["{\"path\":\"/x\"}"],
+                       "call_results": ["38: // policy.go"], "assistant_texts": []}
+finding1 differences: ['the user text(s) are [], the source recorded ["prompt"]', 'the assistant text(s) are [],
+                       the source recorded ["Let me check the policy file too."]']
+```
+
+The fix is a second reading: `opencode_written_evidence` is what the installed rollout is compared with
+(every member as before, and **no** assistant text for a record that carries a call), while the planting's
+document-against-document comparison keeps `opencode_document_evidence` and its stricter reading (a store
+whose assistant record lost a part stays a difference). Equality still *pins* the omission — a target that
+wrote the rendering holds an assistant text the read never established, and that is a difference — and the
+check's own line is renamed to say what it compares (`the installed rollout holds what a conversion writes of
+the fixture's own prompts, tool call, result text and texts`; §1's prose above names the move). The
+disposition (model, not refuse) is recorded as Q-0008-07. Pinned by
+`SourceEvidence.test_a_record_carrying_a_call_is_expected_with_no_text` and, through the whole flow, by
+`SourceDirectionRun.test_a_document_with_a_mixed_record_converts_without_a_false_difference` — measured
+pre-fix as `RESULT: FAIL — 1 check(s) failed: the installed rollout holds the fixture's own prompts, tool
+call, result text and texts`, post-fix `exit 0` with no failed check.
+
+**R1-2 — the load-only run accepted resume vectors naming another program.** `record_codex_invocation`
+checked each printed line against the report's *own* vector and the session id's membership, and the vectors
+themselves against this run's harness only inside `run_source_turn` — which a run without `--resume-prompt`
+never reaches. Reproduced in-process and through the flow: a pair naming `/usr/bin/other-program` (and its own
+rendered lines, so the line checks agree with it) was recorded `PASS`, and a driven load-only run ended
+`RESULT: PASS — 18 check(s), none failed`. The fix reads both vectors on every run
+(`read_codex_resume_vector` for the interactive form, `read_codex_turn_vector` for the exec form, both
+against the harness this run probed and the session it converted), records the broken rule in the check's own
+detail, and the driven case now ends `RESULT: FAIL — 1 check(s) failed: the printed resume lines name this
+run's own home and session` naming `'/usr/bin/other-program'`. Pinned by
+`SourceTurnVector.test_the_invocation_record_reads_both_vectors_without_a_turn`,
+`test_the_interactive_vector_…`/`test_an_interactive_vector_naming_another_program_session_or_shape_is_refused`
+and `SourceDirectionRun.test_a_load_only_run_reads_the_printed_vectors_and_fails_on_another_program`.
+
+Re-measured: the check's own suite 95 → 101 cases and the `selftest` step 423 → 429 (`Ran 429 tests`,
+`rc=0`); the source direction re-run on this host against OpenCode `2.2.5` and Codex `0.170.0` (load level,
+the invocation check now reading both vectors of a real report):
+
+```console
+$ python3 scripts/opencode-native-check.py --direction opencode-to-codex \
+    --opencode /home/azureuser/.npm-global/bin/opencode
+…
+PASS: the installed rollout holds what a conversion writes of the fixture's own prompts, tool call, result text and texts — 14 record(s); 2 prompt(s), 1 call(s) and their recorded results compared with the fixture's own bytes
+PASS: the printed resume lines name this run's own home and session — CODEX_HOME=/tmp/ccc-opencode-source-check-2_5piu6o/codex-home /home/azureuser/.local/share/mise/installs/codex/latest/bin/codex resume 01a1f3b7-6336-7280-8d77-094dad7eea7e | CODEX_HOME=/tmp/ccc-opencode-source-check-2_5piu6o/codex-home /home/azureuser/.local/share/mise/installs/codex/latest/bin/code …[the rest of this output was dropped]
+…
+RESULT: PASS — 18 check(s), none failed
+```
+
+and with a turn requested (the same command plus `--resume-prompt "Reply with exactly: OPENCODE-SOURCE-OK"
+--expect OPENCODE-SOURCE-OK`) the arm §2 discloses is unchanged: `FAIL: a real turn continues from the
+installed session — exit 1, session 3804 -> 109186 bytes` (the harness's own `401 Unauthorized` in a scratch
+home), `FAIL: the turn's answer contains 'OPENCODE-SOURCE-OK'`, and every other line passing — including
+`the turn was appended to the installed session — 14 record(s) before the turn, 28 after` — with
+`RESULT: FAIL — 2 check(s) failed` and exit 1. Gate, re-run on this tree (`GATE: PASS`, exit 0):
+
+```console
+$ python3 scripts/gate.py
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 429 tests in 7.642s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5718 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets  no leaks found in 174 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+`AGENTS.md` does not move with this round: it changes no layout, gate step, command, read order or rule an
+agent follows — the check's own registration in `docs/harness.md` carries the two rules this round sharpened
+(the comparison's mixed-record reading and the load-only reading of both vectors), and the plan's §11 gained
+its fifth departure note.
 
 ## 7. Residual limits and boundaries named rather than hidden
 

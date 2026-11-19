@@ -604,14 +604,25 @@ says so.
   rollout's own records* against the *fixture document's own bytes*: the user texts, each tool call's name,
   its recorded input value (canonicalized — a rollout writes the arguments as a JSON string and the store
   keeps the parsed value) and its recorded result text, one output per call (the textless progress event a
-  completed OpenCode tool part produces is not a second output), and the assistant texts, which are the
-  inherited reader's own **rendering** of a record that carries a persisted reasoning trace
-  (`[Thinking]\n<trace>\n[/Thinking]` + the record's text) — compared byte for byte, never by containment,
-  so a target that dropped the trace is a difference. It records the container-member boundary the report
+  completed OpenCode tool part produces is not a second output), and the assistant texts the conversion
+  *writes*: the inherited reader's own **rendering** of a record that carries a persisted reasoning trace
+  (`[Thinking]\n<trace>\n[/Thinking]` + the record's text), and **no** text for a record that carries a tool
+  call — the read establishes no dialogue for such a record (the reader renders the trace into `Content` and
+  records no trace text and no projection, so nothing separates the rendering from the record's own words),
+  every writer omits its text and counts it `unresolved_dialogue`, and the equality comparison reports a
+  target that wrote it. The assistant texts are compared byte for byte, never by containment, so a target
+  that dropped the trace — or published a text the source's read never established — is a difference; the
+  planting's own comparison, document against document, keeps the record's text for the mixed shape too and
+  would report a store whose assistant record lost a part.
+  It records the container-member boundary the report
   can and cannot state (`not-taken`, the store and member named, `source_check_state: not-verified`), asks
   the harness's own reader for an id nothing installed (the control arm), reads both printed Codex lines
   against this run's own home and session as a POSIX shell reads them (the `CODEX_HOME` assignment first
-  and unquoted — a quoted assignment is the *program* to a shell), and re-reads the source's own records
+  and unquoted — a quoted assignment is the *program* to a shell) **and both argument vectors** against the
+  harness this run probed and the session it converted, in the load-only run too (with no
+  `--resume-prompt` no turn reads them: the printed-line checks alone compare a line with the report's own
+  vector, so a consistently rendered pair naming another program would otherwise pass for a session nothing
+  has shown resumable), and re-reads the source's own records
   afterwards (`session export`, byte-identical) — never the database file's bytes, which move with the
   harness's WAL handling. `--codex` names the target harness (default `codex` on `PATH`), and
   `--target-home` is that direction's **Codex** home; the OpenCode side is always the run's own scratch

@@ -288,3 +288,18 @@ habit), followed by the review round's own:
    anything is planted, rather than comparing a subset (Q-0008-06). The `TestOpenCodeSourceResolvesBy…`
    case's store also gained a second session, so "the store's only session" cannot answer the reference
    form it is about (the review's P3).
+
+5. **The second review round split the source-side expectation into two readings** (point 2's "one
+   comparison function" stands for the *members*; the *dialogue* member is read twice). A committed
+   fixture never holds an assistant record with a text part beside a tool part, but a caller's `--source`
+   document may: the read establishes no dialogue for such a record (the reader renders into `Content` and
+   records no trace text and no projection), every writer omits the text and counts it `unresolved_dialogue`
+   while the call travels, so the one expectation made a correctly disclosed partial conversion fail the
+   installed-rollout comparison. `opencode_written_evidence` is now what the rollout is compared with
+   (holding no text for a record that carries a call, which also *pins* the omission, since equality reports
+   a target that wrote it), while the planting's document-against-document comparison keeps
+   `opencode_document_evidence` and its stricter reading — a store whose assistant record lost a part stays a
+   difference. The vectors the printed lines name are read on every run for the same reason: with no
+   `--resume-prompt` no turn reads them, so the load-only run accepted a consistently rendered pair naming
+   another program. Both are pinned by cases in `scripts/tests/test_opencode_native_check.py` (a mixed
+   document driven through the flow, and a load-only flow whose report names another program).

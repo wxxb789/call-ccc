@@ -1670,6 +1670,53 @@ class SourceEvidence(unittest.TestCase):
         self.assertTrue(self.differences(assistant_texts=["the cap is thirty", "four attempts"]),
                         "a target that dropped the reader's rendering was reported as identical")
 
+    def test_a_record_carrying_a_call_is_expected_with_no_text(self) -> None:
+        """A record that carries a tool call has no text the source's read establishes: the reader renders a
+        trace into ``Content`` and records no trace text and no projection, so nothing separates the
+        rendering from the record's own words, and every writer omits the text and counts it
+        (``unresolved_dialogue``) while the call and its result travel. Measured on the writer (one text part
+        beside one completed tool part): the rollout holds the ``function_call`` and its
+        ``function_call_output`` and no assistant message for the record.
+
+        The expectation holds no text for it, which *pins* the omission: a target that wrote the rendering
+        anyway holds an assistant text the read never established and is a difference. The planting's own
+        comparison is document against document and keeps the stricter reading -- there the record's text is
+        recorded (and a store whose assistant record lost a part must stay a difference)."""
+        def mixed(with_text: bool) -> dict:
+            parts = ([{"type": "text", "text": "Let me check the policy file too."}] if with_text else []) + [
+                {"type": "tool", "name": "read",
+                 "state": {"status": "completed", "input": {"path": "/x"},
+                           "content": [{"type": "text", "text": "the file's lines"}]}}]
+            return {"type": "assistant", "content": parts}
+
+        document = {"messages": [mixed(with_text=True),
+                                 {"type": "assistant", "content": [
+                                     {"type": "reasoning", "text": "the cap is thirty"},
+                                     {"type": "text", "text": "the cap is thirty"}]}]}
+        recorded = NATIVE_CHECK.opencode_document_evidence(document)
+        written = NATIVE_CHECK.opencode_written_evidence(document)
+        rendering = "[Thinking]\nthe cap is thirty\n[/Thinking]\nthe cap is thirty"
+        self.assertEqual(recorded["assistant_texts"], ["Let me check the policy file too.", rendering],
+                         "the planting's own reading dropped a text the document records")
+        self.assertEqual(written["assistant_texts"], [rendering],
+                         "the written reading kept the text of a record that carries a call")
+        for member in ("call_names", "call_inputs", "call_results"):
+            self.assertEqual(written[member], recorded[member],
+                             f"the two readings differ in {member}, which they must not")
+
+        # A conversion's own answer for the document: the call, its recorded result, and the second
+        # record's text -- and no message for the mixed record's text.
+        rollout = {"user_texts": [], "call_names": ["read"], "call_inputs": ['{"path":"/x"}'],
+                   "call_results": ["the file's lines"], "assistant_texts": [rendering]}
+        self.assertEqual(NATIVE_CHECK.evidence_differences(written, rollout), [],
+                         "a conversion that omits the unestablished text was reported as a difference")
+        self.assertTrue(NATIVE_CHECK.evidence_differences(
+            written, {**rollout, "assistant_texts": ["Let me check the policy file too.", rendering]}),
+            "a target that wrote the mixed record's text was reported as identical")
+        self.assertTrue(NATIVE_CHECK.evidence_differences(
+            written, {**rollout, "call_names": []}),
+            "a target that dropped the call the record carries was reported as identical")
+
     def test_a_second_output_for_one_call_is_a_difference(self) -> None:
         """A completed OpenCode tool part yields the part's own ``time.ran`` as a second, textless event;
         a target that wrote it as another output holds a tool output the source never recorded."""
@@ -1852,11 +1899,17 @@ class SourceEvidence(unittest.TestCase):
 
 
 class SourceTurnVector(unittest.TestCase):
-    """The words one real turn runs are the report's own vector, read against what this check knows: the
-    harness it probed and the session it converted."""
+    """The report's two argument vectors are read against what this check knows on its own: the harness it
+    probed and the session it converted. The exec form (``read_codex_turn_vector``) is the words one real
+    turn runs; the interactive form (``read_codex_resume_vector``) is the line printed beside it. Both are
+    read on *every* run -- ``record_codex_invocation`` asks for both, so a load-only run, which runs no
+    turn, cannot accept a consistently rendered pair naming another program (finding 2 of the round's
+    review)."""
 
     def target(self, **overrides) -> dict:
         target = {"session_id": "01a1f342-0000-7000-8000-000000000001",
+                  "resume_arguments": ["/bin/codex", "resume",
+                                       "01a1f342-0000-7000-8000-000000000001"],
                   "exec_resume_arguments": ["/bin/codex", "exec", "resume",
                                             "01a1f342-0000-7000-8000-000000000001",
                                             NATIVE_CHECK.PROMPT_PLACEHOLDER]}
@@ -1888,6 +1941,59 @@ class SourceTurnVector(unittest.TestCase):
                 identity, problem = NATIVE_CHECK.read_codex_turn_vector(target, "/bin/codex")
                 self.assertEqual(identity, [])
                 self.assertTrue(problem, f"{label} was accepted")
+
+    def test_the_interactive_vector_is_read_against_this_runs_harness_and_session(self) -> None:
+        words, problem = NATIVE_CHECK.read_codex_resume_vector(self.target(), "/bin/codex")
+        self.assertEqual(problem, "")
+        self.assertEqual(words, ["/bin/codex", "resume", "01a1f342-0000-7000-8000-000000000001"])
+
+    def test_an_interactive_vector_naming_another_program_session_or_shape_is_refused(self) -> None:
+        cases = {
+            "another program": self.target(resume_arguments=["/bin/other", "resume",
+                                                             "01a1f342-0000-7000-8000-000000000001"]),
+            "another session": self.target(resume_arguments=["/bin/codex", "resume",
+                                                             "01a1f342-0000-7000-8000-000000000002"]),
+            "an extra word": self.target(resume_arguments=["/bin/codex", "resume",
+                                                           "01a1f342-0000-7000-8000-000000000001",
+                                                           "--last"]),
+            "the exec subcommand": self.target(resume_arguments=["/bin/codex", "exec", "resume",
+                                                                 "01a1f342-0000-7000-8000-000000000001"]),
+            "no vector": self.target(resume_arguments=[]),
+        }
+        for label, target in cases.items():
+            with self.subTest(case=label):
+                words, problem = NATIVE_CHECK.read_codex_resume_vector(target, "/bin/codex")
+                self.assertEqual(words, [])
+                self.assertTrue(problem, f"{label} was accepted")
+
+    def test_the_invocation_record_reads_both_vectors_without_a_turn(self) -> None:
+        """The finding-2 rule: the run that asks for no turn reads the vectors here, so a pair that agrees
+        with its own rendered lines but names another program is a failed check rather than a passed one.
+        The lines' own reading still passes -- they are exactly the words the report's vectors carry --
+        which is what makes the vectors' own reading the rule that catches this shape."""
+        home = Path("/tmp/home")
+
+        def report_of(program: str) -> dict:
+            target = self.target(resume_arguments=[program, "resume",
+                                                   "01a1f342-0000-7000-8000-000000000001"],
+                                 exec_resume_arguments=[program, "exec", "resume",
+                                                        "01a1f342-0000-7000-8000-000000000001",
+                                                        NATIVE_CHECK.PROMPT_PLACEHOLDER])
+            target["resume_environment"] = {NATIVE_CHECK.CODEX_HOME_ENV: str(home)}
+            target["resume_command"] = codex_invocation(home, target["resume_arguments"])
+            target["exec_resume_command"] = codex_invocation(home, target["exec_resume_arguments"])
+            return target
+
+        with recorded() as results:
+            NATIVE_CHECK.record_codex_invocation(report_of("/bin/codex"), "/bin/codex", home)
+            self.assertEqual({name: state for name, state, _ in results},
+                             {"the printed resume lines name this run's own home and session": "PASS"})
+        with recorded() as results:
+            NATIVE_CHECK.record_codex_invocation(report_of("/bin/other"), "/bin/codex", home)
+            recorded_states = {name: (state, detail) for name, state, detail in results}
+        state, detail = recorded_states["the printed resume lines name this run's own home and session"]
+        self.assertEqual(state, "FAIL", "a pair naming another program was accepted without a turn")
+        self.assertIn("'/bin/other'", detail)
 
 
 class SourceInvocationReading(unittest.TestCase):
@@ -2040,12 +2146,21 @@ class SourceDirectionRun(unittest.TestCase):
     """The whole direction driven in-process: the harness's own importer, the CLI conversion, the target's
     loader and the turn are all stubbed, so *the flow itself* is exercised without either harness -- which
     level the conversion is asked for, which commands run in which order, and whether every check the run
-    promises is reached."""
+    promises is reached.
 
-    def test_an_opencode_source_converts_through_the_flow_and_asks_for_the_load_level(self) -> None:
+    ``drive`` returns everything each case asserts on: the exit code, the recorded states, the recorded
+    detail lines, the printed output, the commands the run issued and the harness verbs it asked for.
+    ``source`` is the document the CLI is pointed at (``--source``): the committed fixture by default, a
+    case's own document when it drives a shape the fixture does not hold."""
+
+    def drive(self, document: dict, *, document_path: Path | None = None, reported_codex: str = "/usr/bin/codex",
+              probed_codex: str = "/usr/bin/codex", resume_prompt: str | None = "a turn",
+              expect: str = "TURN-OK",
+              ) -> tuple[int, dict[str, str], dict[str, str], str, list[list[str]], list[list[str]]]:
+        """Drive one source-direction run against the stubbed harnesses. ``reported_codex`` and
+        ``probed_codex`` are the program word the report's own vectors carry and the harness this check
+        probed: they differ for the case about a report naming another program."""
         root = Path(__file__).resolve().parents[2]
-        document = json.loads((root / NATIVE_CHECK.FIXTURE_ROOT
-                               / NATIVE_CHECK.OPENCODE_SOURCE_FIXTURE).read_text(encoding="utf-8"))
         session_id = document["info"]["id"]
         with tempfile.TemporaryDirectory() as scratch_dir:
             scratch = Path(scratch_dir)
@@ -2054,7 +2169,7 @@ class SourceDirectionRun(unittest.TestCase):
             rollout.write_text("\n".join(json.dumps(record) for record in rollout_records_of(document))
                                + "\n", encoding="utf-8")
             codex_home = scratch / "codex-home"
-            conversion = conversion_report_of(document, rollout, codex_home, "/usr/bin/codex")
+            conversion = conversion_report_of(document, rollout, codex_home, reported_codex)
             commands: list[list[str]] = []
             verbs: list[list[str]] = []
             store = {"holds": False}
@@ -2088,7 +2203,7 @@ class SourceDirectionRun(unittest.TestCase):
                     with rollout.open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps({"type": "response_item",
                                                  "payload": {"type": "message", "role": "user",
-                                                             "content": [{"text": args.resume_prompt}]}})
+                                                             "content": [{"text": resume_prompt}]}})
                                      + "\n")
                         handle.write(json.dumps({"type": "response_item",
                                                  "payload": {"type": "message", "role": "assistant",
@@ -2096,8 +2211,9 @@ class SourceDirectionRun(unittest.TestCase):
                     return completed(stdout="TURN-OK\n")
                 return completed(stdout="\n")
 
-            args = mock.Mock(direction=NATIVE_CHECK.SOURCE_DIRECTION, source=None,
-                             target_home=None, resume_prompt="a turn", expect="TURN-OK",
+            args = mock.Mock(direction=NATIVE_CHECK.SOURCE_DIRECTION,
+                             source=str(document_path) if document_path else None,
+                             target_home=None, resume_prompt=resume_prompt, expect=expect,
                              keep=False, json=False)
             with mock.patch.object(NATIVE_CHECK, "BINARY",
                                    scratch / "bin" / "ccc-native-check-opencode"), \
@@ -2107,9 +2223,18 @@ class SourceDirectionRun(unittest.TestCase):
                     stdout = io.StringIO()
                     with contextlib.redirect_stdout(stdout):
                         code = NATIVE_CHECK.run_source_direction(args, root, "go", "/usr/bin/opencode",
-                                                                "/usr/bin/codex", scratch)
+                                                                 probed_codex, scratch)
                     states = {name: state for name, state, _ in results}
+                    details = {name: detail for name, _, detail in results}
             printed = stdout.getvalue()
+        return code, states, details, printed, commands, verbs
+
+    def test_an_opencode_source_converts_through_the_flow_and_asks_for_the_load_level(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        document = json.loads((root / NATIVE_CHECK.FIXTURE_ROOT
+                               / NATIVE_CHECK.OPENCODE_SOURCE_FIXTURE).read_text(encoding="utf-8"))
+        session_id = document["info"]["id"]
+        code, states, _, printed, commands, verbs = self.drive(document)
 
         converted = [command for command in commands if len(command) > 1 and command[1] == "continue"]
         self.assertEqual(len(converted), 1, f"the flow ran {len(converted)} conversions: {commands}")
@@ -2125,19 +2250,79 @@ class SourceDirectionRun(unittest.TestCase):
         self.assertIn("a real turn continues from the installed session", states)
         self.assertIn(NATIVE_CHECK.TURN_OUTPUT_MARKER, printed)
 
+    def test_a_document_with_a_mixed_record_converts_without_a_false_difference(self) -> None:
+        """Finding 1 of the round's review, driven through the flow: an assistant record carrying a text
+        part beside a completed tool part is a shape a caller's own ``--source`` document may hold (the
+        committed fixture does not). Its text is not established for the read, so a conversion writes the
+        call and its result and no message for the text -- and the run has to report that as the conversion
+        it is, not as a difference the conversion cannot avoid. The rollout here is what the measured
+        writer writes (``rollout_records_of``), so a run that went back to expecting the document's own
+        reading for the installed rollout is a failed check, in this case."""
+        root = Path(__file__).resolve().parents[2]
+        fixture = json.loads((root / NATIVE_CHECK.FIXTURE_ROOT
+                              / NATIVE_CHECK.OPENCODE_SOURCE_FIXTURE).read_text(encoding="utf-8"))
+        mixed = {"id": "msg_mixed0000000000000000000001", "type": "assistant", "agent": "build",
+                 "model": {"id": "example-model", "providerID": "example-proxy"},
+                 "time": {"created": 1778231710500, "completed": 1778231710800},
+                 "content": [
+                     {"type": "text", "text": "Let me check the policy file too."},
+                     {"type": "tool", "id": "call_mixed0000000000000000000001", "name": "read",
+                      "state": {"status": "completed",
+                                "input": {"path": "/home/user/code/example-api/internal/retry/policy.go"},
+                                "content": [{"type": "text", "text": "40: const maxAttempts = 4"}]}}]}
+        document = {**fixture, "messages": [*(fixture["messages"][:5]), mixed]}
+        with tempfile.TemporaryDirectory() as directory:
+            document_path = Path(directory) / "mixed-document.json"
+            document_path.write_text(json.dumps(document), encoding="utf-8")
+            code, states, _, printed, _, _ = self.drive(document, document_path=document_path)
+
+        difference = [name for name, state in states.items() if state == "FAIL"]
+        self.assertEqual(difference, [], f"a check failed on a correctly disclosed conversion: {printed[-800:]}")
+        self.assertEqual(code, 0, printed[-800:])
+        self.assertEqual(
+            states["the installed rollout holds what a conversion writes of the fixture's own prompts, "
+                   "tool call, result text and texts"], "PASS")
+
+    def test_a_load_only_run_reads_the_printed_vectors_and_fails_on_another_program(self) -> None:
+        """Finding 2 of the round's review, driven through the flow: with no ``--resume-prompt`` no turn
+        runs, so the report's argument vectors are read by ``record_codex_invocation`` alone -- the
+        printed-line checks compare each rendered line with the report's own vector, and a consistently
+        wrong pair (another program here) agrees with itself. The run must report that as a failed check and
+        end FAIL, not PASS."""
+        root = Path(__file__).resolve().parents[2]
+        document = json.loads((root / NATIVE_CHECK.FIXTURE_ROOT
+                              / NATIVE_CHECK.OPENCODE_SOURCE_FIXTURE).read_text(encoding="utf-8"))
+        code, states, details, printed, _, _ = self.drive(document, reported_codex="/usr/bin/other-program",
+                                                         resume_prompt=None, expect=None)
+
+        self.assertEqual(
+            states["the printed resume lines name this run's own home and session"], "FAIL",
+            f"a load-only run accepted vectors naming another program: {printed[-800:]}")
+        self.assertIn("'/usr/bin/other-program'",
+                      details["the printed resume lines name this run's own home and session"])
+        self.assertEqual(code, 1, printed[-800:])
+        self.assertIn("a real turn was requested (--resume-prompt)", states)
+
 
 def rollout_records_of(document: dict) -> list[dict]:
     """A Codex rollout's records for one OpenCode document, in the shapes the comparison reads: what a
-    conversion writes. Used by the driven case above, which needs a target file without a conversion."""
+    conversion writes (``opencode_written_evidence``). Used by the driven cases above, which need a target
+    file without a conversion.
+
+    A record that carries a tool call contributes its ``function_call`` and, where the recorded text is one
+    the writers write, its ``function_call_output`` -- and *no* assistant message, whatever text parts the
+    document gives it: the read establishes no dialogue for a record carrying calls, so no writer writes
+    its text (measured on the writer; see the comparison's own case)."""
     records = [{"type": "session_meta", "payload": {"id": "x"}}]
     for message in document.get("messages") or []:
         if message.get("type") == "user" and message.get("text"):
             records.append({"type": "response_item", "payload": {"type": "message", "role": "user",
                                                                  "content": [{"text": message["text"]}]}})
         elif message.get("type") == "assistant":
+            carries_call = False
             for part in message.get("content") or []:
                 if part.get("type") == "tool":
-                    state = part.get("state") or {}
+                    carries_call = True
                     records.append({"type": "response_item", "payload": {
                         "type": "function_call", "name": part.get("name"),
                         "arguments": NATIVE_CHECK.opencode_tool_call_input(part),
@@ -2148,7 +2333,7 @@ def rollout_records_of(document: dict) -> list[dict]:
                             "type": "function_call_output", "call_id": part.get("id"),
                             "output": text}})
             rendering = NATIVE_CHECK.opencode_reader_text(message)
-            if rendering:
+            if rendering and not carries_call:
                 records.append({"type": "response_item", "payload": {
                     "type": "message", "role": "assistant", "content": [{"text": rendering}]}})
     return records
