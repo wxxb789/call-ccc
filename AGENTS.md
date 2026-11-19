@@ -61,7 +61,7 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
   turn in the second session; each prompt flag runs one turn).
-- **A record's dialogue is the source's own answer, and a rendered reasoning trace is never it.** Every
+- **A record's dialogue is the source's own answer or the record's own bytes, never a reading of them.** Every
   target writer reads its message text through one shared rule (`internal/ccc/dialogue_provenance.go`'s
   `dialogueOf`). The source's own answer is the projection (`parser.ParsedMessage.DialogueText`, carried
   as `Message.DialogueProjected`), and where the read made one it is the whole answer — an explicitly
@@ -80,22 +80,29 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   is not escaped and the first closer after an opener need not be the reader's own. The readings machinery
   that inferred a removal from those bytes (rounds 11–15 each found a shape it deleted, or a rendering it
   published, wrongly) is therefore **removed, not patched**: nothing is removed from a record's `Content`
-  by inference any more, and a writer that fell back to the raw `Content` of a rendering record would
-  carry a rendering as words the source never recorded the agent as saying.
+  by inference any more. Where the read answered no projection, what happens to a rendering reader's
+  `Content` follows the read's own answers: a record whose read recorded a trace has no text established
+  (below), and a record whose read recorded none carries its `Content` as the record's own bytes — the
+  rendering among them where the record has one — and the report counts it (`unprojected_dialogue`).
 - **Where the read answered no projection, the outcome is disclosed, never guessed.** `dialogueOf`
   answers one of three states for a record, and every route acts on the state, never on a text alone.
-  (1) The reader is not one `thinkingRenderingReaders` names and the record carries no calls: `Content` is
-  the record's own bytes, it travels as the record's text, and the conversion counts it
-  (`unprojected_dialogue`, carried-with-caveat) — so a reader of the report can see which text rests on
-  the read's `Content` rather than on an answer the source gave. The list names both the readers that
-  render a trace and project none and those that render one *and* project (a projection answers first
-  wherever the read made one; the entry is what covers a record *without* one — a legacy archive row, a
-  record a reader path keeps as the source wrote it); every entry names its construction site in the
-  carried reader, and an upstream update that brings in a reader rendering a trace into `Content` has to
-  add it (docs/upstream.md's procedure), or that reader's records travel with the rendering carried as
-  dialogue. A label this build knows no reader for is treated the same way and counted in the same
-  category. (2) `Content` is not the record's own bytes (the reader renders the trace into it and the
-  record carries one, or the record carries calls whose renderings a reader may have inlined): **nothing
+  (1) The reader is not one `thinkingRenderingReaders` names, or the read answered no trace for the
+  record, and the record carries no calls: `Content` is the record's own bytes, it travels as the
+  record's text, and the conversion counts it (`unprojected_dialogue`, carried-with-caveat) — so a reader
+  of the report can see which text rests on the read's `Content` rather than on an answer the source
+  gave. The list names both the readers that render a trace and project none and those that render one
+  *and* project (a projection answers first wherever the read made one; the entry is what covers a record
+  *without* one that carries a trace — a legacy archive row, a record a reader path keeps as the source
+  wrote it); every entry names its
+  construction site in the carried reader, and an upstream update that brings in a reader rendering a
+  trace into `Content` has to add it (docs/upstream.md's procedure), or that reader's records travel with
+  the rendering carried as dialogue. The entry acts only where the read recorded the record's trace: a
+  reader that renders a trace into `Content` without recording the trace's own text (`Message.Thinking`
+  empty for every record it produces) takes this state too, so the text — the rendering among it —
+  travels and is counted here, and the listing cannot act for that record. A label this build knows no
+  reader for is treated the same way and counted in the same category. (2) `Content` is not the record's
+  own bytes (the reader renders the trace into it and the record carries one, or the record carries calls
+  whose renderings a reader may have inlined): **nothing
   is written and nothing is deleted**. The record's text is not published, its tool evidence still is, its
   recorded reasoning still travels where the target has a shape for it, and the conversion counts the
   record (`unresolved_dialogue`, omitted; the count is not a claim that the record wrote none). The source

@@ -21,7 +21,9 @@ import (
 //
 //   - readers that render a trace and project no dialogue of their own. Their records carry the
 //     rendering and nothing answers what the model said, so a record of theirs that carries a trace has
-//     no established dialogue at all: Cline (cline.go:601-620), Codebuff (codebuff_decode.go:696,712),
+//     no established dialogue at all (a record the read answered no trace for is what the paragraph
+//     after this list states: the entry cannot act for it, and its text travels counted): Cline
+//     (cline.go:601-620), Codebuff (codebuff_decode.go:696,712),
 //     Crush (crush.go:558), DeepSeek TUI (deepseek_tui.go:204), Evener (evener.go:418), Forge
 //     (forge.go:250-256), Goose (goose.go:488), legacy Kilo (kilo_legacy.go:914), Kimi
 //     (kimi.go:374,590), Muse (muse.go:492), RooCode (roocode.go:488), Tau (tau.go:405), ZCode
@@ -31,13 +33,15 @@ import (
 //     opencode_v2.go:280-286), Reasonix (reasonix.go:89-93) and Zencoder (zencoder.go:371-377).
 //   - readers that render a trace *and* project a dialogue. Their projection answers first for every
 //     record a source read produces (dialogueOf asks Message.DialogueProjected before Content is
-//     consulted), so the entry is inert there; it is what keeps a record *without* a projection -- a
-//     legacy archive row, a row the archive wrote before it stored the projection, or a path of the
-//     same reader that records Content as the source wrote it -- from publishing the reader's rendering
-//     as the model's words: Amp (amp.go:100-120), Claude Code (claude.go:1481-1564,2844-2925), Codex
+//     consulted), so the entry is inert there; it is what keeps a record *without* a projection that
+//     carries a trace -- a legacy archive row, a row the archive wrote before it stored the projection,
+//     or a path of the same reader that records Content as the source wrote it -- from publishing the
+//     reader's rendering as the model's words: Amp (amp.go:100-120), Claude Code
+//     (claude.go:1481-1564,2844-2925), Codex
 //     (codex.go:658-668), Cursor (cursor.go:592-594), Devin (devin.go:583-587,977-1005), Grok
 //     (grok.go:1160-1164), iFlow (iflow.go:369-399), OpenClaude (openclaude.go:519-530,557-559),
-//     OpenClaw (openclaw.go:131-144,158-164), OpenHands (openhands.go:279-295,333-351), Pi and OMP
+//     OpenClaw (openclaw.go:131-144,158-164), OpenHands (openhands.go:440-450, its block's
+//     construction site), Pi and OMP
 //     (pi.go:509-549) and QClaw (qclaw.go:98-117,131-138). Amp, Claude Code, Cursor, iFlow and OpenClaw
 //     build Content through content.go's ExtractTextContent, which writes the same block
 //     (content.go:50-56).
@@ -56,6 +60,17 @@ import (
 //     projection). A rendering left standing there is a duplication the report names, while text
 //     dropped as though it were a rendering is bytes the source recorded that no later step can put
 //     back.
+//
+// The entries act only where the read answered the record's trace: dialogueOf asks the reader's name
+// and a non-blank Message.Thinking together, because a rendering is written from the trace's own text
+// and only a trace the read recorded can show the two apart. A reader that renders the trace into
+// `Content` without the read recording the trace's own text -- Message.Thinking empty for every record
+// it produces, which is how the eight block-writing readers the list gained for their rendering sites
+// (ChatGPT, Claude.ai, Copilot, Gemini, Hermes, OpenCode, Reasonix, Zencoder) behave in the carried
+// tree -- is therefore a reader no entry can act for: its records reach the record's-own-bytes state,
+// the text travels (the rendered block among it where the record has one) and the conversion counts
+// them (unprojected_dialogue). That is the same answer the unknown-label default takes, and for the
+// same reason: nothing in the read separates the rendering from the record's own words.
 //
 // The list is maintained against the carried readers: an upstream update that brings in a reader which
 // renders a trace into Content (docs/upstream.md's procedure) has to add it here, or that reader's
@@ -142,10 +157,15 @@ const (
 	// never collapsed: the first is an exact conversion of a record with no dialogue, the second leaves
 	// the text to the rules below.
 	dialogueProjected dialogueState = iota
-	// dialogueFromContent: the read answered no projection, and Content is the record's own bytes: the
-	// reader that produced it is not one whose Content carries a rendering of the record's reasoning
-	// trace (thinkingRenderingReaders), and the record carries no call whose rendering a reader may
-	// have inlined into Content. Text is Content, byte for byte, and the conversion reports the record
+	// dialogueFromContent: the read answered no projection, and Content is the record's own bytes. The
+	// read answered no trace for the record (Message.Thinking blank), or the reader that produced it is
+	// not one whose Content carries a rendering of the record's reasoning trace
+	// (thinkingRenderingReaders); and the record carries no call whose rendering a reader may have
+	// inlined into Content. A reader's entry in that list does not act for a record whose read answered
+	// no trace: the reader writes the rendering into Content from the trace's own text, and with no
+	// trace recorded nothing in Content is shown to be one -- the text travels, the rendering among it
+	// where the record has one, and the conversion counts it (unprojected_dialogue, below). Text is
+	// Content, byte for byte, and the conversion reports the record
 	// as carried without a source-owned projection (unprojected_dialogue) rather than as a projection:
 	// what travelled is the read's Content, and a caller can see on every run how many records rest on
 	// that answer instead of on one the source gave.
@@ -205,7 +225,8 @@ type recordDialogue struct {
 // record's own fields):
 //
 //   - the record's own bytes (dialogueFromContent), where nothing shows a rendering in Content: the
-//     reader is not one the list names, and the record carries no calls;
+//     reader is not one the list names, or the read answered no trace for the record, and the record
+//     carries no calls;
 //   - no dialogue at all (dialogueRenderingOnly), where Content is exactly the rendering of the
 //     record's whole trace;
 //   - nothing established (dialogueUnestablished), where the reader renders the trace into Content and
@@ -336,12 +357,14 @@ func dialogueLossRows(unresolved, unprojected int, unestablishedOutcome string) 
 			Count:       unprojected,
 			Detail: "the source reader answered no dialogue projection for these records, so the text " +
 				"written for them is the reader's own Content for the record, byte for byte, rather " +
-				"than an answer the source gave about what the model said. What establishes that " +
-				"Content is the record's own text is the reader itself -- this build's list of the " +
-				"readers whose Content carries a rendering of the record's reasoning trace, held " +
-				"against the carried reader tree -- and never an inference from the record's bytes; " +
-				"a label this build does not know is treated the same way, and its records are " +
-				"counted here too",
+				"than an answer the source gave about what the model said. What the read established " +
+				"is that nothing in Content is shown to be a rendering of the record's reasoning " +
+				"trace: the reader is not one this build's list names as rendering the record's trace " +
+				"into Content, or the read recorded no trace for the record -- and a reader that " +
+				"renders a trace without recording the trace's own text carries the rendering here, " +
+				"because the read answered nothing that could tell it from the record's words. That " +
+				"is never an inference from the record's bytes; a label this build does not know is " +
+				"treated the same way, and its records are counted here too",
 		},
 	}
 }

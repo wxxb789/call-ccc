@@ -314,12 +314,19 @@ func dialogueRoutes(t *testing.T, conversation Conversation) []dialogueRoute {
 // for it (Pi's `thinking` block, the harness's reasoning part) and is counted as omitted where it has
 // none (Codex and Claude record reasoning as their provider's own artifact), and each route states the
 // same counts under its own categories. The unresolved_dialogue row's clause is prose, but the fact it
-// states is checked here: a route whose reasoning row says the trace is omitted must not hold it.
+// states is checked here: a route whose reasoning row says the trace is omitted must not hold it. The
+// document also carries a user-role record's trace, which no format here has a shape for: it is absent
+// from every document and counted as omitted under each route's own category for it
+// (non_assistant_reasoning on the two routes that write a trace at all), never claimed as carried.
 func TestEveryRouteCountsWhatTheReadCouldNotEstablish(t *testing.T) {
 	const (
 		trace  = "private trace"
 		answer = "The answer."
 		plain  = "A plain answer."
+		// A trace recorded on a user record, which a carried reader really does produce. No format
+		// below writes a trace outside the assistant message that produced it, so this record's trace
+		// has no shape on any route and must be counted as the omission it is, never as carried.
+		userTrace = "user trace"
 	)
 	rendering := thinkingRenderOpen + "\n" + trace + "\n" + thinkingRenderClose
 	conversation := testConversation(
@@ -340,6 +347,10 @@ func TestEveryRouteCountsWhatTheReadCouldNotEstablish(t *testing.T) {
 		Message{Ordinal: 3, Role: string(parser.RoleAssistant), Thinking: "only a trace",
 			ContentRendersThinking: true,
 			Content:                thinkingRenderOpen + "\nonly a trace\n" + thinkingRenderClose},
+		// A user record carrying a trace of its own, with a projection so its dialogue is not the
+		// question this case asks.
+		Message{Ordinal: 4, Role: string(parser.RoleUser), Content: "Ask again", Dialogue: "Ask again",
+			DialogueProjected: true, Thinking: userTrace},
 	)
 	for _, route := range dialogueRoutes(t, conversation) {
 		t.Run(route.name, func(t *testing.T) {
@@ -366,6 +377,14 @@ func TestEveryRouteCountsWhatTheReadCouldNotEstablish(t *testing.T) {
 			if route.traceShape != "" && !strings.Contains(string(route.data), route.traceShape) {
 				t.Errorf("the document holds the trace but not in this route's own shape %q: %s",
 					route.traceShape, route.data)
+			}
+			// The user record's trace has no shape on any of these formats: each writes a trace
+			// inside the assistant message that produced it (Pi, OpenCode) or has no plaintext-trace
+			// shape at all (Codex, Claude). It is absent from every document, whatever the role-blind
+			// reasoning count used to say.
+			if strings.Contains(string(route.data), userTrace) {
+				t.Errorf("the document holds the user record's trace %q, which this route's format "+
+					"cannot carry outside an assistant message: %s", userTrace, route.data)
 			}
 			// The tool evidence travels on every route: the call, its recorded output, and an item
 			// naming the result.
@@ -397,17 +416,29 @@ func TestEveryRouteCountsWhatTheReadCouldNotEstablish(t *testing.T) {
 						want.disposition)
 				}
 			}
-			// The reasoning row states this route's own answer, and it agrees with what the document
-			// holds: carried with a caveat where the format has the trace's shape, omitted where it has
-			// none.
+			// Every trace the records carry is accounted for by a count, and the count says what the
+			// document holds: the two assistant records' traces travel on the routes that have the
+			// shape for them (carried with a caveat), and are omitted on the routes that have none
+			// (Codex and Claude record reasoning as their provider's own artifact) -- where the user
+			// record's trace is omitted too, inside the same count.
 			reasoning := lossCount(t, route.losses, "reasoning_text")
-			wantDisposition := DispositionOmitted
-			if route.traceShape != "" {
-				wantDisposition = DispositionCarriedWithCaveat
+			wantReasoningCount, wantReasoningDisposition := 2, DispositionCarriedWithCaveat
+			if route.traceShape == "" {
+				wantReasoningCount, wantReasoningDisposition = 3, DispositionOmitted
 			}
-			if reasoning.Disposition != wantDisposition {
-				t.Errorf("reasoning_text = %+v, want disposition %q beside this route's trace shape %q",
-					reasoning, wantDisposition, route.traceShape)
+			if reasoning.Count != wantReasoningCount || reasoning.Disposition != wantReasoningDisposition {
+				t.Errorf("reasoning_text = %+v, want %d trace(s) counted %q beside this route's trace "+
+					"shape %q", reasoning, wantReasoningCount, wantReasoningDisposition, route.traceShape)
+			}
+			if route.traceShape != "" {
+				// The user record's trace has no shape in either format that has one (each writes a
+				// trace inside the assistant message that produced it), so it is counted as omitted
+				// under the route's own category, never claimed as carried by reasoning_text.
+				nonAssistant := lossCount(t, route.losses, "non_assistant_reasoning")
+				if nonAssistant.Count != 1 || nonAssistant.Disposition != DispositionOmitted {
+					t.Errorf("non_assistant_reasoning = %+v, want the user record's trace counted as one "+
+						"omission", nonAssistant)
+				}
 			}
 		})
 	}

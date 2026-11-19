@@ -140,7 +140,9 @@ type Message struct {
 	// against the carried readers). It is the one reader-level fact the dialogue question needs: a record
 	// this reader produced that carries a trace has no text the read can establish, because the reader's
 	// rendering is written from the trace's own text and the record's own words are one flattened string
-	// with it -- two different native part orders produce the same Content and the same trace. False
+	// with it -- two different native part orders produce the same Content and the same trace. The flag
+	// acts only through that trace: a record whose read answered none for it (Thinking empty) is not
+	// shown to hold a rendering at all, so it takes the answer below. False
 	// means no such rendering is established for this reader: either it records Content as the source
 	// wrote it (internal/parser's Vibe reader copies the record's content and reasoning_content
 	// independently) or this build knows no reader for its label, and in both cases Content travels as

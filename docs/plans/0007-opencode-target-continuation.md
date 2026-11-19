@@ -564,9 +564,11 @@ all, which is what shows the class was never the trimming's). **Every writer now
 `dialogueOf` (`internal/ccc/dialogue_provenance.go`), which answers the source's own projection — an
 explicitly empty one included — or one of three states for a record without one, and nothing is ever
 removed from `Content` by inference.** The projection is the authority: it is asked before `Content` and
-answered byte for byte. Where the read answered none: (1) a reader outside `thinkingRenderingReaders` on a
-record carrying no calls has `Content` as its own bytes, carried as the record's text and counted
-(`unprojected_dialogue`, carried-with-caveat); (2) a record whose `Content` is not its own bytes — a reader
+answered byte for byte. Where the read answered none: (1) a reader outside `thinkingRenderingReaders` or a
+record whose read recorded no trace for it (`Message.Thinking` empty — an entry acts only where the read
+answered the record's trace) and which carries no calls has `Content` as its own bytes, carried as the
+record's text and counted (`unprojected_dialogue`, carried-with-caveat), the rendering inside it where the
+reader wrote one; (2) a record whose `Content` is not its own bytes — a reader
 that renders the trace and a record that carries one, or a record carrying calls whose renderings a reader
 may have inlined — contributes no text at all, is counted (`unresolved_dialogue`, omitted), keeps its tool
 evidence, keeps its reasoning where the target has that shape, and leaves the bytes in the source session;
@@ -574,8 +576,10 @@ evidence, keeps its reasoning where the target has that shape, and leaves the by
 the trace is not double-carried. `thinkingRenderingReaders` is completed against the carried readers: the
 readers that render a trace and project none are joined by eight more (ChatGPT, Claude.ai, Copilot, Gemini,
 Hermes, OpenCode, Reasonix and Zencoder), and by the readers that render one *and* project — their
-projection answers first wherever the read made one, and the entry is what covers a record *without* one,
-a legacy archive row included — and every entry names its construction site. The whole removal surface
+projection answers first wherever the read made one, and the entry is what covers a record *without* one
+that carries a trace, a legacy archive row included — while a reader that renders a trace without
+recording its own text cannot be acted on by the entry, its records carrying the rendering inside the text
+counted — and every entry names its construction site. The whole removal surface
 (`dialogueText`, `dialogueFromContent`, the readings, the candidate scan, `renderingPart`,
 `thinkingRenderingOnly`, the two bounds) is deleted rather than repaired; `AGENTS.md`'s dialogue rule is
 split in two (the semantic rule, and the disclosed-outcome rule for a record that answered no projection),
@@ -609,7 +613,10 @@ earlier call's completion (round 15's second finding, whose shape is now its own
   `Content` that is not the record's own contributing no text and counted (`unresolved_dialogue`, omitted,
   the source keeping the bytes), and a whole-trace rendering carrying no dialogue; and it states the
   maintenance rule of `thinkingRenderingReaders` (both kinds of entry, construction sites named, a label
-  this build knows no reader for treated as the second kind and counted in the same category).
+  this build knows no reader for treated as the second kind and counted in the same category), with the
+  bound on an entry's action the round-17 fix states (it acts only where the read recorded the record's
+  trace, so a reader that renders a trace without recording its own text carries the rendering inside the
+  text, counted).
 - `docs/conventions.md`: the layout block gains the three files; the install rule gains OpenCode's
   data-directory rule and the importer; the fixture note records why 0007 adds no fixture directory.
 - `docs/harness.md`: the new script's entry and why it is not a step.

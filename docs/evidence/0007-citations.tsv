@@ -8,7 +8,7 @@
 #   O1–O12  the rules of AGENTS.md §"OpenCode is a target whose store only the harness writes", in the
 #           paragraph's own order;
 #   R1–R9   the rules of AGENTS.md's dialogue boundary — the semantic rule ("A record's dialogue is the
-#           source's own answer, and a rendered reasoning trace is never it") and the disclosed-outcome
+#           source's own answer or the record's own bytes, never a reading of them") and the disclosed-outcome
 #           rule that follows it ("Where the read answered no projection, the outcome is disclosed, never
 #           guessed") — plus the OpenCode paragraph's tool-part instant rule, in the order the rows read.
 #

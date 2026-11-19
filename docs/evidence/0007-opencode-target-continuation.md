@@ -2234,7 +2234,7 @@ and in the report (the category):
 | state | what it is | outcome | report |
 | --- | --- | --- | --- |
 | projected | the read answered `DialogueText` — an explicitly empty projection included, which is the source's own "no dialogue" | the projection, byte for byte | no category; `Content` is not read |
-| from Content | no projection; the reader is not one `thinkingRenderingReaders` names and the record carries no calls, so `Content` is the record's own bytes | the text travels | `unprojected_dialogue`, carried-with-caveat (count of records) |
+| from Content | no projection; the reader is not one `thinkingRenderingReaders` names, or the read recorded no trace for the record (`Message.Thinking` empty — an entry acts only where the read answered the record's trace), and the record carries no calls, so `Content` is the record's own bytes | the text travels (the rendering inside it where the reader wrote one and the read recorded no trace to show it apart) | `unprojected_dialogue`, carried-with-caveat (count of records) |
 | rendering-only | no projection; `Content` is byte for byte the reader's rendering of the record's whole trace | no dialogue; the trace is not double-carried | no new category (the trace is counted where the target has no shape for it) |
 | unestablished | no projection and `Content` is not the record's own bytes (the reader renders the trace and the record carries one, or the record carries calls whose renderings a reader may have inlined) | **no text at all**; tool evidence still written; the record's reasoning travels where the target has a shape for it (Pi's `thinking` block, the harness's reasoning part) and is counted as omitted where it has none (Codex and Claude record reasoning as their provider's own artifact); the source keeps the bytes | `unresolved_dialogue`, omitted (count of records) |
 
@@ -2291,15 +2291,26 @@ still passes; the regression test the finding asked for is the new one.
 and are now named: ChatGPT (`chatgpt.go:401-413`), Claude.ai (`claude_ai.go:151-156`), Copilot
 (`copilot.go:200-208`), Gemini (`gemini.go:400-415`), Hermes (`hermes.go:319-321,517-519,1349-1351`),
 OpenCode (`opencode.go:1726-1731`, `opencode_v2.go:280-286`), Reasonix (`reasonix.go:89-93`) and Zencoder
-(`zencoder.go:371-377`) — each had been publishing its rendering inside the dialogue, because the list
-named only the thirteen readers of the target-side routes. The list now also names the readers that render
-a trace *and* project one (Amp, Claude Code, Codex, Cursor, Devin, Grok, iFlow, OpenClaude, OpenClaw,
+(`zencoder.go:371-377`). What an entry can do for those readers' own records is bounded by the read's other
+answer, and round 17's STD-A01 measured the bound: none of the nine reader files sets `ThinkingText`
+(re-derived by grep on this tree), so the read records no trace for a record those readers produce and
+`dialogueOf`'s rendering arm — the reader's name **and** a non-blank `Message.Thinking` — cannot fire; their
+records reach the record's-own-bytes state, the text (the rendered block inside it) travels, and the
+conversion counts it `unprojected_dialogue`. An entry acts on a record that *does* carry a trace — a legacy
+archive row, a later reader that records one — and the fix applied below re-derives that reading on the
+shape those readers produce (`dialogueFromContent`, `unprojected_dialogue`, the rendering's text inside the
+carried text). The condition as this round first stated it ("the reader is not named and the record carries
+no calls") was corrected in the rule's own statements by that fix — `AGENTS.md`'s rule (1), the state docs,
+the `unprojected_dialogue` row and this record's table above. The list now also names the readers that
+render a trace *and* project one (Amp, Claude Code, Codex, Cursor, Devin, Grok, iFlow, OpenClaude, OpenClaw,
 OpenHands, Pi/OMP, QClaw): their projection answers first wherever the read made one, and the entry is what
-keeps a record *without* a projection — a legacy archive row, a reader path that keeps `Content` as the
-source wrote it — from publishing the rendering. The list's doc names every construction site and the
-maintenance rule; a label this build knows no reader for is treated as recording `Content` as written and
-counted in `unprojected_dialogue`, the answer that keeps the source's own words (a rendering left standing
-is a duplication the report names; text dropped as though it were one cannot be put back).
+keeps a record *without* a projection **that carries a trace** — a legacy archive row, a reader path that
+keeps `Content` as the source wrote it — from publishing the rendering. The list's doc names every
+construction site (its OpenHands entry cites the block's own construction site, `openhands.go:440-450`, as
+the fix below corrects; the entry previously cited that reader's projection sites) and the maintenance
+rule; a label this build knows no reader for is treated as recording `Content` as written and counted in
+`unprojected_dialogue`, the answer that keeps the source's own words (a rendering left standing is a
+duplication the report names; text dropped as though it were one cannot be put back).
 
 `python3 scripts/gate.py`, exit code 0, on this round's final tree:
 
@@ -2545,12 +2556,128 @@ No native check was re-run this round: no route's written bytes change for any d
 measurement above), PD-2 moves only a count and PD-3 only two clauses, so the load-level evidence the
 root-fix section recorded still describes what these routes write.
 
+### The round-17 review's accepted findings (`0aea879` + working tree), applied
+
+The review stage's report on the simplify round (Standards MUST_FIX ×3, Spec MUST_FIX ×1, caused by two of
+the three) was accepted: STD-A01 on its wording arm, its mechanism arm left as the owner's scope call
+([`OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md), **Q-0007-12**), and STD-A02 and STD-A03 as the
+report states them. Every measurement below was taken on this tree or in a throw-away copy
+(`/tmp/cccfix-mut`, `/tmp/cccfix-p2`; restored from the tree and deleted afterwards). The review's own
+probe is re-derived here.
+
+**STD-A01 — the rule's condition is the code's, everywhere it is stated.** The code's guard was and is
+`ContentRendersThinking && TrimSpace(Thinking) != ""` (`dialogueOf`'s rendering arm), so a *named* reader's
+record whose read answered no trace reaches `dialogueFromContent`, the text travelling and counted
+`unprojected_dialogue`; the rule was stated as "the reader is not one `thinkingRenderingReaders` names and
+the record carries no calls", under which such a record read as outside the state. Every record produced
+by the eight block-writing readers the root-fix round added is that case: none of the nine carried reader
+files sets `ThinkingText` (re-derived, `grep -c ThinkingText` = 0 for `chatgpt.go`, `claude_ai.go`,
+`copilot.go`, `gemini.go`, `hermes.go`, `opencode.go`, `opencode_v2.go`, `reasonix.go`, `zencoder.go`).
+Probe on the shape those readers produce (`Message{assistant, Content: "[Thinking]\nsecret trace\n
+[/Thinking]\nThe answer.", ContentRendersThinking: true}`, a throw-away `zz_probe_test.go` printing
+`dialogueOf`/`dialogueLossOf` and the Codex document): the state is `dialogueFromContent`, the loss
+`unprojected_dialogue`, the text is that Content byte for byte, the Codex document **holds** `secret
+trace` (the rendering travelled as the record's text) and `unresolved_dialogue = 0` — the review's probe
+reproduced. The condition and its consequence are now stated in every place the rule appears: `AGENTS.md`
+(its semantic headline — "the source's own answer, and a rendered reasoning trace is never it" was the
+statement the review measured false, and it now reads "the source's own answer or the record's own bytes,
+never a reading of them" — its "removed, not patched" tail, and its disclosed-outcome rule (1), which
+carries the new sentence: the entry acts only where the read recorded the record's trace, so a reader that
+renders a trace without recording its own text takes this state too and the text — the rendering among it —
+travels and is counted here); `internal/ccc/dialogue_provenance.go` (the list comment's two bullets, a new
+paragraph stating the bound on every entry's action, `dialogueOf`'s three-state bullet, the
+`dialogueFromContent` state doc, the `unprojected_dialogue` row's ground sentence); `internal/ccc/
+conversation.go`'s `ContentRendersThinking` doc; the plan's §6.1 clause; the header comment of
+`docs/evidence/0007-citations.tsv` (its quote of the semantic headline follows the new text; no row moved);
+and this record's own state-table row and readers paragraph above. The list's OpenHands entry now cites the
+block's own construction site, `openhands.go:440-450` (`openHandsAppendThinking`), where it cited that
+reader's projection sites — the review's sub-note (c). Q-0007-12 records both arms — carry `Content`
+counted (shipped) or carry `ParsedMessage.HasThinking` and treat (named reader ∧ a trace was recorded as
+existing ∧ no trace text) as `dialogueUnestablished`, verified per reader because `goose.go`'s
+`redactedThinking` sets `HasThinking` with no block and no text, so a blanket rule would omit real text —
+and what settles it (the owner's scope call, or an upstream reader that records the trace's own text).
+
+**STD-A02 — a trace on a record whose role has no shape is counted as omitted, not as carried.** Pi and
+OpenCode write a trace only as a block or part of the assistant message that produced it, while their
+`reasoning_text` count was role-blind (Pi counted a user record's trace, OpenCode counted every
+user-or-other-role record's before its role gate) and both routes' `unresolved_dialogue` clause said the
+record's reasoning "still travels". Measured before, in a copy with the role-bound counting reverted to the
+`fa8da89` shape, on one hand-built document (a projected user record carrying a trace, no assistant trace):
+pi and opencode `reasoning_text = 1 carried-with-caveat` while **neither document holds the trace**; codex
+and claude `reasoning_text = 1 omitted` (their row already said the trace is omitted). The counting is now
+role-bound — the assistant's is the only role both writers put the block/part on — a trace on any other
+role is counted under the new `non_assistant_reasoning` row (omitted) on those two routes, and each route's
+clause now says the trace travels "where the record's role is the assistant's", with the omission counted.
+Measured after, same document: pi and opencode hold no trace, `reasoning_text = 0`, `non_assistant_reasoning
+= 1 omitted`; codex and claude `reasoning_text = 1` omitted. The pin is
+`TestEveryRouteCountsWhatTheReadCouldNotEstablish` extended with that user record: it asserts the trace
+absent from every document, the two assistant records' traces `carried-with-caveat` where the format has
+the shape and `omitted` where it has none, and the user record's trace under the route's own omitted
+category. The pin is not vacuous: reverting Pi's and OpenCode's role-bound counts to `lossReasoning` in a
+throw-away copy made `go test -count=1 -tags fts5 -run TestEveryRouteCountsWhatTheReadCouldNotEstablish
+./internal/ccc/` exit 1 with exactly the pi and opencode arms failing (`reasoning_text = … Count:3 …, want
+2 trace(s) counted "carried-with-caveat"` and `non_assistant_reasoning = … Count:0 …, want the user
+record's trace counted as one omission`). The new row is named in Pi's `TestPiSessionReportsEveryLossCategory`
+list, whose walk of the report requires a listed name for every row the report carries. Counts moved: the
+report now names 41 rows on OpenCode (39 literal + the two shared dialogue rows) and 32 on Pi (30 + 2) —
+§5 and §6 carry the new numbers and the rounds that moved them by.
+
+**STD-A03 — the two "every category" cases name the categories their writer reports.**
+`unresolved_dialogue` and `unprojected_dialogue` — the two rows `dialogueLossRows` splices into every
+writer — are now in `TestCodexRolloutReportsEveryCategoryItKnows`'s map (counts, measured on its document:
+0 `omitted` and 1 `carried-with-caveat`) and in `TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers`'s
+list, which also gained `empty_assistant_messages` (a category the writer reports that this list had left
+to a sibling case); both comments now state what the cases check — every category the writer reports today
+is named, each read through `lossCount`, so a row that stopped being reported fails here rather than
+reading as a zero, while the pass that walks a report and catches a category the writer *gained* is the Pi
+case's, since a list can only check its own names. The case names are unchanged: both are cited
+(`docs/evidence/0002-citations.tsv`'s row B7 carries the codex case; 0002's and 0003's records quote both),
+and none may be renamed away. The two names are load-bearing: with the codex and claude writers'
+`dialogueLossRows` splice dropped in a throw-away copy, both cases failed with `the report does not name
+the "unresolved_dialogue" category`.
+
+**What did not move.** No route's written bytes change for any document: this round moves a count, two
+report clauses, the rule's own wording and two test lists, and nothing in a writer's record path
+(`internal/ccc/pi_target.go` and `internal/ccc/opencode_target.go` changed only where they count and what
+their clause constants say) — so the load-level evidence the earlier sections recorded still describes what
+these routes write, and no native check was re-run. No source is opened for writing, the carried tree is
+untouched (no `internal/parser` file changed), and `README.md`, `docs/harness.md`, `docs/upstream.md` and
+`docs/conventions.md` are unchanged. The narrowed Go suites' own test functions ran 402 before this round
+and 402 after (counted as `^func Test` over the test files git lists under `cmd/ccc` and `internal/ccc`):
+no case was deleted, merged, renamed or weakened — one case grew arms and two lists grew names — and
+`gofmt` still counts 3622 `*.go` files. `docs/evidence/0007-citations.tsv` keeps its 27 rows and no cited
+test was renamed.
+
+`python3 scripts/gate.py`, exit code 0, on this round's final tree:
+
+```console
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3622 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 384 tests in 8.677s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5709 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified
+  PASS     secrets  no leaks found in 163 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+```
+
+The required lines, verbatim with their own return codes, from that run over this round's code and tests
+(before this section's prose settled): `selftest` printed
+`  PASS     selftest Ran 384 tests in 8.677s (rc=0)` and `citations` printed
+`  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 27 row(s) verified`
+(0002 unchanged at 36 rows; 0007 unchanged at 27 — no row's test was renamed, and the round's extended case
+and two grown lists are not cited). A later run on the final tree reprinted every step line and every count,
+differing only in the `selftest` line's duration, and exited 0.
+
 ## 5. What travels, source side and target side
 
 | Source evidence | Target side, and the run that recorded it |
 | --- | --- |
 | a Claude Code conversation with a tool call, its result and a compaction boundary (the fixture's own bytes record no persisted reasoning trace, so no run in §1–§2 imports one: §6 names that boundary) | converted into a 7-message OpenCode document (`converted: opencode-import-document, 2312 bytes: 7 message(s), 1 tool call(s), 1 tool result(s), 1 boundary(ies), 2 turn(s)`, §1) and materialised by the harness's own importer as a store session (§2: `the store's own document holds 10 message(s); the conversion carried 7`, the extra three being the turn's own records) |
-| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 38 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, and the twelfth added `result_completion_fallbacks`, §4) |
+| the source read's own omissions and rewrites | named, counted and per-category: `empty_user_messages ×1`, `tool_name_vocabulary ×1`, `message_model_attribution ×4`, `usage_zeroed ×1`, `target_model_id_attribution ×2`, `compaction_reason ×1`, `assistant_completion_instant ×4`, `unresolved_source_parents ×1`, `pre_compaction_history ×4`, `malformed_source_lines ×1` (§1), out of the 41 categories the report names on every run (§2's recorded run named 35: the first review round added `coalesced_tool_call_projections`, which the committed multi-file patch fixture exercises, the second added `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round added the two dialogue rows, and the round-17 fix added `non_assistant_reasoning`, §4) |
 | the assistant message's own completion instant the importer requires | written for every assistant message from the record's own instant, `×4` in §1 — the member whose absence the harness accepts and then drops the message over (§0), disclosed as `assistant_completion_instant`; the read-back is the check that caught it |
 | the tool call with its recorded arguments and result text | `toolu_01Example0000000000000000 Read [completed] input {"file_path": "/home/user/code/example-api/internal/retry/policy.go"} result 'package retry\n\nconst MaxAttempts = 4'` in the harness's own document (§4's fourth round) — the same call id and name the source recorded, with its recorded arguments and the result's own text, compared part by part with the **source fixture's own bytes**, so a store holding different arguments or different output fails the check instead of passing on its identity |
 | a tool part's pair of instants | the part's `created` is the call's record's instant and its `completed` the **result's own record's** instant — the committed Codex fixture records its shell call at `09:15:05` and its output at `09:15:06`, so the part states that one-second span (§4's twelfth round) — carried per result through `ToolResult.Timestamp`; a read holding no instant of the result's own record (a provider event without a timestamp, the archive's derived summary on the call's row) falls back to the containing record's instant and is counted (`result_completion_fallbacks`) rather than presented as recorded |
@@ -2588,11 +2715,12 @@ block (`scripts/tests/test_evidence_claims.py`, which this record is registered 
 - **The user count of a read-back includes the compaction row.** The inherited reader reads a compaction row as
   a system record under the user role, so a read-back of a 7-message document reports
   `user_messages: 3`; the boundary count names the same row, and the comparison itself is itemwise.
-- **The 37 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
+- **The 41 loss categories are the writer's own vocabulary, not a claim about the harness's behaviour.** A
   category whose count is zero is still named (that is what makes a missing category a defect), and each
   non-zero one is disclosed with its own sentence. (They were 35 when this record's runs in §1–§3 were
-  made; the first review round added `coalesced_tool_call_projections` and the second added
-  `nonterminal_tool_events`.)
+  made; the first review round added `coalesced_tool_call_projections`, the second added
+  `nonterminal_tool_events`, the twelfth added `result_completion_fallbacks`, the root-fix round the two
+  dialogue rows and the round-17 fix `non_assistant_reasoning`.)
 - **§1–§3 quote the runs they name, at the tree they ran on.** Their transcripts are those runs' own bytes:
   the printed resume line in them names the data root alone, because the store's database was pinned beside
   it later (§4's review round), and their check counts (27 offline, 31 with a turn) are that round's step

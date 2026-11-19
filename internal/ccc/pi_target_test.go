@@ -1096,7 +1096,8 @@ func TestPiSessionReportsEveryLossCategory(t *testing.T) {
 		DispositionCarriedWithCaveat: true,
 	}
 	wanted := []string{
-		"reasoning_text", "sidechain_messages", "system_records", "tool_role_messages",
+		"reasoning_text", "non_assistant_reasoning", "sidechain_messages", "system_records",
+		"tool_role_messages",
 		"synthesized_tool_call_messages",
 		"unclassified_role_messages", "empty_user_messages", "empty_assistant_messages",
 		"non_dialogue_content", "whitespace_only_dialogue", "unresolved_dialogue",

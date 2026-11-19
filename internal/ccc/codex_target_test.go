@@ -361,8 +361,12 @@ func TestCodexRolloutWritesASystemRecordsToolEvidenceWithoutItsText(t *testing.T
 	}
 }
 
-// TestCodexRolloutReportsEveryCategoryItKnows pins the report's completeness: a category that is not
-// named cannot be read, and a count that is not reported looks like evidence that travelled.
+// TestCodexRolloutReportsEveryCategoryItKnows pins the report's completeness as far as a list can: every
+// category the writer reports today is named below, each with the count and disposition stated here and
+// a non-empty detail, so a category that stopped being reported, or whose count moved, fails here
+// instead of passing as a zero. The list is kept in step with the writer by hand: a category the writer
+// gained and this case did not name would pass, and the pass that walks the report itself -- catching
+// that direction -- is the Pi case's (TestPiSessionReportsEveryLossCategory).
 func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 	conversation := testConversation(
 		Message{Ordinal: 0, Role: string(parser.RoleUser), Content: "Ask", Dialogue: "Ask"},
@@ -404,6 +408,8 @@ func TestCodexRolloutReportsEveryCategoryItKnows(t *testing.T) {
 		disposition string
 	}{
 		"reasoning_text":                {2, DispositionOmitted},
+		"unresolved_dialogue":           {0, DispositionOmitted},
+		"unprojected_dialogue":          {1, DispositionCarriedWithCaveat},
 		"sidechain_messages":            {1, DispositionOmitted},
 		"system_records":                {1, DispositionOmitted},
 		"tool_role_messages":            {1, DispositionOmitted},

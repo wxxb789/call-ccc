@@ -273,9 +273,12 @@ func assistantMessageIDWithText(t *testing.T, records []map[string]any, want str
 	return ""
 }
 
-// TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers pins the two halves of the disclosure rule: the
-// report lists every category it knows about (so a consumer never infers what was left out), and the
-// records the file holds are exactly the ones the counts say were carried.
+// TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers pins the two halves of the disclosure rule: every
+// category the writer reports today is named below, each read through lossCount, so a category the
+// report dropped fails here rather than reading as a zero (the list is kept in step with the writer by
+// hand; the pass that walks the report itself is the Pi case's,
+// TestPiSessionReportsEveryLossCategory), and the records the file holds are exactly the ones the counts
+// say were carried.
 func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 	conversation := testConversation(
 		Message{Ordinal: 0, Role: "user", Content: "Where is the retry cap configured?",
@@ -315,7 +318,8 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 	// report dropped is a failure here, not a zero that reads like a real count.
 	for _, category := range []string{
 		"reasoning_text", "sidechain_messages", "system_records", "tool_role_messages",
-		"unclassified_role_messages", "empty_user_messages", "non_dialogue_content",
+		"unclassified_role_messages", "empty_user_messages", "empty_assistant_messages",
+		"non_dialogue_content",
 		"whitespace_only_dialogue", "unpaired_tool_results", "empty_tool_results",
 		"whitespace_only_tool_results", "unrepresentable_result_blocks", "unresolved_tool_outputs",
 		"tool_result_statuses", "empty_tool_inputs", "generated_call_ids", "coalesced_tool_call_projections",
@@ -324,6 +328,7 @@ func TestClaudeWriterReportsEveryCategoryAndOmitsTheOthers(t *testing.T) {
 		"message_model_attribution", "unresolved_source_parents", "pre_compaction_history",
 		"empty_compaction_summary",
 		"malformed_source_lines", "summary_transcript", "source_needs_retry",
+		"unresolved_dialogue", "unprojected_dialogue",
 	} {
 		lossCount(t, transcript.Losses, category)
 	}

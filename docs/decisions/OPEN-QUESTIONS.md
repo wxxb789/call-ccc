@@ -2601,3 +2601,45 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** nothing owner-only; an operator who wants a non-dialogue role's `Content` counted under
   the dialogue categories (with those categories' sentences restated so they are true there, and the other
   three routes taught the same) may ask for that split instead.
+
+## Q-0007-12 — A rendering reader whose read records no trace for the record: carry `Content` counted, or ask the read's own flag and omit
+
+- **Status:** resolved (**owner, 2026-11-19 — letter A**, the wording arm; applied by the unattended increment as
+  round 17's STD-A01, arm (a). The mechanism arm is **deferred to goal 0008**, where OpenCode as a *source*
+  makes it live)
+- **Question:** `dialogueOf`'s rendering arms ask the reader's name **and** a non-blank `Message.Thinking`
+  (`ContentRendersThinking && TrimSpace(Thinking) != ""`). A reader that renders the trace into `Content`
+  without the read recording the trace's own text — `Message.Thinking` empty for every record it produces
+  — therefore never reaches `dialogueUnestablished`: its records land in `dialogueFromContent`, the text
+  (the rendered block inside it) travels, and the conversion counts them `unprojected_dialogue`. That is
+  every record of the eight block-writing readers this increment added to `thinkingRenderingReaders`
+  (ChatGPT, Claude.ai, Copilot, Gemini, Hermes, OpenCode, Reasonix, Zencoder — none of their nine carried
+  reader files sets `ThinkingText`, re-derived by grep), measured on the shape they produce:
+  `dialogueOf` answers the record's-own-bytes state and the Codex document holds the rendering's own text
+  (`secret trace`), with `unresolved_dialogue = 0`. Two arms: carry `Content` and count it, so the entries
+  cannot act for those records and the report says so (the shipped arm); or carry the read's own existence
+  flag — `parser.ParsedMessage.HasThinking`, not carried as a `Message` field today — and treat (named
+  reader ∧ a trace was recorded as existing ∧ no trace text) as `dialogueUnestablished`, writing nothing
+  and counting the record, the partial conversion the three states already define.
+- **Default taken:** the shipped arm. Where the read answered no trace, the listing cannot act, and the
+  record's text (a rendering among it) travels and is counted — the condition every statement of the rule
+  now carries (AGENTS.md's disclosed-outcome rule (1), the `dialogueFromContent` state doc, the
+  `unprojected_dialogue` row and this increment's evidence record), so the report discloses the ambiguity
+  per run instead of claiming an exact answer for those readers. The mechanism arm cannot be a blanket
+  rule without per-reader verification: `internal/parser`'s Goose reader sets `HasThinking` from
+  `redactedThinking` with no block and no text, so "a trace was recorded as existing but its text is
+  empty" is not by itself evidence that `Content` holds a rendering, and the blanket form would omit real
+  text. Only a reader-by-reader answer (the list split by which readers render without recording, or the
+  flag carrying that distinction) can say which readers the arm may act for.
+- **Reversal:** carry `ParsedMessage.HasThinking` onto `Message` and ask the rendering arm as (reader
+  named ∧ `HasThinking` ∧ `Thinking == ""`), after verifying per reader that its empty-`HasThinking` shape
+  is the rendering one — or keep the shipped arm and revisit when an upstream reader records the trace's
+  own text (the boundary Q-0007-10's "settled by" names). Either reversal is one clause in `dialogueOf`.
+- **Settled by:** the owner's scope call — whether eight readers' renderings being carried and counted
+  (the shipped arm, disclosed per run) is acceptable for this increment, with the mechanism arm a separate
+  change verified reader by reader — or an upstream reader that records the trace's own text.
+- **Resolution:** (owner, 2026-11-19) option (**A**) confirmed on the operator's re-sent form — 0007 states the
+  condition the code implements and counts what it carries; the mechanism arm (carry `ParsedMessage.HasThinking`
+  onto `Message`; named reader ∧ a trace was recorded as existing ∧ no trace text → `dialogueUnestablished`,
+  verified reader by reader) is **not** authorized by this letter and belongs to 0008. Options (B) (do it inside
+  0007) and (C) (a new upstream pin first) were offered in the same form and not taken.

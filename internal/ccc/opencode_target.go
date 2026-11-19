@@ -388,6 +388,7 @@ type openCodeConverter struct {
 	lossUnresolvedDialogue        int
 	lossUnprojectedDialogue       int
 	lossReasoning                 int
+	lossNonAssistantReasoning     int
 	lossUnpairedCalls             int
 	lossUnpairedResults           int
 	lossRepeatedResults           int
@@ -756,9 +757,6 @@ func (c *openCodeConverter) writeMessage(message Message, calls []*openCodeCall)
 	}
 	role := parser.RoleType(message.Role)
 	reasoning := strings.TrimSpace(message.Thinking) != ""
-	if reasoning {
-		c.lossReasoning++
-	}
 	if role != parser.RoleUser && role != parser.RoleAssistant {
 		// Only a user or assistant record is dialogue: a record the source wrote with any other role --
 		// a tool's own output (the native tool role several providers keep), a system notice that was
@@ -773,7 +771,23 @@ func (c *openCodeConverter) writeMessage(message Message, calls []*openCodeCall)
 		default:
 			c.lossUnclassified++
 		}
+		if reasoning {
+			// The harness holds a reasoning part on an assistant message (writeAssistantMessage) alone,
+			// so this record's trace has no shape here and is omitted, counted rather than claimed as
+			// carried.
+			c.lossNonAssistantReasoning++
+		}
 		return c.writeSynthesizedToolEvidence(calls, message.Timestamp)
+	}
+	// The trace's own counting is role-bound like the dialogue state: the harness holds a `reasoning`
+	// part on an assistant message, so only an assistant record's trace travels; a user record's has no
+	// shape here and is counted as the omission it is.
+	if reasoning {
+		if role == parser.RoleAssistant {
+			c.lossReasoning++
+		} else {
+			c.lossNonAssistantReasoning++
+		}
 	}
 	// The dialogue state is asked and counted only for a record this writer goes on to consider as
 	// dialogue: a record of another role is not dialogue on any route, and counting its Content under
@@ -1287,11 +1301,15 @@ func openCodeFormatLimits() []FormatLimit {
 
 // openCodeUnestablishedOutcome is this route's own answer for a record whose dialogue was not
 // established (dialogueUnestablished), passed to dialogueLossRows: what the writer does not write and
-// where the record's reasoning goes. The harness's message holds a reasoning part, so the trace still
-// travels -- as the assistant message's reasoning part -- while no text part is written for the record.
+// where the record's reasoning goes. The harness's assistant message holds a reasoning part, so a trace
+// travels where the record's role is the assistant's -- as that message's reasoning part -- and has no
+// shape on a record of another role, where it is counted as omitted (non_assistant_reasoning); no text
+// part is written either way.
 const openCodeUnestablishedOutcome = "no text part is written for it, this count is not a claim that " +
 	"the record wrote none, and the record's own reasoning still travels as the assistant message's " +
-	"reasoning part"
+	"reasoning part where the record's role is the assistant's -- the role the harness holds that part " +
+	"on alone -- while a trace on a record of another role has no shape here and is counted as omitted " +
+	"(non_assistant_reasoning)"
 
 // losses reports every category the writer knows about, in a fixed order, so a caller can read the
 // report without knowing which categories this run happened to produce.
@@ -1319,7 +1337,19 @@ func (c *openCodeConverter) losses() []Loss {
 			Detail: "OpenCode persists a reasoning trace as a `reasoning` part of the assistant message " +
 				"that produced it, and that part is the shape the source's own trace is written into: " +
 				"the trace travels as the source recorded it, with no provider-native payload forged " +
-				"for it. A resumed turn reads it as history rather than replaying it",
+				"for it. A trace recorded on a record of another role has no such part; that " +
+				"omission is counted separately (non_assistant_reasoning). A resumed turn reads the " +
+				"trace it reads as history rather than replaying it",
+		},
+		{
+			Category:    "non_assistant_reasoning",
+			Disposition: DispositionOmitted,
+			Count:       c.lossNonAssistantReasoning,
+			Detail: "the harness writes a reasoning trace as a `reasoning` part of the assistant " +
+				"message that produced it and of no other role, so a trace recorded on a record whose " +
+				"role is not the assistant's -- a user prompt carrying one, or a record of a role " +
+				"this format has no message for -- has no shape here and is omitted. The record's " +
+				"own text is governed by its own category; this count names the trace alone",
 		},
 		{
 			Category:    "sidechain_messages",
