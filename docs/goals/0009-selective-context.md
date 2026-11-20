@@ -59,9 +59,16 @@ selection". The dispositions the seam carries are named in D6.
   carries, once, the dispositions a writer needs: (a) call↔result identity, including ID-less; (b) operation
   lifecycle finality — completed / failed / in-progress / interrupted; (c) omitted-by-selection vs
   absent-in-source; (d) the calls **and** results a compaction boundary accounts for; (e) retained-vs-already-
-  written ancestry. Two negative cases taken from the superseded PR must be **red without** the carried
-  disposition and **green with** it: an omitted progress event must not be published as a *completed*
-  outcome, and a call a compaction record replaced must not vanish uncounted.
+  written ancestry; (f) the record's own membership on the source's active line, answered before the cut — a
+  selection that removes the record the source's line ended at must not move the line. Negative cases from
+  the superseded PR must be **red without** the carried disposition and **green with** it, the selected
+  records held fixed: an omitted progress event must not be published as a *completed* outcome, a call a
+  compaction record replaced must not vanish uncounted, and a window ending on a record the source's line
+  left off must not activate it.
+- **D7 — The flag is a capability of one pair, and the others say so.** `--select` and `--strict-selection`
+  are accepted on the reference route alone; every other source/target pair is refused by name before the
+  source is opened and before anything is installed — never silently ignored (which would install history
+  the caller excluded) and never handed a stream a writer on that route would read without the seam.
 
 ## Acceptance surface
 

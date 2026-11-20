@@ -1,7 +1,7 @@
 # 0012 — Minimize unnecessary sensitive details in transferable context
 
 **Status:** Provisional — refine before activation.  
-**Prerequisite:** [0009 — Select which recorded context crosses a harness boundary](0009-selective-context.md). Independent of 0010 and 0011.
+**Prerequisite:** [0009 — Select which recorded context crosses a harness boundary](0009-selective-context.md), then the four follow-up route increments that carry 0009's selection seam to its other routes (the 2026-11-20 fork-A sequencing; see [the index](README.md)). Independent of 0010 and 0011.
 
 ## Intended advance
 
