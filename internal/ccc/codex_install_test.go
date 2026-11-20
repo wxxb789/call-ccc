@@ -97,6 +97,14 @@ func TestCodexRoundTripReportNamesDifferencesWithoutTheirText(t *testing.T) {
 // reports the reassignment and names the invocation the output was written for -- without carrying the
 // evidence itself -- while a read-back that attaches each output to the occurrence it was written for
 // holds no difference at all: the comparison is about the attachment, not about the id.
+//
+// The occurrence is not the call's fields (the thirteenth round's finding): an id two occurrences share
+// can hold two invocations whose id, tool and *arguments* are equal, and then only the occurrence says
+// which of them an output answers. The same shape with both invocations' arguments equal is compared
+// below: keyed by the call's fields alone, moving an output from one occurrence to the other leaves every
+// result key unchanged and the comparison silent, so the owner key carries the invocation's occurrence
+// beside its fields and the reassignment is reported -- while the attached read-back, each output on the
+// occurrence it was written for, still holds no difference.
 func TestCodexRoundTripAssertsTheOwningCallOfEachResult(t *testing.T) {
 	const (
 		reusedID    = "toolu_reused"
@@ -108,28 +116,72 @@ func TestCodexRoundTripAssertsTheOwningCallOfEachResult(t *testing.T) {
 	// The call items stand at indexes 1 and 3 of the list, so each result item's stated owner is the
 	// occurrence the writer wrote it for: the recorded output for B, the inferred one for A.
 	callA, callB := 1, 3
-	rollout := CodexRollout{Items: []TargetItem{
-		{Kind: ItemAssistant, Text: "the two calls"},
-		{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: firstInput},
-		{Kind: ItemAssistant, Text: "the calls' outcomes"},
-		{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: secondInput},
-		{Kind: ItemToolResult, CallID: reusedID, Text: earlyOutput, OwnerCall: &callB},
-		{Kind: ItemToolResult, CallID: reusedID, Text: lateOutput, OwnerCall: &callA},
-	}}
-	folded := Conversation{Messages: []Message{
-		{Role: string(parser.RoleAssistant), Content: "the two calls"},
-		{Role: string(parser.RoleAssistant),
-			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: firstInput}}},
-		{Role: string(parser.RoleAssistant), Content: "the calls' outcomes"},
-		{Role: string(parser.RoleAssistant),
-			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: secondInput}},
-			ToolResults: []ToolResult{
-				{ToolUseID: reusedID, ContentRaw: earlyOutput, ContentDecoded: true},
-				{ToolUseID: reusedID, ContentRaw: lateOutput, ContentDecoded: true},
-			}},
-	}}
+	// shape builds the document and the two read-backs the arms below share: the document as the writer
+	// states it (the two repetitions of one id with the given arguments), the folded read-back where the
+	// Codex sink attaches both outputs to the last call registered for the id, and the attached read-back
+	// where each output stands on the occurrence it was written for.
+	shape := func(first, second string) (CodexRollout, Conversation, Conversation) {
+		rollout := CodexRollout{Items: []TargetItem{
+			{Kind: ItemAssistant, Text: "the two calls"},
+			{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: first},
+			{Kind: ItemAssistant, Text: "the calls' outcomes"},
+			{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: second},
+			{Kind: ItemToolResult, CallID: reusedID, Text: earlyOutput, OwnerCall: &callB},
+			{Kind: ItemToolResult, CallID: reusedID, Text: lateOutput, OwnerCall: &callA},
+		}}
+		folded := Conversation{Messages: []Message{
+			{Role: string(parser.RoleAssistant), Content: "the two calls"},
+			{Role: string(parser.RoleAssistant),
+				ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: first}}},
+			{Role: string(parser.RoleAssistant), Content: "the calls' outcomes"},
+			{Role: string(parser.RoleAssistant),
+				ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: second}},
+				ToolResults: []ToolResult{
+					{ToolUseID: reusedID, ContentRaw: earlyOutput, ContentDecoded: true},
+					{ToolUseID: reusedID, ContentRaw: lateOutput, ContentDecoded: true},
+				}},
+		}}
+		attached := Conversation{Messages: []Message{
+			{Role: string(parser.RoleAssistant), Content: "the two calls"},
+			{Role: string(parser.RoleAssistant),
+				ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: first}},
+				ToolResults: []ToolResult{
+					{ToolUseID: reusedID, ContentRaw: lateOutput, ContentDecoded: true},
+				}},
+			{Role: string(parser.RoleAssistant), Content: "the calls' outcomes"},
+			{Role: string(parser.RoleAssistant),
+				ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: second}},
+				ToolResults: []ToolResult{
+					{ToolUseID: reusedID, ContentRaw: earlyOutput, ContentDecoded: true},
+				}},
+		}}
+		return rollout, folded, attached
+	}
+	noCallOrResultDifference := func(t *testing.T, arm string, differences []string) {
+		t.Helper()
+		for _, difference := range differences {
+			if strings.Contains(difference, categoryToolResult) || strings.Contains(difference, categoryToolCall) {
+				t.Errorf("%s: difference = %q, want none about the calls or their results: each output "+
+					"is read back on the occurrence it was written for", arm, difference)
+			}
+		}
+	}
+	// The hand-built read-backs carry no installed file bytes, and the dialogue walk resolves a written
+	// message against the file's own records (with none, every written message is reported there). The
+	// arms are about the result evidence, so their difference counts name the calls and results alone.
+	callOrResultDifferences := func(differences []string) int {
+		count := 0
+		for _, difference := range differences {
+			if strings.Contains(difference, categoryToolCall) || strings.Contains(difference, categoryToolResult) {
+				count++
+			}
+		}
+		return count
+	}
+
+	rollout, folded, attached := shape(firstInput, secondInput)
 	roundTrip := compareCodexRoundTrip(rollout, folded, nil)
-	if len(roundTrip.differences) == 0 {
+	if callOrResultDifferences(roundTrip.differences) == 0 {
 		t.Fatal("the comparison accepted a result the read-back attached to the other occurrence of the " +
 			"shared id")
 	}
@@ -142,32 +194,33 @@ func TestCodexRoundTripAssertsTheOwningCallOfEachResult(t *testing.T) {
 			t.Errorf("the difference carries the evidence it could not match: %q", report)
 		}
 	}
-
 	// The control: a read-back whose order attaches each output to the occurrence it was written for
-	// holds no *tool-result* difference at all. The arm is about the result evidence: this hand-built
-	// read-back carries no installed file bytes, and the dialogue walk resolves a written message
-	// against the file's own records, so its differences are filtered rather than required absent.
-	attached := Conversation{Messages: []Message{
-		{Role: string(parser.RoleAssistant), Content: "the two calls"},
-		{Role: string(parser.RoleAssistant),
-			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: firstInput}},
-			ToolResults: []ToolResult{
-				{ToolUseID: reusedID, ContentRaw: lateOutput, ContentDecoded: true},
-			}},
-		{Role: string(parser.RoleAssistant), Content: "the calls' outcomes"},
-		{Role: string(parser.RoleAssistant),
-			ToolCalls: []ToolCall{{ToolUseID: reusedID, Name: "Bash", InputJSON: secondInput}},
-			ToolResults: []ToolResult{
-				{ToolUseID: reusedID, ContentRaw: earlyOutput, ContentDecoded: true},
-			}},
-	}}
-	for _, difference := range compareCodexRoundTrip(rollout, attached, nil).differences {
-		if strings.Contains(difference, categoryToolResult) ||
-			strings.Contains(difference, categoryToolCall) {
-			t.Errorf("difference = %q, want none about the calls or their results: each output is read "+
-				"back on the occurrence it was written for", difference)
+	// holds no *tool-result* difference at all.
+	noCallOrResultDifference(t, "distinct arguments, attached", compareCodexRoundTrip(rollout, attached, nil).differences)
+
+	// The equal-fields shape: the two invocations share their id, tool and arguments, so the occurrence
+	// of the invocation is the only evidence that says which of them an output answers.
+	sameRollout, sameFolded, sameAttached := shape(firstInput, firstInput)
+	sameRoundTrip := compareCodexRoundTrip(sameRollout, sameFolded, nil)
+	if callOrResultDifferences(sameRoundTrip.differences) == 0 {
+		t.Fatal("the comparison accepted a result the read-back attached to the other occurrence of an id " +
+			"whose invocations have identical fields: only the occurrence distinguishes them")
+	}
+	sameReport := strings.Join(sameRoundTrip.differences, "; ")
+	if !strings.Contains(sameReport, "written for the invocation of call "+reusedID+" to Bash") {
+		t.Errorf("the difference does not name the invocation the result was written for: %q", sameReport)
+	}
+	if !strings.Contains(sameReport, "(occurrence 2)") {
+		t.Errorf("the difference does not name the occurrence the read-back attached the output to: %q",
+			sameReport)
+	}
+	for _, content := range []string{lateOutput, earlyOutput, firstInput} {
+		if strings.Contains(sameReport, content) {
+			t.Errorf("the difference carries the evidence it could not match: %q", sameReport)
 		}
 	}
+	noCallOrResultDifference(t, "equal arguments, attached",
+		compareCodexRoundTrip(sameRollout, sameAttached, nil).differences)
 }
 
 // TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute pins the tenth round's fourth finding: the

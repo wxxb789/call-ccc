@@ -638,6 +638,57 @@ class CitationsCase(CitationsTree):
         )
         self.assertEqual(commands, [], text)
 
+    def test_a_manifest_a_goal_names_is_required_beside_the_others(self) -> None:
+        """A goal's acceptance surface is required: losing it fails although other manifests remain.
+
+        Discovery finds what the glob sees, so a tree that lost one manifest while others stayed behind
+        validated every remaining row and passed — the step was required, the *file* was not. The goal
+        file's own naming is the requirement (an increment's goals state their acceptance surface), so
+        the case writes a named and an unnamed manifest, deletes the named one, and expects a FAIL
+        naming the file and the goal that states it, before any tool runs.
+        """
+        self.declare("TestAlpha", "TestBeta")
+        self.manifest([self.row("A1", "TestAlpha")], name="0009-citations.tsv")
+        self.manifest([self.row("B1", "TestBeta")], name="0002-citations.tsv")
+        self.write(
+            "docs/goals/0009-selective-context.md",
+            "# 0009 — the goal\n\n`docs/evidence/0009-citations.tsv` — one row per clause.\n",
+        )
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(self.status_of(text), "PASS", text)
+        self.assertEqual(len(commands), 1, text)
+
+        (self.root / "docs" / "evidence" / "0009-citations.tsv").unlink()
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertIn(
+            "docs/evidence/0009-citations.tsv is named by docs/goals/0009-selective-context.md but this "
+            "tree does not hold it",
+            text,
+        )
+        self.assertEqual(commands, [], "the missing acceptance surface is static: no tool runs")
+        self.assertEqual(self.verdict(text), "citations: FAIL — 1 violation(s)", text)
+
+    def test_a_goal_named_manifest_that_is_absent_everywhere_fails_rather_than_skipping(self) -> None:
+        """With no manifest anywhere, a goal that names one turns the skip arm into a named FAIL.
+
+        A tree that never wrote the acceptance surface its goal states is the other half of the same
+        rule: the skip is only for a tree whose goals name nothing, so a lost file cannot read as a
+        disclosed partial run.
+        """
+        self.write("docs/goals/0009-selective-context.md", "# goal\n\n`docs/evidence/0009-citations.tsv`\n")
+        rc, text, commands = self.drive()
+        self.assertEqual(rc, 1, text)
+        self.assertEqual(self.status_of(text), "FAIL", text)
+        self.assertIn(
+            "docs/evidence/0009-citations.tsv is named by docs/goals/0009-selective-context.md but this "
+            "tree does not hold it",
+            text,
+        )
+        self.assertEqual(commands, [], text)
+
     def test_the_manifests_are_discovered_and_printed_in_sorted_order(self) -> None:
         """The pinned order is the file-name order, and only ``*-citations.tsv`` is discovered."""
         self.declare("TestAlpha", "TestBeta")

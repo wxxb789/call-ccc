@@ -13,9 +13,11 @@ package ccc
 // It walks every committed fixture document (the file-backed providers' sessions, plus the OpenCode
 // document materialized as a store), converts each through every route's writer with fixed options, and
 // runs the whole pipeline (Continue, an *installing* run into a scratch home at --verify none, under a
-// target binary no host has) per route x document. Nothing it does carries a selection flag: the probe
-// measures the *default* path, and the pipeline arm measures the conversion rather than this host's
-// installed harnesses (d4ProbeMissingBinary says why).
+// target binary no host has) per route x document, and -- because a caller's answer is the process's,
+// not the core's -- builds this tree's own command line and runs the two Codex rollouts through it, the
+// selection flag absent, recording the exit status and the folded output beside the core's report.
+// Nothing it does carries a selection flag: the probe measures the *default* path, and the pipeline arm
+// measures the conversion rather than this host's installed harnesses (d4ProbeMissingBinary says why).
 //
 // Every printed line is normalized so two runs of one tree are byte-identical and the two trees' outputs
 // are comparable. The generated identities are *canonicalized* rather than replaced by a class
@@ -589,6 +591,73 @@ func d4ProbePipeline(
 	return lines
 }
 
+// d4ProbeCLIDocuments answers the documents the CLI arm walks: the two committed Codex rollouts, whose
+// conversions to the Codex target are the route the exit-status claim belongs to -- one conversion's
+// structural check verifies, and the two-file `apply_patch` conversion's keeps the rows-against-items
+// verdict the fold is scoped away from, so the arm measures both mappings of the report to a process
+// status.
+func d4ProbeCLIDocuments(t *testing.T) []d4ProbeDocument {
+	t.Helper()
+	var docs []d4ProbeDocument
+	for _, doc := range d4ProbeDocuments(t) {
+		if doc.ref.Provider == "codex" && !doc.openCode && !doc.offPath && !doc.collision {
+			docs = append(docs, doc)
+		}
+	}
+	return docs
+}
+
+// d4ProbeCLIBinary builds this tree's own command line into a scratch directory, so the arm below
+// invokes the real program a caller invokes rather than the core: the exit status is the CLI's answer
+// about the report (continuationExit maps the conversion, the installation and the verification states
+// to it), and only an invoked process shows it. The build runs in the tree under test with the same tag
+// the probe's own run command names, so both trees build their CLI the way their tests do.
+func d4ProbeCLIBinary(t *testing.T) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "ccc")
+	build := exec.Command("go", "build", "-tags", "fts5", "-o", binary, "./cmd/ccc")
+	build.Dir = d4ProbeRepoRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building this tree's CLI: %v\n%s", err, out)
+	}
+	return binary
+}
+
+// d4ProbeCLI runs one Codex document through the tree's own command line with the selection flag absent,
+// the way a caller runs it, and answers its lines: the process's exit status, and the digest of the
+// program's whole output folded by the same normalizer (so the printed report, its warnings and the
+// resume block are compared as the CLI spells them). The source is named by its provider and session id
+// with the fixture root installed as that provider's own root in the child's environment (a caller's own
+// spelling of a provider root), the target home is a scratch directory and the target binary is a name
+// no host has, exactly as the pipeline arm arranges; the data directory is a scratch one too, so no host
+// archive answers anything.
+func d4ProbeCLI(
+	t *testing.T, binary string, doc d4ProbeDocument, routeName string, normalizer *d4ProbeNormalizer,
+) []string {
+	t.Helper()
+	command := exec.Command(binary, "continue", doc.ref.Provider+":"+doc.ref.ID,
+		"--to", routeName,
+		"--target-home", filepath.Join(t.TempDir(), "d4-probe-cli-home"),
+		"--target-binary", d4ProbeMissingBinary,
+		"--data-dir", filepath.Join(t.TempDir(), "d4-probe-cli-data"),
+		"--verify", "none")
+	command.Env = append(os.Environ(), "CODEX_SESSIONS_DIR="+filepath.Join(fixtureRoot(t), "codex"))
+	output, runErr := command.CombinedOutput()
+	exit := 0
+	if runErr != nil {
+		exitErr, ok := runErr.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("running %s over %s: %v\n%s", binary, doc.name, runErr, output)
+		}
+		exit = exitErr.ExitCode()
+	}
+	return []string{
+		d4ProbeLine(normalizer, "PROBE-CLI", doc.name, routeName, fmt.Sprintf("exit=%d", exit)),
+		d4ProbeLine(normalizer, "PROBE-CLI", doc.name, routeName,
+			"output "+d4ProbeFoldedFingerprint(normalizer, output)),
+	}
+}
+
 // TestZZD4Probe writes the probe's own lines to CCC_D4_PROBE_OUT; without the variable it skips.
 func TestZZD4Probe(t *testing.T) {
 	out := os.Getenv("CCC_D4_PROBE_OUT")
@@ -615,6 +684,16 @@ func TestZZD4Probe(t *testing.T) {
 			lines = append(lines, writerLines...)
 			lines = append(lines, runLines...)
 		}
+	}
+	// The caller's own surface, beside the core's: build this tree's CLI once and run every document the
+	// arm names through it with the selection flag absent, so the process exit status -- and the whole
+	// printed output -- are measured by the program a shell actually invokes (the pipeline arm above
+	// serializes the report in-process and never sees a status).
+	cliBinary := d4ProbeCLIBinary(t)
+	for _, doc := range d4ProbeCLIDocuments(t) {
+		conversation, _, _ := d4ProbeRead(t, doc)
+		normalizer.recorded = d4ProbeRecordedIDs(conversation)
+		lines = append(lines, d4ProbeCLI(t, cliBinary, doc, TargetCodex, normalizer)...)
 	}
 	normalizer.recorded = map[string]bool{}
 	if err := os.WriteFile(out, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {

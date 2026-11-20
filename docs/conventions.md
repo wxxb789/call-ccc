@@ -81,7 +81,10 @@ A goal's acceptance surface is a **machine-checked manifest** beside its prose r
 `docs/evidence/<goal>-citations.tsv`, one row per obligation that a gate-runnable Go test discharges. The
 gate's required `citations` step (`docs/harness.md`) parses every `docs/evidence/*-citations.tsv` and
 runs each row's test, so "this obligation is covered" is re-derived by a command instead of re-read by a
-reader.
+reader. Every manifest a goal file names — the acceptance surface a goal states, in `docs/goals/` or
+its archive — is **required to be present**: the checker refuses a named manifest the tree does not
+hold, so a tree that lost one while other manifests remained cannot pass with that goal's rows
+unchecked.
 
 Tab-separated, a header line naming these four columns in this order, `#` comment lines and blank lines
 ignored, one row per rule id:

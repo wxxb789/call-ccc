@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -268,13 +269,20 @@ type roundTripEvidence struct {
 func intendedRoundTripEvidence(items []TargetItem) roundTripEvidence {
 	var evidence roundTripEvidence
 	callKeys := map[int]string{}
+	// The occurrence count is per call id, in the document's own order: an id two written call items
+	// share cannot distinguish two invocations whose id, tool and arguments are identical, so the
+	// occurrence of the invocation is the only evidence left that says which of them a result was
+	// written for, and a comparison keyed by the call's fields alone would accept a result moved from
+	// one occurrence to the other.
+	occurrences := map[string]int{}
 	for itemIndex, item := range items {
 		switch item.Kind {
 		case ItemUser, ItemAssistant:
 			evidence.dialogue = append(evidence.dialogue, dialogueKey(string(item.Kind), item.Text))
 		case ItemToolCall:
 			key := roundTripCallKey(item.CallID, item.ToolName, item.InputJSON)
-			callKeys[itemIndex] = key
+			occurrences[item.CallID]++
+			callKeys[itemIndex] = roundTripOwnerCallKey(key, occurrences[item.CallID])
 			evidence.calls = append(evidence.calls, key)
 		case ItemToolResult:
 			ownerKey, known := "", false
@@ -306,15 +314,27 @@ func roundTripResultOwnersStated(items []TargetItem) bool {
 }
 
 // roundTripOwnerResultKey identifies one written result by the invocation it was written for and by the
-// result's own key: the owning call's evidence key (its id, tool and arguments, so an occurrence sharing
-// an id with another is still told apart) where the document states one, and the plain result key where
-// it does not. The read side answers with the same shape, read under the same gate.
+// result's own key: the owning call's evidence key (its id, tool, arguments and occurrence, so an
+// occurrence sharing an id with another is still told apart) where the document states one, and the plain
+// result key where it does not. The read side answers with the same shape, read under the same gate.
 func roundTripOwnerResultKey(ownerKey string, known bool, callID, text string) string {
 	result := roundTripResultKey(callID, text)
 	if !known || ownerKey == "" {
 		return result
 	}
 	return "paired\x00" + ownerKey + "\x00" + result
+}
+
+// roundTripOwnerCallKey identifies one invocation an output may have been written for: the call's own
+// evidence key (id, tool, arguments) beside the occurrence of the invocation among the calls the same id
+// records, in the order the side holds them, 1-based. An id two call occurrences share cannot tell two
+// invocations apart when their id, tool and arguments are equal -- so those three fields alone would
+// accept a result moved from one occurrence to the other, and the occurrence is the only evidence the
+// comparison has left. Both sides count the occurrence the same way: the document counts its call items
+// under the id in item order, and the read-back counts the invocations its rows stand for -- the file's
+// own invocation units where the fold applies (callOccurrenceOrdinals), the rows themselves otherwise.
+func roundTripOwnerCallKey(callKey string, occurrence int) string {
+	return callKey + "\x00#" + strconv.Itoa(occurrence)
 }
 
 // readResultOwnerKeys answers, per result occurrence of a read-back, the call occurrence the target's own
@@ -329,16 +349,21 @@ func roundTripOwnerResultKey(ownerKey string, known bool, callID, text string) s
 // id, and a call stated later under the same id is what such a reader resolves it to (the inherited
 // Codex reader keeps the last call registered for an id) -- so a result a conversion wrote under an id
 // two occurrences share answers a different invocation than the writer intended, and comparing the owner
-// is what shows it.
+// is what shows it. An occurrence the reader's rows only stand for (the fold: one written record the
+// reader projects into several rows) answers with the occurrence of the invocation the row stands for,
+// which is the occurrence the document states for the record it wrote.
 func readResultOwnerKeys(readBack Conversation, reader roundTripReader, installed []byte) map[resultOccurrence]string {
 	if reader.ownersByAncestry {
 		return readResultOwnerKeysByAncestry(readBack, reader, installed)
 	}
+	ordinals := callOccurrenceOrdinals(readBack, reader, installed)
 	owners := map[resultOccurrence]string{}
 	lastUnderID := map[string]string{}
 	for index, message := range readBack.Messages {
-		for _, call := range message.ToolCalls {
-			lastUnderID[call.ToolUseID] = roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON)
+		for callIndex, call := range message.ToolCalls {
+			lastUnderID[call.ToolUseID] = roundTripOwnerCallKey(
+				roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON),
+				ordinals[callOccurrence{message: index, call: callIndex}])
 		}
 		for resultIndex, result := range message.ToolResults {
 			key, ok := lastUnderID[result.ToolUseID]
@@ -349,6 +374,67 @@ func readResultOwnerKeys(readBack Conversation, reader roundTripReader, installe
 		}
 	}
 	return owners
+}
+
+// callOccurrenceOrdinals answers, per call row of a read-back, the occurrence of the invocation that row
+// stands for among the same id's invocations, 1-based, in the read-back's own order. Where a fold stands
+// between the installed file's call records and the reader's rows (roundTripReader.callEvidence), the
+// count is over the *invocation units* the file's own records state: the reader's per-file rows are the
+// projection of one written record, so they all stand at that record's own occurrence -- which is the
+// occurrence the document states for the invocation it wrote -- and a row the file's records do not
+// account for (an id whose rows are not foldable, codexFoldableRows) is an occurrence of its own, exactly
+// as the calls comparison reads it. Without a fold every row is an occurrence of its own, in the
+// read-back's own order.
+func callOccurrenceOrdinals(readBack Conversation, reader roundTripReader, installed []byte) map[callOccurrence]int {
+	type callRow struct {
+		place callOccurrence
+		key   string
+	}
+	rowsByID := map[string][]callRow{}
+	for index, message := range readBack.Messages {
+		for callIndex, call := range message.ToolCalls {
+			rowsByID[call.ToolUseID] = append(rowsByID[call.ToolUseID], callRow{
+				place: callOccurrence{message: index, call: callIndex},
+				key:   roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON),
+			})
+		}
+	}
+	unitsByID := map[string][]codexInstalledCallUnit{}
+	if reader.callEvidence != nil && installed != nil {
+		for _, unit := range codexInstalledCallUnits(installed) {
+			unitsByID[unit.id] = append(unitsByID[unit.id], unit)
+		}
+	}
+	ordinals := make(map[callOccurrence]int)
+	for id, rows := range rowsByID {
+		units := unitsByID[id]
+		foldable := false
+		if len(units) > 0 {
+			keys := make([]readBackCall, 0, len(rows))
+			for _, row := range rows {
+				keys = append(keys, readBackCall{key: row.key})
+			}
+			foldable = codexFoldableRows(units, keys)
+		}
+		if foldable {
+			// The rows are the units' projection in the same order, so a row belongs to the unit
+			// whose key it states: the cursor advances only when the row no longer states the current
+			// unit's key but does state the next unit's, which is what one written record's rows (all
+			// stating that record's key) followed by the next record's produce.
+			unit := 0
+			for _, row := range rows {
+				if unit+1 < len(units) && row.key != units[unit].key && row.key == units[unit+1].key {
+					unit++
+				}
+				ordinals[row.place] = unit + 1
+			}
+			continue
+		}
+		for index, row := range rows {
+			ordinals[row.place] = index + 1
+		}
+	}
+	return ordinals
 }
 
 // readResultOwnerKeysByAncestry answers the same question through the read-back's own recorded relations,
@@ -385,14 +471,17 @@ func readResultOwnerKeysByAncestry(
 	if reader.entryParents != nil {
 		fileParents = reader.entryParents(installed)
 	}
-	lastUnderID := func(message Message, callID string) (string, bool) {
+	ordinals := callOccurrenceOrdinals(readBack, reader, installed)
+	lastUnderID := func(messageIndex int, message Message, callID string) (string, bool) {
 		owner := ""
 		found := false
-		for _, call := range message.ToolCalls {
+		for callIndex, call := range message.ToolCalls {
 			if call.ToolUseID != callID {
 				continue
 			}
-			owner = roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON)
+			owner = roundTripOwnerCallKey(
+				roundTripCallKey(call.ToolUseID, call.Name, call.InputJSON),
+				ordinals[callOccurrence{message: messageIndex, call: callIndex}])
 			found = true
 		}
 		return owner, found
@@ -409,7 +498,7 @@ func readResultOwnerKeysByAncestry(
 					parent = strings.TrimSpace(fileParents[parent])
 					continue
 				}
-				if owner, ok := lastUnderID(readBack.Messages[next], result.ToolUseID); ok {
+				if owner, ok := lastUnderID(next, readBack.Messages[next], result.ToolUseID); ok {
 					owners[resultOccurrence{message: index, result: resultIndex}] = owner
 					break
 				}
@@ -1201,13 +1290,21 @@ func describeItem(category, item string) string {
 		tool, arguments, _ := strings.Cut(rest, "\x00")
 		return fmt.Sprintf("call %s to %s (%s)", identity, tool, describeText(arguments))
 	case categoryToolResult:
-		if parts := strings.SplitN(item, "\x00", 6); len(parts) == 6 && parts[0] == "paired" {
+		if parts := strings.SplitN(item, "\x00", 7); len(parts) == 7 && parts[0] == "paired" {
 			// An owner-annotated result: "paired", the owning call's id, tool and arguments, the
-			// result's own call id and its text. A tool name, argument object or output containing a NUL
-			// byte can shift the fields, exactly as it can in the call key above; nothing here ever
-			// carries the text, which is reported by size and digest only.
-			return fmt.Sprintf("call %s's result (%s) written for the invocation of call %s to %s",
-				parts[4], describeText(parts[5]), parts[1], parts[2])
+			// occurrence of that invocation under the call's id, the result's own call id and its text.
+			// A tool name, argument object or output containing a NUL byte can shift the fields, exactly
+			// as it can in the call key above; the occurrence is named only when the field really is one
+			// (a `#<number>`), and nothing here ever carries the text, which is reported by size and
+			// digest only. The occurrence itself is spelled only when it is not the id's first: an
+			// invocation the id records once has nothing to disambiguate, and every such report keeps
+			// the text it has always had.
+			described := fmt.Sprintf("call %s's result (%s) written for the invocation of call %s to %s",
+				parts[5], describeText(parts[6]), parts[1], parts[2])
+			if occurrence, err := strconv.Atoi(strings.TrimPrefix(parts[4], "#")); err == nil && occurrence > 1 {
+				described += fmt.Sprintf(" (occurrence %d)", occurrence)
+			}
+			return described
 		}
 		return fmt.Sprintf("call %s's result (%s)", identity, describeText(rest))
 	default:

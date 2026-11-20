@@ -698,25 +698,30 @@ func pairedCallOccurrences(conversation Conversation) map[resultOccurrence]callO
 
 // selectionKeptAncestors answers, for every record of the read, the nearest ancestor the read holds that
 // the selection carries, or -1 where there is none: the walk starts at the record's own recorded parent
-// and steps through the read's own relations (SourceUUID -> SourceParentUUID) until it reaches a carried
-// record, the read runs out of relation, or the step budget the document's own size sets ends a cycle the
-// source recorded. It is the walk the writer takes over the *full* read, so the step through a tool
-// result the read may project is taken -- a record the reader answers as hanging off the message that
-// made a call is chained through the result standing between them in the source's file
-// (sourceToolResultBefore, the writers' own rule) -- because that result may be exactly the carried
-// record the reduced document has to chain the record through, and resolving the raw relation alone
-// would leave it in the file and off the walk a resumed session makes. The previous-record fallback the
-// readers' own line walk takes where the read answered no relation is *not* taken here: a record whose
-// relation cannot be walked is answered no ancestor, and the writer's own fallback decides its place --
-// refusing the conversion where that place would put an off-line record on the walk.
+// and steps until it reaches a carried record, the read runs out of relation, or the step budget the
+// document's own size sets ends a cycle the source recorded. Each step takes the source file's own
+// relation where a file stands behind the read and answered for the record the walk is at
+// (sourceFileLine's parent, the file's `parentId`), and the read's own answers below for every other
+// record. Taking the file's relation is what keeps a reduced tree the file's own tree: the read answers a
+// record the file placed under a tool result as hanging off the message that made the call (a projection
+// the writers' own step resolves, sourceToolResultBefore), so a walk that used the read's answer for an
+// *excluded* record could step through the projection to a result the file ran beside the line and leave
+// the window hanging off an off-line entry -- while the file's own chain runs through the result the
+// window carries, and the writers' guard refuses a window the file's own chain represents. The
+// previous-record fallback the readers' own line walk takes where the read answered no relation is *not*
+// taken here: a record whose relation cannot be walked is answered no ancestor, and the writer's own
+// fallback decides its place -- refusing the conversion where that place would put an off-line record on
+// the walk.
 //
 // Each answer carries whether resolving it took the projected step: the read answers a record under a
 // call and one under that call's result the same way, so an answer that crossed the step is a relation
 // this conversion resolved rather than one the read named, and the writer counts it
-// (unresolved_source_parents) exactly where it counts the projection it resolves itself.
+// (unresolved_source_parents) exactly where it counts the projection it resolves itself. An answer that
+// followed the file's own parent is the source's relation and is not counted.
 //
 // It is a pure function of the recorded document, like the selection itself: the relations are the
-// read's own answers, and the map is keyed by the identities the read supplied.
+// read's own answers and the file's own answer where it stands behind the read, and the map is keyed by
+// the identities the read supplied.
 func selectionKeptAncestors(conversation Conversation, carried []bool) []keptAncestorAnswer {
 	byIdentity := make(map[string]int, len(conversation.Messages))
 	for index, message := range conversation.Messages {
@@ -738,24 +743,48 @@ func selectionKeptAncestors(conversation Conversation, carried []bool) []keptAnc
 		answer := keptAncestorAnswer{index: -1}
 		at := index
 		for steps := 0; steps <= len(conversation.Messages); steps++ {
-			parent := strings.TrimSpace(conversation.Messages[at].SourceParentUUID)
-			if parent == "" {
-				break
-			}
 			next := -1
 			projected := false
-			if parentAnswersProject {
-				if resultAt, ok := sourceToolResultBefore(conversation.Messages, at, parent); ok {
-					next = resultAt
-					projected = true
+			// The source file's own relation first, where one stands behind the read and answered for
+			// the record the walk is at: the file's bytes name the record's parent themselves, and the
+			// read's own answer for the record may be the projection a file-backed Pi-family read makes
+			// (a record the file placed under a tool result reads as hanging off the message that made
+			// the call). The step through an *excluded* record is where the raw relation alone gets it
+			// wrong: the excluded record's read parent may be the projected message while the file's
+			// own chain runs through the result the window carries, and following the projection would
+			// step past that result to a sibling the file's own line leaves off -- the window then
+			// chains the record to an off-line entry, and the writers' guard refuses a window the
+			// file's own chain represents. A file parent that does not resolve (an entry the read does
+			// not hold, a record outside the read) leaves the read's own relation below to decide,
+			// exactly as it did before the file answered anything.
+			if at < len(conversation.sourceFileLine) {
+				fileAnswer := conversation.sourceFileLine[at]
+				if fileAnswer.answered {
+					if fileParent := strings.TrimSpace(fileAnswer.parent); fileParent != "" {
+						if held, ok := byIdentity[fileParent]; ok && held != index {
+							next = held
+						}
+					}
 				}
 			}
 			if next < 0 {
-				held, ok := byIdentity[parent]
-				if !ok || held == index {
+				parent := strings.TrimSpace(conversation.Messages[at].SourceParentUUID)
+				if parent == "" {
 					break
 				}
-				next = held
+				if parentAnswersProject {
+					if resultAt, ok := sourceToolResultBefore(conversation.Messages, at, parent); ok {
+						next = resultAt
+						projected = true
+					}
+				}
+				if next < 0 {
+					held, ok := byIdentity[parent]
+					if !ok || held == index {
+						break
+					}
+					next = held
+				}
 			}
 			if projected {
 				answer.projected = true

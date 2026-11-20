@@ -2444,6 +2444,135 @@ func TestContinueKeepsTheFilesOwnResultOnASelectedWalk(t *testing.T) {
 	}
 }
 
+// TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply pins the thirteenth round's first
+// finding. The round-12 case selects the whole read (0-), so every record the file names is carried and
+// the ancestry walk never steps through an excluded record. This case narrows the window to 0,1,5: the
+// call at 1 pulls both of its results in as necessities, the intermediate reply (ordinal 4) is excluded,
+// and the final reply (ordinal 5) names that excluded reply as its parent in the source file. The
+// excluded record's *read* parent is the projection (the message that made the call), so a retained-
+// ancestor walk that used the read's answers alone steps from the projection to the later sibling result
+// the file ran beside its line -- index 3 in this copy -- and the writers' guard refuses a window the
+// file's own chain represents. The file's own parent answers every record whose walk passes through it,
+// so the walk follows the file: the final reply hangs off the first result's entry, the second result
+// stands beside the walk as recorded history, and no place is counted as a relation this conversion
+// resolved. A line target writes the same conversation: the off-line sibling is omitted and counted, and
+// the records the file's own walk holds are written in its order.
+func TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply(t *testing.T) {
+	const (
+		secondResultText = "the second result for the same call"
+		firstResultText  = "internal/retry/config.go:41: maxBackoffSeconds = 30"
+		replyText        = "It is set in internal/retry/config.go."
+		finalReplyText   = "The cap is 30 seconds of backoff between attempts."
+		firstResultEntry = "c7d8e9fa"
+	)
+	// The second result: an ordinary toolResult record for the call the fixture's assistant message makes,
+	// inserted between the first result and the reply so it stands beside the file's own leaf path.
+	const secondResult = `{"id":"f00dbeef","message":{"content":[{"text":"the second result for the same call","type":"text"}],"isError":false,"role":"toolResult","timestamp":1794938106500,"toolCallId":"call_01Example000000000000000000","toolName":"grep"},"parentId":"b3c4d5e6","timestamp":"2026-05-04T09:15:06.500Z","type":"message"}`
+	cfg, ref, sourcePath := piSourceCopyWithInsertion(t, piFixtureRef.ID, `"id":"`+firstResultEntry+`"`, secondResult)
+	sourceBytes, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading the source copy: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, sourceBytes)
+	if !slices.Contains(sourceWalk, replyText) || !slices.Contains(sourceWalk, firstResultText) ||
+		slices.Contains(sourceWalk, secondResultText) {
+		t.Fatalf("the source file's own walk = %q, want the reply and the first result in it and the "+
+			"second result beside it: the fixture copy does not hold the shape under test", sourceWalk)
+	}
+	// What the target's own loader must walk: the source's own walk, minus the one record the window
+	// excludes (the intermediate reply).
+	wantWalk := make([]string, 0, len(sourceWalk)-1)
+	for _, text := range sourceWalk {
+		if text != replyText {
+			wantWalk = append(wantWalk, text)
+		}
+	}
+	if !slices.Contains(wantWalk, finalReplyText) {
+		t.Fatalf("the source file's own walk = %q, want the final reply on it", sourceWalk)
+	}
+	selected, err := Continue(context.Background(), ContinueOptions{
+		Ref: ref, Target: TargetPi, Config: cfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+		Selection: "0,1,5", SelectionSupplied: true,
+	})
+	if err != nil {
+		t.Fatalf("pi: --select 0,1,5: %v", err)
+	}
+	installedBytes, err := os.ReadFile(selected.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	installedWalk := transcriptWalkTexts(t, installedBytes)
+	if !slices.Equal(installedWalk, wantWalk) {
+		t.Errorf("pi: the selected session's model-visible history = %q, want the source file's own "+
+			"walk without the excluded record %q: the window must keep the file's own ancestry, not the "+
+			"projection's", installedWalk, wantWalk)
+	}
+	// The relation itself, off the written entries: the final reply hangs off the first result's entry
+	// (the record the file named through the excluded reply), not off the call and not off the later
+	// sibling result.
+	lines := decodePiSession(t, installedBytes)
+	texts := piEntryTexts(t, lines)
+	entryOf := map[string]string{}
+	for _, line := range lines {
+		if text := texts[line.ID]; text != "" {
+			entryOf[text] = line.ID
+		}
+	}
+	finalParent := ""
+	for _, line := range lines {
+		if texts[line.ID] == finalReplyText && line.ParentID != nil {
+			finalParent = *line.ParentID
+		}
+	}
+	if want := entryOf[firstResultText]; finalParent != want {
+		t.Errorf("pi: the final reply's entry hangs off %q, want the first result's entry %q: the "+
+			"excluded reply's file parent is the record the walk through it must follow", finalParent, want)
+	}
+	if !strings.Contains(string(installedBytes), secondResultText) {
+		t.Error("pi: the installed session does not hold the second result's text: the file records it " +
+			"beside the walk, and a conversion writes that record as the history it is")
+	}
+	if slices.Contains(installedWalk, secondResultText) {
+		t.Error("pi: the second result stands on the resumed walk: the file's own leaf path leaves it " +
+			"off, and a written record on the walk would be an active turn the source never recorded")
+	}
+	if got := lossCount(t, selected.Conversion.Losses, "unresolved_source_parents").Count; got != 0 {
+		t.Errorf("pi: --select 0,1,5 unresolved_source_parents = %d, want none: the file's own bytes "+
+			"answer every record the walk steps through, the excluded reply's included", got)
+	}
+
+	// The line target's arm: the same window is one line of records, so the sibling the file's leaf
+	// path leaves off cannot travel there -- it is omitted and counted -- and the records the file's
+	// own walk holds are written in the file's own order.
+	flat, err := Continue(context.Background(), ContinueOptions{
+		Ref: ref, Target: TargetCodex, Config: cfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+		Selection: "0,1,5", SelectionSupplied: true,
+	})
+	if err != nil {
+		t.Fatalf("codex: --select 0,1,5: %v", err)
+	}
+	flatBytes, err := os.ReadFile(flat.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed rollout: %v", err)
+	}
+	if strings.Contains(string(flatBytes), secondResultText) {
+		t.Error("codex: the written rollout holds the sibling the file's leaf path leaves off: a line " +
+			"target must omit and count it rather than making it model-visible history")
+	}
+	if got := lossCount(t, flat.Conversion.Losses, "inactive_branch_records").Count; got != 1 {
+		t.Errorf("codex: inactive_branch_records = %d, want 1: the sibling is the one record the read's "+
+			"own line leaves off the window", got)
+	}
+	for _, text := range []string{firstResultText, finalReplyText} {
+		if !strings.Contains(string(flatBytes), text) {
+			t.Errorf("codex: the written rollout does not hold %q: the records the file's own walk holds "+
+				"travel", text)
+		}
+	}
+}
+
 // TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities pins the boundary of the source file's
 // own line answer: the membership is per *identity*, and a file that records none answers no tree at all
 // -- a Pi v1 session's own order is its conversation, and the read's order is that order -- so every

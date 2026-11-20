@@ -407,9 +407,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch (the guard
   answers by the record's own position through the entries actually written, so a record the read gave no
   identity for is refused like any other), a record whose
-  own parent the window left out is hung off its nearest retained ancestor (the read's own relation walked
-  through the excluded records, with the tool-result step the writers take where the read may project one
-  — and where the answer crossed that step the relation is counted (`unresolved_source_parents`), as the
+  own parent the window left out is hung off its nearest retained ancestor (the relation walked
+  through the excluded records — the source file's own relation where the file answered for the record the
+  walk is at, the read's own relation with the tool-result step the writers take where the read may
+  project one for every other record — and where the answer crossed that step the relation is counted
+  (`unresolved_source_parents`), as the
   writers count the projection they resolve themselves, and a reduced document's count is the read's own
   relation answers, so a parent the caller merely excluded is not one the read could not place — and the
   answer travels by the record's own
@@ -512,7 +514,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity`, `citations` and
   `selftest` as required steps (`citations` verifies every `docs/evidence/*-citations.tsv` row: the
-  cited Go test must exist in the package the row names and run and pass), and its Go steps are
+  cited Go test must exist in the package the row names and run and pass — and every manifest a goal
+  file names (`docs/goals/**/*.md`, archived goals included) must be present, because the manifest is
+  the goal's acceptance surface: a tree that lost one while others remained fails rather than passing
+  with that goal's rows unchecked), and its Go steps are
   narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured reasons in
   [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is
   a disclosure, not a shortcut; a run in which a step was skipped,

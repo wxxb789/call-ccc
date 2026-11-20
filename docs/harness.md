@@ -178,13 +178,18 @@ does not converge; beside it, every obligation a **gate-runnable Go test** disch
 `docs/evidence/<goal>-citations.tsv` (one row per rule id; columns `rule_id`, `test`, `package`,
 `artifact` — the schema and *which* obligations get a row are in `docs/conventions.md`), and this step
 runs the tests those rows cite. The step is **required** (`scripts/gate-required.txt`): the manifest is
-the acceptance surface, so a tree that lost it — or whose cited test stopped passing — fails the gate
-rather than passing partially.
+the acceptance surface, so a tree that lost it — or whose cited test stopped passing, or that lost a
+manifest a goal file names while other manifests remained — fails the gate rather than passing
+partially.
 
 What it does, in order:
 
-1. **discovery** — `docs/evidence/*-citations.tsv`, sorted by file name; the order is pinned and
-   printed;
+1. **discovery and requirement** — `docs/evidence/*-citations.tsv`, sorted by file name; the order is
+   pinned and printed. Every manifest a goal file names (`docs/goals/**/*.md`, archived goals included)
+   must be among them: the goal states its acceptance surface, so a named manifest the tree does not
+   hold is a violation naming the file and the goal, answered before any tool runs — a tree that lost
+   one manifest beside others that survived cannot pass with that goal's rows unchecked, and a
+   goal-named manifest that never existed fails rather than reading as the "no manifests" skip;
 2. **parse**, per file — the first non-comment line is the header and names exactly `rule_id`, `test`,
    `package`, `artifact` in that order; every data row holds exactly four non-empty cells; no `rule_id`
    repeats within a file; and a header followed by no data rows is a violation too — a goal with no
@@ -224,8 +229,10 @@ that line (exactly one verdict line is required) and cross-checks a `PASS` again
 code, so a run claiming a pass while exiting non-zero is a failure either way. Exit codes: `0` PASS,
 `1` FAIL, `2` SKIP, `3` BOUNDARY.
 
-Two answers are boundaries rather than failures, and neither is a pass: no `*-citations.tsv` anywhere is
-a `SKIP` naming that (required, so the gate rewrites it to a failure), and a host on which the Go steps
+Two answers are boundaries rather than failures, and neither is a pass: no `*-citations.tsv` anywhere
+*and no goal file naming one* is a `SKIP` naming that (required, so the gate rewrites it to a failure;
+a goal that names a manifest the tree does not hold is the checker's own `FAIL` instead, above), and a
+host on which the Go steps
 cannot run — the Windows-without-a-C-compiler boundary, read from `scripts/gate.py`'s own `go_env()`
 rather than restated here — is that same `BOUNDARY`, not a crash. A Go toolchain missing anywhere else
 is the failure the Go steps already report (`go not found on PATH`).

@@ -842,3 +842,44 @@ measurement that decided it, followed by the review round's own:
       `TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`'s timestamped arm pins the
       part's `created`/`completed` beside `result_completion_fallbacks` = 0; one executed mutation (the
       raise-only shape) fails it.
+20. **The fourteenth review round's seven findings.** The review of `9242e49..7097fcb` found seven items
+    (one P1, five P2, one P3), all fixed, and this round's own section of the evidence record carries the
+    mutations that pin them and every rule the finding named as mutation-unproved (`M1`–`M19`).
+    * **the ancestry walk takes the file's own relation at every step** (review 1/7, a P1): round 12
+      answered a *kept* record's place from the file (`fileParentPlace`), but `selectionKeptAncestors`
+      still walked every stepped-through record by the read's parent answer, which for a file-backed
+      Pi-family read is the projection — so a sparse window whose excluded record's read parent is the
+      call (while the file runs reply → its result → the call) stepped to the result the file ran
+      *beside* the line, and the writers' guard refused a window the file's own chain represents
+      (`--select 0,1,5` on the two-result fixture). The walk now takes the source file's own `parentId`
+      for the record it is at where the file answered, falling back to the read's relation (and its
+      tool-result step) only where no file answered or the file's parent does not resolve in the read.
+      `TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply` pins both targets and the 0
+      count; one executed mutation (the file-parent step disabled) fails it.
+    * **the round-trip owner carries the invocation's occurrence** (review 2/7, a P2): the owner key was
+      `(id, tool, arguments)`, so two written occurrences whose fields are equal collapsed and a result
+      moved from one to the other changed no result key. The owner key now carries the occurrence beside
+      the fields, counted over the invocation units where the reader's rows fold into the file's records
+      (so a per-file projection still stands at its written record's occurrence) and over the rows
+      otherwise; the difference description names the occurrence where it disambiguates.
+      `TestCodexRoundTripAssertsTheOwningCallOfEachResult` gains the equal-fields shape; one executed
+      mutation (the occurrence collapsed) fails it.
+    * **the round's mutations are recorded and the citation rows corrected** (reviews 3/7, 4/7): the
+      fifteen rules with positive evidence but no recorded mutant each get one executed mutation in the
+      evidence record's table; `D2`'s row is trimmed to what its case asserts and the nonzero arm becomes
+      its own row (`D2-nonzero`, the CLI case that also checks the OpenCode loss row); `S2`'s row states
+      the recorded-link seam its case pins (the id-less rule is `S2-idless`'s); `S7-writers` names the
+      four routes its unflagged arm covers.
+    * **the D4 probe measures the CLI's own exit status** (review 5/7, a P2): the retained probe gains a
+      CLI arm that builds this tree's command line, runs both Codex rollouts through it with the flag
+      absent, and records the process's exit status and folded output. The probe re-run on both trees is
+      silent over all 1187 shared lines (1187 / 1312 lines total), the four `PROBE-CLI` lines included;
+      one executed mutation (the exit mapping no longer failing a `not-verified` structure) moves exactly
+      those two lines.
+    * **the `citations` checker requires the manifests a goal names** (review 6/7, a P2): the checker
+      reads `docs/goals/**/*.md` for the acceptance surfaces they state and refuses a named manifest the
+      tree does not hold, before any tool runs, whether or not other manifests remain; two selftest cases
+      pin both arms of the finding's shape.
+    * **the record's two late gate excerpts are redacted** (review 7/7, a P3): the checkout and toolchain
+      paths in the twelfth and thirteenth rounds' gate blocks now carry the record's own placeholders;
+      the recorded verdicts are untouched.

@@ -11,6 +11,9 @@ discovered manifest and runs the tests the rows cite.
 Rules (``docs/conventions.md`` states the schema, ``docs/harness.md`` the gate step):
 
 - discovery: ``docs/evidence/*-citations.tsv``, sorted by file name; the order is pinned and printed;
+- require: every manifest a goal file names (``docs/goals/**/*.md``, archived goals included) must be
+  in the tree and discovered — a goal's acceptance surface is part of the contract, so a tree that
+  lost one manifest while others remained fails rather than passing with that goal's rows unchecked;
 - parse, per file: the first non-comment line is the header and names exactly ``rule_id``, ``test``,
   ``package``, ``artifact`` in that order; every data row holds exactly four non-empty cells; no
   ``rule_id`` repeats within a file; and a header followed by no data rows is a violation too — the
@@ -37,9 +40,11 @@ Rules (``docs/conventions.md`` states the schema, ``docs/harness.md`` the gate s
 
 Exit codes: ``0`` PASS, ``1`` FAIL, ``2`` SKIP, ``3`` BOUNDARY.
 
-``SKIP`` means no manifest was found anywhere: the manifest *is* an increment's acceptance surface, so
-the ``citations`` step is required (``scripts/gate-required.txt``) and the gate rewrites that SKIP to a
-failure — a tree that lost its acceptance surface must not read as passing. The knobs, the batching rule
+``SKIP`` means no manifest was found anywhere *and* no goal file names one: the manifest *is* an
+increment's acceptance surface, so the ``citations`` step is required (``scripts/gate-required.txt``) and
+the gate rewrites that SKIP to a failure — a tree that lost its acceptance surface must not read as
+passing. A goal that names a manifest the tree does not hold is answered ``FAIL`` by this checker itself,
+before the skip arm and whether or not other manifests remain. The knobs, the batching rule
 and the host boundary are read through ``scripts/gate.py``'s own module (``gate_module()``) rather than
 restated here, with this checker's tree handed to it; a tree whose ``scripts/gate.py`` cannot be loaded
 is a ``FAIL`` naming that, because nothing could then be read the way the gate reads it. ``BOUNDARY`` is
@@ -72,6 +77,12 @@ COLUMNS = ("rule_id", "test", "package", "artifact")
 #: Where the manifests live, and what one is called.
 MANIFEST_DIR = Path("docs") / "evidence"
 MANIFEST_GLOB = "*-citations.tsv"
+
+#: Where a goal file states its acceptance surface, and the shape that reference has. A goal that names
+#: ``docs/evidence/<increment>-citations.tsv`` makes that file part of the tree's contract: the checker
+#: requires each named manifest to exist, so no other manifest staying behind can mask its loss.
+GOAL_DIR = Path("docs") / "goals"
+MANIFEST_REFERENCE = re.compile(r"docs/evidence/([A-Za-z0-9_.-]+-citations\.tsv)")
 
 #: One Go command's deadline: the gate's own default, so a stalled run is a result rather than a hang.
 GO_TIMEOUT = 1800
@@ -174,6 +185,51 @@ def manifests() -> list[Path]:
     if not directory.is_dir():
         return []
     return sorted((p for p in directory.glob(MANIFEST_GLOB) if p.is_file()), key=lambda p: p.name)
+
+
+def required_manifests() -> dict[str, list[str]]:
+    """The manifests the tree's own goal files name, and which goal file names each.
+
+    An increment's acceptance surface is the manifest its goal file names, so a goal that names one
+    makes that name part of the tree's contract: the checker requires every named manifest to exist,
+    rather than validating only the manifests a glob happens to find — a tree that lost one manifest
+    while others remained would otherwise pass with that goal's rows unchecked, and requiring the
+    ``citations`` step is not the same as requiring the file. Archived goals are read too (the move
+    does not retire the contract), and a goal that names nothing asks for nothing.
+    """
+    required: dict[str, list[str]] = {}
+    directory = ROOT / GOAL_DIR
+    if not directory.is_dir():
+        return required
+    for path in sorted(directory.rglob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in MANIFEST_REFERENCE.finditer(text):
+            required.setdefault(match.group(1), []).append(relative(path))
+    return required
+
+
+def missing_manifests(found: list[Path], required: dict[str, list[str]]) -> list[str]:
+    """The violations for the goal-named manifests this tree does not hold.
+
+    A name a goal states and the tree does not hold is the shape the finding measures: the manifest
+    *is* the acceptance surface, and its rows are then checked by neither this step nor any other.
+    The discovery result is asked rather than the filesystem alone, so a name the glob's rules would
+    never discover (a spelling outside ``MANIFEST_GLOB``, a directory) is reported the same way.
+    """
+    discovered = {path.name for path in found}
+    violations: list[str] = []
+    for name in sorted(required):
+        if name in discovered:
+            continue
+        violations.append(
+            f"{(MANIFEST_DIR / name).as_posix()} is named by {', '.join(required[name])} but this tree "
+            f"does not hold it: a goal's acceptance surface is part of this step, so losing it fails "
+            f"rather than leaving its rows unchecked"
+        )
+    return violations
 
 
 def relative(path: Path) -> str:
@@ -369,12 +425,16 @@ def report(
 
 def main() -> int:
     found = manifests()
-    if not found:
+    required = required_manifests()
+    # A goal's acceptance surface is required whatever the glob finds: reported here -- before the skip
+    # arm, which is only for a tree that names none at all -- and never masked by the manifests that
+    # remain (the shape the finding measures: the step is required, the *file* was not).
+    violations: list[str] = missing_manifests(found, required)
+    if not found and not violations:
         print(f"citations: {SKIP} — no {MANIFEST_GLOB} under {MANIFEST_DIR.as_posix()}/")
         return EXIT[SKIP]
 
     files: list[tuple[str, list[Citation]]] = []
-    violations: list[str] = []
     for path in found:
         rows, problems = parse_manifest(path)
         files.append((relative(path), rows))
