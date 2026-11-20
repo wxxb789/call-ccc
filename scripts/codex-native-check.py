@@ -1026,11 +1026,12 @@ def oracle_session_meta_members_violations(records: list[tuple[int, dict]]) -> l
 
 
 def oracle_clock_violations(records: list[tuple[int, dict]]) -> list[Violation]:
-    """`oracle.clock`: the written instants run one way.
+    """`oracle.clock`: the written instants run one way — each against the record written before it.
 
     A record whose instant does not parse is `oracle.envelope`'s alone and is skipped here rather than
-    compared; the comparison is against the last record whose instant did parse, so one malformed stamp
-    does not make every later record look out of order.
+    compared, so one malformed stamp does not make every later record look out of order; every record
+    whose instant did parse becomes the next comparison's baseline, violating or not, so a violation's
+    detail names the last parseable record written before it rather than the last instant that held.
     """
     violations: list[Violation] = []
     previous: tuple[str, tuple[int, int]] | None = None
@@ -1043,8 +1044,7 @@ def oracle_clock_violations(records: list[tuple[int, dict]]) -> list[Violation]:
             violations.append(Violation("oracle.clock", line,
                                         f"timestamp {stamp} precedes {previous[0]} on the record "
                                         f"before it"))
-        else:
-            previous = (str(stamp), instant)
+        previous = (str(stamp), instant)
     return violations
 
 
@@ -1148,11 +1148,15 @@ def oracle_call_pairing_violations(records: list[tuple[int, dict]]) -> list[Viol
 
 
 def oracle_message_text(payload: dict) -> str:
-    """One message's own text, joined the way the inherited reader joins it (`extractCodexContent`).
+    """One message's own text: the string `text` of every readable block, joined in the record's order.
 
-    The identity a receipt and an artifact are matched on is this text, so it is derived by the reader's
-    own rule — the text of every block whose type that reader reads, in the record's own order — rather
-    than by a rule this oracle invented.
+    The identity a receipt and an artifact are matched on is this text. The rule is the oracle's own and
+    not the inherited reader's (`extractCodexContent`) in one respect: the reader drops an empty string
+    from the join and this oracle keeps every string it reads, so an artifact whose readable blocks are
+    an empty string beside `hi` joins a leading newline where a read of it answers `hi`. This build's
+    writer emits one message as one non-empty block, so the two rules agree on every artifact this route
+    produces; the difference is stated, not silently filtered, because this text is the occurrence
+    identity a receipt's counts are matched by.
     """
     blocks = payload.get("content")
     if not isinstance(blocks, list):
@@ -1304,13 +1308,13 @@ def oracle_plan_violations(plan: list[tuple[tuple, str]],
     return violations
 
 
-def validate_artifact(text: str, receipt: object | None = None) -> list[Violation]:
-    """Every rule this oracle states, over one artifact and — where a receipt is handed in — its plan.
+def oracle_reading(text: str, receipt: object | None = None
+                   ) -> tuple[list[tuple[int, dict]], list[tuple[tuple, int]], list[Violation]]:
+    """One artifact read once: its records, its own occurrences and every rule's violations.
 
-    The artifact is this `text` and nothing else: no path, no source session, no selection and no
-    harness, which is what lets a **reduced** artifact be validated with the source absent from the
-    process. A receipt is compared only when every one of its entries could be read; an unreadable one is
-    reported under `oracle.receipt` alone, because a plan nobody can read says nothing about an artifact.
+    `validate_artifact` and `oracle_report` both answer from this one reading, so the counts a verdict
+    line prints and the verdict itself cannot disagree about the same text — the numbers come from the
+    reading that was judged, not from a second parse of the same bytes.
     """
     records, violations = oracle_records(text)
     violations += oracle_envelope_violations(records)
@@ -1321,12 +1325,25 @@ def validate_artifact(text: str, receipt: object | None = None) -> list[Violatio
     violations += oracle_message_violations(records)
     violations += oracle_event_message_violations(records)
     violations += oracle_call_pairing_violations(records)
+    occurrences = oracle_occurrences(records)
     if receipt is not None:
         plan, receipt_violations = oracle_plan(receipt)
         violations += receipt_violations
         if not receipt_violations:
-            violations += oracle_plan_violations(plan, oracle_occurrences(records))
-    return sorted(violations, key=lambda violation: (violation.line, violation.rule, violation.detail))
+            violations += oracle_plan_violations(plan, occurrences)
+    return records, occurrences, sorted(
+        violations, key=lambda violation: (violation.line, violation.rule, violation.detail))
+
+
+def validate_artifact(text: str, receipt: object | None = None) -> list[Violation]:
+    """Every rule this oracle states, over one artifact and — where a receipt is handed in — its plan.
+
+    The artifact is this `text` and nothing else: no path, no source session, no selection and no
+    harness, which is what lets a **reduced** artifact be validated with the source absent from the
+    process. A receipt is compared only when every one of its entries could be read; an unreadable one is
+    reported under `oracle.receipt` alone, because a plan nobody can read says nothing about an artifact.
+    """
+    return oracle_reading(text, receipt)[2]
 
 
 def oracle_report(artifact: Path, receipt: Path | None, as_json: bool) -> int:
@@ -1349,9 +1366,7 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool) -> int:
         except (OSError, json.JSONDecodeError) as failure:
             print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}", file=sys.stderr)
             return 2
-    violations = validate_artifact(text, receipt=document)
-    records, _ = oracle_records(text)
-    occurrences = oracle_occurrences(records)
+    records, occurrences, violations = oracle_reading(text, receipt=document)
     if as_json:
         print(json.dumps({
             "artifact": str(artifact),

@@ -137,7 +137,12 @@ never a budget to raise.
 
 ## Where the implementation departed from this plan
 
-No departure from the design above: the oracle is the section and the mode as written, the native path is
+One departure from the design above: the shape line's
+`validate_artifact(text: str, receipt: dict | None = None, name: str = "artifact")` shipped as
+`validate_artifact(text: str, receipt: object | None = None) -> list[Violation]` — `name` is not there,
+and `receipt` is typed `object | None`, deliberately broader than a parsed mapping so a receipt that
+cannot be read is *reported* (`oracle.receipt`, `oracle_report`'s INCOMPLETE arm) rather than refused by
+the signature. The oracle is otherwise the section and the mode as written, the native path is
 untouched, and the fixtures are the committed synthetic files. Three details settled while measuring, in
 the open because each one is a rule that was deliberately **not** stated (the increment's whole point is
 stating what holds, not what would be nice to hold):

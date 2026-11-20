@@ -1533,11 +1533,7 @@ def _mutation_record_type_unknown(text: str, receipt: dict | None) -> tuple[str,
 
 
 def _mutation_session_meta_deleted(text: str, receipt: dict | None) -> tuple[str, dict | None]:
-    lines = text.splitlines()
-    kept = [line for line in lines if json.loads(line).get("type") != "session_meta"]
-    if len(kept) != len(lines) - 1:
-        raise AssertionError("the fixture no longer opens with exactly one session_meta")
-    return "\n".join(kept) + "\n", receipt
+    return _without_record(text, oracle_record_is("session_meta")), receipt
 
 
 def _mutation_session_meta_duplicated(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -1842,6 +1838,51 @@ class CodexArtifactOracle(unittest.TestCase):
                         self.assertTrue(violation.detail.strip(),
                                         f"the {rule} violation says nothing: {violation}")
 
+    def test_the_instant_reader_dates_an_offset_by_its_sign(self) -> None:
+        """`oracle_instant` dates the format's numeric offsets by their sign, not only its `Z`.
+
+        `oracle.envelope` admits every spelling `ORACLE_INSTANT` reads, and every committed fixture
+        spells its instants with `Z`, so the offset branch is pinned only here: an offset read by adding
+        where it must subtract — or the reverse — dates `10:15+01:00` an hour away from the `Z` spelling
+        of the same instant, which the whole mutation table would pass while the envelope rule admitted
+        the record. Equality, not ordering: a uniform misreading keeps any order the file has.
+        """
+        self.assertEqual(NATIVE_CHECK.oracle_instant("2026-05-04T10:15:00+01:00"),
+                         NATIVE_CHECK.oracle_instant("2026-05-04T09:15:00Z"),
+                         "an ahead-of-UTC offset did not subtract")
+        self.assertEqual(NATIVE_CHECK.oracle_instant("2026-05-04T08:15:00-01:00"),
+                         NATIVE_CHECK.oracle_instant("2026-05-04T09:15:00Z"),
+                         "a behind-UTC offset did not add")
+
+    def test_occurrence_identity_is_counted_not_deduplicated(self) -> None:
+        """The same message written twice is two occurrences, and a plan that counts it once refuses it.
+
+        Multiplicity is part of an occurrence's identity rather than a bookkeeping detail: the receipt's
+        marks are counted, so `emitted` and `omitted` entries of one identity never silently cancel, and
+        a dedup by identity — which the rest of this suite would pass — is refused here. The duplicated
+        line repeats an instant, which keeps the clock legal (a record equal to its predecessor is not
+        after it), so the refusal is the plan's own and not a structural rule's.
+        """
+        session = oracle_fixture("session.jsonl")
+        lines = session.splitlines()
+        for index, line in enumerate(lines):
+            if not oracle_item_is("message", "And now?")(json.loads(line)):
+                continue
+            duplicated = "\n".join(lines[:index + 1] + [line] + lines[index + 1:]) + "\n"
+            break
+        else:
+            self.fail("the fixture no longer holds the message this case duplicates")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(duplicated), [],
+                         "the duplicated artifact is not structurally green")
+        counted = len(NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(duplicated)[0]))
+        self.assertEqual(counted, 8, f"the duplicate is not counted: {counted} occurrences")
+        refused = NATIVE_CHECK.validate_artifact(duplicated,
+                                                 receipt=oracle_receipt("session-receipt.json"))
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"a plan counting the message once did not refuse the artifact: {refused}")
+        self.assertIn("the artifact holds 2, the receipt marks 1 emitted", refused[0].detail,
+                      f"the refusal does not count the duplicate: {refused[0]}")
+
     def test_a_receipt_that_declares_nothing_cannot_pass(self) -> None:
         """A plan that accounts for no occurrence, and one that cannot be read, both refuse the artifact.
 
@@ -1887,8 +1928,9 @@ class CodexArtifactOracle(unittest.TestCase):
         The same three answers the rest of this repository's checks give, on the mode goal 0009's later
         increments (and a person) read an installed rollout with: a green fixture and its plan pass, the
         unreduced artifact against the reduced plan fails naming the rule and the record, `--json`
-        carries the same reading as a document, and an artifact that cannot be read at all is INCOMPLETE
-        with exit 2 rather than a pass.
+        carries the same reading as a document in both verdicts, an artifact or a receipt that cannot be
+        read is INCOMPLETE with exit 2 rather than a pass, and `--receipt` without `--validate` is
+        refused before any file is read.
         """
         with tempfile.TemporaryDirectory() as scratch:
             artifact = Path(scratch) / "session.jsonl"
@@ -1917,6 +1959,18 @@ class CodexArtifactOracle(unittest.TestCase):
 
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(plan),
+                                          "--json"])
+            self.assertEqual(code, 1, f"exit {code} for a red artifact as JSON: {output.getvalue()}")
+            document = json.loads(output.getvalue()[:output.getvalue().index("\noracle: ")])
+            self.assertEqual((document["verdict"], len(document["violations"])), ("FAIL", 2),
+                             f"the JSON document does not carry the verdict: {document}")
+            self.assertEqual(output.getvalue().strip().splitlines()[-1],
+                             "oracle: FAIL — 17 record(s), 7 occurrence(s), 2 violation(s)",
+                             f"the verdict line is not the run's last line: {output.getvalue()}")
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
                 code = NATIVE_CHECK.main(["--validate", str(artifact), "--json"])
             self.assertEqual(code, 0, f"exit {code} for a green artifact: {output.getvalue()}")
             document = json.loads(output.getvalue()[:output.getvalue().index("\noracle: ")])
@@ -1931,6 +1985,30 @@ class CodexArtifactOracle(unittest.TestCase):
             self.assertEqual(code, 2, f"exit {code} for an artifact that is not there")
             self.assertIn("oracle: INCOMPLETE", errors.getvalue(),
                           f"an unreadable artifact is not INCOMPLETE: {errors.getvalue()}")
+
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact),
+                                          "--receipt", str(Path(scratch) / "absent-plan.json")])
+            self.assertEqual(code, 2, f"exit {code} for a receipt that is not there")
+            self.assertIn("oracle: INCOMPLETE", errors.getvalue(),
+                          f"an unreadable receipt is not INCOMPLETE: {errors.getvalue()}")
+
+            plan.write_text("{not JSON", encoding="utf-8")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(plan)])
+            self.assertEqual(code, 2, f"exit {code} for a receipt that is not JSON")
+            self.assertIn("oracle: INCOMPLETE", errors.getvalue(),
+                          f"a receipt that is not JSON is not INCOMPLETE: {errors.getvalue()}")
+
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                NATIVE_CHECK.main(["--receipt", str(plan)])
+            self.assertEqual(refusal.exception.code, 2,
+                             f"`--receipt` without `--validate` was not refused: {errors.getvalue()}")
+            self.assertIn("--receipt", errors.getvalue(),
+                          f"the refusal does not name the flag: {errors.getvalue()}")
 
 
 if __name__ == "__main__":

@@ -166,18 +166,27 @@ test_a_reduced_artifact_is_validated_from_the_artifact_alone (test_codex_native_
 A reduced artifact and its plan are validated with nothing but the two documents in hand. ... ok
 test_every_rule_has_a_mutation_that_turns_its_fixture_red (test_codex_native_check.CodexArtifactOracle.test_every_rule_has_a_mutation_that_turns_its_fixture_red)
 The rule table and the mutation table are one contract, read from both ends. ... ok
+test_occurrence_identity_is_counted_not_deduplicated (test_codex_native_check.CodexArtifactOracle.test_occurrence_identity_is_counted_not_deduplicated)
+The same message written twice is two occurrences, and a plan that counts it once refuses it. ... ok
 test_the_citations_manifest_accounts_for_every_rule (test_codex_native_check.CodexArtifactOracle.test_the_citations_manifest_accounts_for_every_rule)
 Every oracle rule is either a row of this increment's citations manifest or named in it. ... ok
 test_the_committed_fixtures_validate (test_codex_native_check.CodexArtifactOracle.test_the_committed_fixtures_validate)
 The positive fixtures are green, with and without their plans, and the reduced one is the ... ok
+test_the_instant_reader_dates_an_offset_by_its_sign (test_codex_native_check.CodexArtifactOracle.test_the_instant_reader_dates_an_offset_by_its_sign)
+`oracle_instant` dates the format's numeric offsets by their sign, not only its `Z`. ... ok
 test_the_validate_mode_reports_a_verdict (test_codex_native_check.CodexArtifactOracle.test_the_validate_mode_reports_a_verdict)
 `--validate` answers for one artifact (and its plan): PASS, FAIL and INCOMPLETE, with the ... ok
 
 ----------------------------------------------------------------------
-Ran 6 tests in 0.029s
+Ran 8 tests in 0.032s
 
 OK
 ```
+
+The quote is the apply stage's re-run over the accepted tree: the class moved from six cases to eight,
+the two added ones pinning what the mutation table cannot see — a numeric offset's sign
+(`test_the_instant_reader_dates_an_offset_by_its_sign`) and occurrence multiplicity
+(`test_occurrence_identity_is_counted_not_deduplicated`).
 
 The mutations number 24 for the 13 rules: `oracle.jsonl-objects`, `oracle.session-meta` and
 `oracle.message` carry three each, `oracle.envelope`, `oracle.session-meta-members`,
@@ -306,6 +315,11 @@ PASS: no pre-existing session in the target home changed — 0 pre-existing sess
 26 check(s) passed, 0 failed, 2 skipped
 ```
 
+After the apply stage's simplify findings (which touched the oracle section alone), the same unflagged
+command was run once more over the accepted tree: exit 0, its 28 check lines' names and states identical
+to the after-run's, and the same closing count (`26 check(s) passed, 0 failed, 2 skipped`) — so D3's
+claim holds for the increment's final bytes.
+
 ## 4. D4 — the freeze, stated where a later lane reads it
 
 The freeze is stated in four places, and the reason is stated with it: a fix round that moves this
@@ -408,7 +422,7 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 448 tests in 8.843s (rc=0)
+  PASS     selftest Ran 450 tests in 9.155s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 9 row(s) verified
   PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -417,14 +431,15 @@ $ echo $?
 0
 ```
 
-The `selftest` step's 448 tests are the whole `scripts/tests/` suite with this increment's six new cases
-in it (§1), and the `citations` step's 9 rows are §6's manifest. The `gofmt`, `build`, `vet` and `test`
-steps answer about an unchanged Go tree: this increment's diff holds no Go file.
+The `selftest` step's 450 tests are the whole `scripts/tests/` suite with this increment's eight new cases
+in it (§1) — six as implemented, two more from the apply stage's coverage findings — and the `citations`
+step's 9 rows are §6's manifest. The `gofmt`, `build`, `vet` and `test` steps answer about an unchanged
+Go tree: this increment's diff holds no Go file.
 
 The gate was re-run after this record's own last prose edits (no gate step refuses on this file's prose:
 the `selftest` cases that read `docs/evidence/` read the answer claims of a §5 table — this record's §5
 holds no table — and the quoted `parity` lines of the records that state that checker's own elision rule,
-which this record does not state), and the re-run printed the same step states with `Ran 448 tests` and
+which this record does not state), and the re-run printed the same step states with `Ran 450 tests` and
 `GATE: PASS`, exit 0; the `selftest` timing differs between runs, which is why the transcript above is
 one run's own line rather than a rounded one.
 
