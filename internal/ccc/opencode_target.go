@@ -803,6 +803,17 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				// without the yield the later recorded result reads as a repeat, the held one drops the
 				// whole part at write time, and the document states no outcome although one was
 				// representable (round 11's third finding).
+				if c.conv.selectionReduced() && !openCodeResultWritable(result) {
+					// The arriving event is no outcome the part can state (blank text, a status word the
+					// tool states cannot spell): nothing was recorded twice that the document could state
+					// once, so it is not a repeat of the carried outcome but is counted the way the writer
+					// counts the same result (the blocks, the blank text, the status word the tool states
+					// cannot spell), and the slot keeps the outcome the document states. Round 17's second
+					// finding: with the id-less result written first, the blank event that followed was
+					// counted a repeat although the part never could have stated it.
+					c.countUnwritableResult(result)
+					continue
+				}
 				if !c.displacingOpenCodeOutcome(entry, result) {
 					c.lossRepeatedResults++
 					continue
@@ -981,9 +992,12 @@ func (c *openCodeConverter) soleOutstandingPlannedCall() (*openCodeCall, bool) {
 // written -- text the output field cannot carry, a status the tool states cannot spell
 // (openCodeOutcomeWritable) -- has no answer on the written path, exactly as the family's writers read
 // it, so it makes the result ambiguous and nothing is inferred (the result is omitted and counted,
-// unpaired_tool_results). The call the result may be written *for* has to hold no planned result at all:
-// the part states one outcome, and the read's own evidence of a different outcome is not this conversion's
-// to replace. A call whose only recorded outcome is its writable summary counts as answered too
+// unpaired_tool_results). The call the result may be written *for* has to hold no planned outcome the
+// part can state -- a result the part refuses is no outcome there, so such a call is what the result may
+// be written for: the part is owed the outcome the document can state, the walk yields the refused slot
+// to the inferred result and counts the refused event (displacingOpenCodeOutcome, which is the same rule
+// the slot's own reservation reads) -- while a call whose planned result is writable is answered and
+// never takes one. A call whose only recorded outcome is its writable summary counts as answered too
 // (plannedOutcomeWritable): the summary pass will write that outcome for it, so a later id-less result
 // may not take the slot the summary is owed and leave the recorded outcome unwritten.
 func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
@@ -994,10 +1008,12 @@ func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
 			continue
 		}
 		unanswered++
-		if entry.Result == nil && !c.reservedSlots[occurrence] {
+		if !c.reservedSlots[occurrence] {
 			// A reserved occurrence counts among the unanswered ones -- its recorded result stands later
 			// in the walk, and the inference may not name a call the document's own records are going to
-			// answer -- but it is never the call the result may be written for.
+			// answer -- but it is never the call the result may be written for. An occurrence whose held
+			// result the part refuses is eligible: the walk yields that slot to the inferred result and
+			// counts the refused event, which is the outcome the part is owed.
 			found = entry
 		}
 	}

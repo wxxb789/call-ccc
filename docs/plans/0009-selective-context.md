@@ -984,3 +984,47 @@ measurement that decided it, followed by the review round's own:
       dated directory a conversion writes into, installs the selected window beside it and compares the
       pre-existing bytes byte for byte (the home holding both sessions); one executed mutation (the
       installer clearing the dated directory) fails it as the recorded negative control.
+
+23. **The seventeenth review round's four findings.** The review of `9242e49..672523d` found four items
+    (one P1, three P2), all fixed, and this round's own section of the evidence record carries the
+    mutations that pin them (`M1`–`M7`).
+    * **the retained file-backed answer precedes the writer's tool-result place** (review 1/4, a P1):
+      `parentPlace` read the retained file-backed ancestry answer before the record's projected parent
+      where the source file named a parent the window does not carry (`fileParentRecorded`), but the
+      writer's tool-result place stood between the two: an off-line reply whose file parent is an
+      *excluded* result, whose own chain runs to the call, chained under the call's written result --
+      the place stands on the line and the guard does not refuse it for a record the line leaves off,
+      so the reading is taken -- changing the history a reopened branch sees. The retained answer is now
+      read before the tool-result place too, and a file that answered nothing for the record keeps the
+      places it always had. `TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor` pins the
+      ordering (the written parent, the walk, `unresolved_source_parents` 0, the excluded records
+      absent); one executed mutation (the precedence reverted) fails it while both round-15 cases stay
+      green, so the new case is the precedence's own pin.
+    * **OpenCode's eligibility and loss reporting follow writability** (review 2/4, a P2):
+      `soleInferablePlannedCall` required the call it may write an id-less result for to hold no result
+      at all, so a call whose only recorded result the part refuses -- no outcome on the written path --
+      was ineligible and neither outcome was written; and a refused event arriving at a filled slot was
+      counted `repeated_tool_results` although the part could never have stated it. The occurrence is
+      eligible when it holds no outcome the part can state (the walk yields the refused slot to the
+      inferred result and counts the refused event), and a refused event arriving at a filled slot on a
+      reduced document is counted the way the writer counts that result. Both orders of the blank event
+      and the id-less result are pinned in `TestSelectionReservesARecordedResultsSlotFromAnIdLessInference`;
+      three executed mutations (the eligibility line reverted; the arrival branch removed; the arrival
+      branch made unconditional) fail the case's first arm, its second arm and the default path's own
+      counts respectively.
+    * **the D1 comparison asserts Claude's compaction marker beside the summary** (review 3/4, a P2):
+      `selectionEvidence` skipped every message-less Claude record, including the
+      `system`/`compact_boundary` marker the loader acts on (the recorded native evidence shows the
+      `isCompactSummary` flag alone truncates nothing), so removing or renaming the marker left the
+      comparison unchanged. The extractor reads the marker as `boundary compact_boundary` evidence
+      beside the summary record, fails on any other message-less record, and the boundary-alone case
+      expects the pair on the Claude route while the boundary-excluding windows assert the marker absent;
+      two executed mutations (the marker removed from the writer; its subtype renamed) fail it.
+    * **the fold's unmatched-row refusal has its own case** (review 4/4, a P2): both recorded negative
+      arms appended `custom_tool_call` records, so both were refused by the unkeyed-unit condition and
+      removing only the row-attribution condition changed nothing. The case now appends a
+      `function_call` record whose `arguments` member is a JSON object -- the unit walk's own reading
+      cannot unmarshal it, so it states no unit, while the inherited reader reads it as a call row whose
+      key no unit states; every unit under the id is keyed, and the row-attribution condition is what
+      refuses the fold. One executed mutation (that condition removed) leaves the case's comparison
+      silent, while the two `custom_tool_call` arms stay green under the same mutation.

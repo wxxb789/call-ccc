@@ -354,9 +354,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   id-less result stands, so an ambiguous window omits the event rather than binding it; the same
   writability rule holds the slot itself on a reduced document, where an event the part cannot state (no
   text, whitespace-only text, a status word the tool states cannot spell) is counted exactly as the writer
-  counts the same result and yields the call's one slot to a later recorded outcome the part can state,
-  while a run without a selection keeps the first recorded outcome in the slot and its bytes and counts
-  unchanged — and a written call occurrence whose
+  counts the same result and yields the call's one slot to a later recorded outcome the part can state —
+  the id-less inference included, because a call whose held result the part refuses is no outcome on the
+  written path and is what such a result may be written for — while an event the part cannot state that
+  arrives at a filled slot is counted the way the writer counts that result rather than as a repeat of an
+  outcome the part could never have stated, and a run without a selection keeps the first recorded
+  outcome in the slot and its bytes and counts unchanged — and a written call occurrence whose
   recorded id an
   earlier written occurrence already holds is written under an id generated from its own place
   (`colliding_call_ids`, a category the default path's report does not carry), with every result written
@@ -426,9 +429,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   own parent the window left out is hung off its nearest retained ancestor (the relation walked
   through the excluded records — the source file's own relation where the file answered for the record the
   walk is at, the read's own relation with the tool-result step the writers take where the read may
-  project one for every other record — read *before* the record's projected parent where the file named a
-  parent the window does not carry, because the projection would chain the record past a result the file
-  ran through and leave that carried result off the walk a resumed session makes, while a file that
+  project one for every other record — read *before* the record's projected parent *and* before the
+  writer's tool-result place where the file named a parent the window does not carry, because either
+  would chain the record past a result the file ran through and leave that carried result off the walk a
+  resumed session makes (the tool-result place stands on the line while the record the line leaves off is
+  not refused by the guard: an off-line reply whose file parent is an excluded result chained under the
+  call's written result instead of under the call), while a file that
   answered nothing for the record keeps the places it always had — and where the answer crossed that step
   the relation is counted
   (`unresolved_source_parents`), as the

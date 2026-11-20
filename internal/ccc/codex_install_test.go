@@ -383,6 +383,44 @@ func TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute(t *testing.T) {
 			"hold the id, the name and the input the document's own call holds: the file states two "+
 			"records and the document one", sameRoundTrip.differences)
 	}
+
+	// The keyed-only case (round 17's fourth finding): every record the unit walk *reads* under the id is
+	// the writer's own keyed `function_call`, and the read-back still holds a row whose key no unit
+	// states. The extra record is a `function_call` whose `arguments` member is a JSON object where this
+	// build's written records state a string: the unit walk's own reading cannot unmarshal the line, so
+	// it states no unit for the record, while the inherited reader reads it as a call row all the same --
+	// the row stands for a call the file's units do not account for, and the fold may not discard it by
+	// taking the keyed units (which would leave the extra invocation unreported although the file states
+	// it). The two `custom_tool_call` arms above reach the unkeyed-unit refusal first; this arm is the
+	// one that reaches the unmatched-row refusal, so a mutation removing that condition is observable
+	// here alone.
+	objectArguments := codexInstalledLine(t, codexRecordResponseItem, map[string]any{
+		"type":      codexItemFunctionCall,
+		"call_id":   callID,
+		"name":      "Bash",
+		"arguments": map[string]string{"command": extraCommand},
+	})
+	tamperedObject := []byte(strings.TrimRight(string(installed), "\n") + "\n" + objectArguments)
+	objectRollout := CodexRollout{Directory: rollout.Directory, FileName: rollout.FileName, Data: tamperedObject}
+	objectRoundTrip := compareCodexRoundTrip(rollout,
+		Conversation{Messages: codexReadBackMessages(t, objectRollout)}, tamperedObject)
+	objectReported := false
+	for _, difference := range objectRoundTrip.differences {
+		if strings.Contains(difference, categoryToolCall) && strings.Contains(difference, "to Bash") &&
+			strings.Contains(difference, callID) {
+			objectReported = true
+		}
+		if strings.Contains(difference, extraCommand) {
+			t.Errorf("keyed-only: difference = %q, want the extra invocation named without its text",
+				difference)
+		}
+	}
+	if !objectReported {
+		t.Errorf("keyed-only: differences = %q, want the call the file's own `function_call` record "+
+			"states although the read-back's row for it states a key no unit states: every unit under "+
+			"the id is keyed, and the fold may take them only where every row states one of their keys",
+			objectRoundTrip.differences)
+	}
 }
 
 // TestCodexRoundTripCountsWhatTheReaderProjectsAway pins the two shapes of a written dialogue message

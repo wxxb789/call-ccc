@@ -234,9 +234,12 @@ obligation ships no citations file, rather than an empty one.
   unnamed; and on a
   reduced document the same writability rule holds the slot itself, so an event the part cannot state — no
   text, whitespace-only text, a status word the tool states cannot spell — is counted exactly as the
-  writer counts the same result and yields the slot to a later recorded outcome the part can state, while a
-  run without a selection keeps the first recorded outcome in it, and both completion members follow the
-  result the slot carries) — and only a recorded event that the part cannot state, and that records the
+  writer counts the same result and yields the slot to a later recorded outcome the part can state — the
+  id-less inference included, because a call holding a refused result is no outcome on the written path and
+  is what such a result may be written for — while an event the part cannot state that arrives at a filled
+  slot is counted the way the writer counts that result rather than as a repeat, and a
+  run without a selection keeps the first recorded outcome in it and its own repeat count, and both
+  completion members follow the result the slot carries) — and only a recorded event that the part cannot state, and that records the
   call's own id, marks the call as one whose recorded events stand in for its archive summary on a
   document a selection produced — the marking is resolved from the read's own pairing *before* the walk,
   so a call whose event stands after the id-less result is unanswered exactly as one whose event stands
@@ -275,8 +278,10 @@ obligation ships no citations file, rather than an empty one.
   the read does not carry that the harness's own loader keeps out of the context (a `model_change` between
   a result and the reply included, so the reply hangs off the result the file recorded) — which a tree
   target hangs the entry off, and where the file named a parent the window left out that retained answer is
-  read *before* the read's projected parent (the projected parent would chain the record past a result the
-  file ran through — a result the window carries — and leave it off the walk a resumed session makes),
+  read *before* the read's projected parent *and* before the writer's tool-result place (each would chain
+  the record past a result the file ran through — a result the window carries — and leave it off the walk a
+  resumed session makes; the tool-result place stands on the line and its guard does not refuse it for a
+  record the line leaves off, so an off-line reply would otherwise chain under the call's written result),
   while a file that answered nothing for the record keeps the places it always had — so the read's lossy
   tool-result step
   cannot put a result the file left beside the conversation back on the resumed walk (and a call whose file

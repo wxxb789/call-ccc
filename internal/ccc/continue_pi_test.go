@@ -2867,6 +2867,193 @@ func TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult(t *testi
 	}
 }
 
+// TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor pins the round-17 first finding: the
+// retained file-backed ancestry answer is read before the writer's tool-result place, not only before the
+// raw projected parent. The fixture copy appends, after the committed session, call A (the branch's own
+// call), A's result R_A, call B and B's result R_B -- both hanging off A, so the read answers a record
+// under R_B with A's own identity -- the reply the file's leaf path leaves off (under R_B) and the reply
+// it holds (under R_A, written last). A window selecting A and both replies carries R_A as A's paired
+// result and leaves B and R_B out: for the off-line reply the file named R_B as its parent (excluded),
+// the file's own chain runs R_B → A, and the retained-ancestor answer is A's entry. The writer's
+// tool-result place is *not* rejected here -- R_A's entry stands on the line while the reply the line
+// leaves off is not refused by the guard -- so a place resolution that reads the tool-result place first
+// chains the off-line reply under R_A, changing the history a reopened branch sees: the reply reads as
+// R_A's continuation instead of the file's own branch. Before the fix that is exactly what happened; the
+// file's answer is now read first and the reply hangs off A, with the sibling relation off the walk the
+// target's loader makes.
+func TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor(t *testing.T) {
+	const (
+		promptText = "Where is the retry cap configured?"
+		callAText  = "A's call is on its way."
+		rAText     = "A's own recorded output"
+		callBText  = "B's call is on its way."
+		rBText     = "B's own recorded output"
+		offText    = "the reply the file's leaf path leaves off"
+		actText    = "the reply the file's leaf path holds"
+	)
+	// The appended records: call A off the fixture's last entry, A's result off call A, call B off call A
+	// too (the file's own leaf path runs through R_A and never reaches it), B's result off call A beside
+	// it -- so the read answers a record under R_B as hanging off A (a result's descendants resolve to
+	// their visible ancestor) -- the off-line reply under B's result, and the active reply under A's
+	// result, written last so the file's own leaf path is act → R_A → call A.
+	const (
+		callA = `{"id":"aaaa0001","message":{"api":"openai-completions","content":[{"text":"A's call is on its way.","type":"text"},{"arguments":{"pattern":"callA"},"id":"call_A_beside","name":"grep","type":"toolCall"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"toolUse","timestamp":1794938110000},"parentId":"1d4e7a90","timestamp":"2026-05-04T09:16:00.000Z","type":"message"}`
+		rA    = `{"id":"raaaaaaa","message":{"content":[{"text":"A's own recorded output","type":"text"}],"isError":false,"role":"toolResult","timestamp":1794938111000,"toolCallId":"call_A_beside","toolName":"grep"},"parentId":"aaaa0001","timestamp":"2026-05-04T09:16:01.000Z","type":"message"}`
+		callB = `{"id":"bbbb0002","message":{"api":"openai-completions","content":[{"text":"B's call is on its way.","type":"text"},{"arguments":{"pattern":"callB"},"id":"call_B_beside","name":"grep","type":"toolCall"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"toolUse","timestamp":1794938112000},"parentId":"aaaa0001","timestamp":"2026-05-04T09:16:02.000Z","type":"message"}`
+		rB    = `{"id":"rbbbbbbb","message":{"content":[{"text":"B's own recorded output","type":"text"}],"isError":false,"role":"toolResult","timestamp":1794938113000,"toolCallId":"call_B_beside","toolName":"grep"},"parentId":"aaaa0001","timestamp":"2026-05-04T09:16:03.000Z","type":"message"}`
+		off   = `{"id":"0ff00001","message":{"api":"openai-completions","content":[{"text":"the reply the file's leaf path leaves off","type":"text"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"stop","timestamp":1794938114000},"parentId":"rbbbbbbb","timestamp":"2026-05-04T09:16:04.000Z","type":"message"}`
+		act   = `{"id":"ac700001","message":{"api":"openai-completions","content":[{"text":"the reply the file's leaf path holds","type":"text"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"stop","timestamp":1794938115000},"parentId":"raaaaaaa","timestamp":"2026-05-04T09:16:05.000Z","type":"message"}`
+	)
+	cfg, ref, sourcePath := piSourceCopy(t, piFixtureRef.ID, callA, rA, callB, rB, off, act)
+	sourceBytes, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading the source copy: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, sourceBytes)
+	if !slices.Contains(sourceWalk, actText) || slices.Contains(sourceWalk, offText) {
+		t.Fatalf("the source file's own walk = %q, want the active reply on it and the off-line reply "+
+			"beside it: the fixture copy does not hold the shape under test", sourceWalk)
+	}
+	// The read's own answers, asserted rather than assumed: the appended records hold ordinals 5-10, the
+	// off-line reply's read parent is call A's own record (the projection the file's chain corrects), and
+	// every appended record carries an identity the file's chain can name.
+	read, err := NewSourceReader(cfg).Read(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("reading the appended fixture: %v", err)
+	}
+	if got := selectionOrdinals(read); !slices.Equal(got, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+		t.Fatalf("the read's ordinals = %v, want the fixture's five records and the six appended ones",
+			got)
+	}
+	if len(read.Messages) != 11 {
+		t.Fatalf("the read holds %d record(s), want the eleven its file carries", len(read.Messages))
+	}
+	byText := map[string]Message{}
+	for _, message := range read.Messages {
+		text := strings.TrimSpace(message.Content)
+		if dialogue := strings.TrimSpace(message.Dialogue); dialogue != "" {
+			text = dialogue
+		}
+		if text != "" {
+			byText[text] = message
+		}
+	}
+	offRecord, ok := byText[offText]
+	if !ok {
+		t.Fatalf("the read holds no record for %q: the fixture copy does not hold the shape under test",
+			offText)
+	}
+	if want := byText[callAText].SourceUUID; offRecord.SourceParentUUID != want {
+		t.Fatalf("the off-line reply's read parent = %q, want call A's own identity %q: the read's "+
+			"projection is the answer the file's chain must correct", offRecord.SourceParentUUID, want)
+	}
+	held := map[string]bool{}
+	for _, message := range read.Messages {
+		held[message.SourceUUID] = true
+	}
+	for _, id := range []string{"bbbb0002", "rbbbbbbb"} {
+		if !held[id] {
+			t.Fatalf("the read holds no record %q: the fixture copy does not hold the shape under test "+
+				"(the excluded call B and its result the file's chain runs through)", id)
+		}
+	}
+	// The window the finding names: the fixture's own prompt (the retained ancestor the appended
+	// records' ancestry runs through) and call A's record with both replies. Its ordinals are asserted
+	// from the read, so a fixture whose ordinals moved fails here rather than converting a different
+	// window.
+	window, report, err := Select(read, "0,5,9,10", false)
+	if err != nil {
+		t.Fatalf("selecting 0,5,9,10: %v", err)
+	}
+	if got := selectionOrdinals(window); !slices.Equal(got, []int{0, 5, 6, 9, 10}) {
+		t.Fatalf("the window carries ordinals %v, want the prompt, call A's record and the two replies "+
+			"(0, 5, 9, 10) plus A's result pulled in as its necessity (6): the appended fixture does "+
+			"not hold the shape under test", got)
+	}
+	if report.NecessitiesAdded.Count != 1 || report.NecessitiesAdded.Added[0].Ordinal != 6 ||
+		report.NecessitiesAdded.Added[0].PulledBy != 5 {
+		t.Fatalf("necessities = %+v, want A's result (6) pulled by call A's record (5)",
+			report.NecessitiesAdded)
+	}
+
+	// The tree target: the off-line reply hangs off call A's entry -- the file's own chain through the
+	// excluded result -- not off A's result, and the active reply hangs off A's result as the file
+	// records it. The walk the target's loader makes holds the records the file's own leaf path holds.
+	selectedRun, err := Continue(context.Background(), ContinueOptions{
+		Ref: ref, Target: TargetPi, Config: cfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+		Selection: "0,5,9,10", SelectionSupplied: true,
+	})
+	if err != nil {
+		t.Fatalf("pi: --select 0,5,9,10: %v", err)
+	}
+	if selectedRun.Verification.Structure.State != VerificationStateVerified {
+		t.Fatalf("pi: structure = %+v, want the installed session read back as what was written",
+			selectedRun.Verification.Structure)
+	}
+	installedBytes, err := os.ReadFile(selectedRun.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	installedWalk := transcriptWalkTexts(t, installedBytes)
+	wantWalk := []string{promptText, callAText, rAText, actText}
+	if !slices.Equal(installedWalk, wantWalk) {
+		t.Errorf("pi: the selected session's model-visible history = %q, want %q: the file's own leaf "+
+			"path holds the prompt, call A, A's result and the active reply, and the reply it leaves "+
+			"off stands beside it", installedWalk, wantWalk)
+	}
+	lines := decodePiSession(t, installedBytes)
+	texts := piEntryTexts(t, lines)
+	entryOf := map[string]string{}
+	for _, line := range lines {
+		if text := texts[line.ID]; text != "" {
+			entryOf[text] = line.ID
+		}
+	}
+	offParent, actParent := "", ""
+	for _, line := range lines {
+		switch texts[line.ID] {
+		case offText:
+			if line.ParentID != nil {
+				offParent = *line.ParentID
+			}
+		case actText:
+			if line.ParentID != nil {
+				actParent = *line.ParentID
+			}
+		}
+	}
+	if want := entryOf[callAText]; offParent != want {
+		t.Errorf("pi: the off-line reply's entry hangs off %q, want call A's own entry %q: the file's "+
+			"chain through the excluded result reaches the call, and the tool-result place would chain "+
+			"the reply under A's result instead", offParent, want)
+	}
+	if want := entryOf[rAText]; actParent != want {
+		t.Errorf("pi: the active reply's entry hangs off %q, want A's result entry %q: the file named "+
+			"that record as the reply's parent", actParent, want)
+	}
+	if !strings.Contains(string(installedBytes), offText) {
+		t.Error("pi: the installed session does not hold the selected off-line reply: the window carries " +
+			"it, and its place is the file's own")
+	}
+	for _, text := range []string{callBText, rBText} {
+		if strings.Contains(string(installedBytes), text) {
+			t.Errorf("pi: the installed session holds %q although the window left its record out: an "+
+				"excluded record must not travel", text)
+		}
+	}
+	if slices.Contains(installedWalk, offText) {
+		t.Error("pi: the off-line reply stands on the resumed walk: the file's own leaf path leaves it " +
+			"off, and a written record on the walk would be an active turn the source never recorded")
+	}
+	if got := lossCount(t, selectedRun.Conversion.Losses, "unresolved_source_parents").Count; got != 0 {
+		t.Errorf("pi: --select 0,5,9,10 unresolved_source_parents = %d, want none: the file's own bytes "+
+			"answer every relation the window's walk steps through, the excluded result's included, and "+
+			"the retained-ancestor answer the off-line reply takes is the file's own, not a relation this "+
+			"conversion resolved", got)
+	}
+}
+
 // TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities pins the boundary of the source file's
 // own line answer: the membership is per *identity*, and a file that records none answers no tree at all
 // -- a Pi v1 session's own order is its conversation, and the read's order is that order -- so every

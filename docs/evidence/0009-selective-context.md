@@ -2910,6 +2910,178 @@ test and gate-step change in the tree and the throw-away probe file removed; a s
 this section's transcript and §7's edits were folded in, printed the same steps and numbers (`selftest Ran
 444 tests in 8.4xx s`), so the tree this record describes is the tree the gate passed twice.)
 
+### The seventeenth review round's findings (`672523d` + working tree), fixed and re-measured
+
+The review of `9242e49..672523d` found four items (one P1, three P2), all fixed, and this round follows
+the review's systematic close-out: every rule the touched surface claims is proved by **one executed
+mutation** -- the rule's line reverted, the case that claims to pin it run, the failure recorded, the
+line restored -- and the tree after the restores is the one the gate below measured
+(`grep -rn 'false &&\|&& false\|true ||' internal/ccc/*.go` is empty).
+
+1. **The retained file-backed answer precedes the writer's tool-result place (P1), fixed.** `parentPlace`
+   read the retained file-backed ancestry answer before the record's projected parent where the source
+   file named a parent the window does not carry (`fileParentRecorded`), but the writer's tool-result
+   place stood between the two. The finding's shape: call A with two children -- its own result R_A and
+   call B with B's result R_B, both beside the leaf path -- the reply the file's leaf path leaves off
+   under R_B, and the active reply under R_A; a window selecting the prompt, call A and both replies
+   carries R_A as A's paired result and leaves B and R_B out. The off-line reply's file parent is R_B
+   (excluded), the file's own chain runs R_B → A, and the retained answer is A's own entry -- but the
+   read answers the reply as hanging off call A, R_A stands on the line, and the guard
+   (`resultEntryLeavesTheLine`) does not refuse the place for a record the line leaves off: the earlier
+   order chained the reply under R_A, changing the history a reopened branch sees. The retained answer is
+   now read before the tool-result place too (and before the projected parent it already preceded), and a
+   file that answered nothing for the record keeps the places it always had. The new
+   `TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor` pins the ordering on the written
+   entries (the parent relation, the walk the target's loader makes, `unresolved_source_parents` 0, the
+   excluded records absent); `M1` fails it while both round-15 cases stay green, so the new case is the
+   precedence's own pin.
+2. **OpenCode's eligibility and loss reporting follow writability (P2), fixed.** `soleInferablePlannedCall`
+   required the call it may write an id-less result for to hold no result at all
+   (`entry.Result == nil`), although `plannedOutcomeWritable` had already answered that a held result the
+   part refuses is no outcome the document states: with the refused (whitespace-only) event standing
+   *before* the id-less result, the sole unanswered call was ineligible and neither outcome was written.
+   The occurrence is now eligible whenever it is unanswered and unreserved -- the walk yields the refused
+   slot to the inferred result and counts the refused event (`displacingOpenCodeOutcome`, the same rule
+   the slot's reservation reads). And the reverse order was misclassified: the refused event arriving at
+   a slot the id-less result already filled was counted `repeated_tool_results` -- which reads as an
+   outcome the document could have stated twice -- so on a reduced document it is now counted the way the
+   writer counts that result (`whitespace_only_tool_results` for the blank event), the default path
+   keeping the first recorded outcome and its repeat count. Both orders are pinned in
+   `TestSelectionReservesARecordedResultsSlotFromAnIdLessInference` (the inference fires, the blank event
+   is counted as whitespace, no repeat and no unpaired row); `M2a` (the eligibility line reverted) fails
+   the first arm, `M2b` (the arrival branch removed) the second, and `M2c` (the arrival branch made
+   unconditional) the default path's own counts in
+   `TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`, which is the D4 arm.
+3. **The D1 comparison asserts Claude's compaction marker beside the summary (P2), fixed.** The evidence
+   extractor skipped every message-less Claude record, including the `system`/`compact_boundary` marker
+   the loader truncates the model-visible history at -- and the recorded native evidence (the third
+   goal's run, §36 of `0003-codex-to-claude-continuation.md`) shows the `isCompactSummary` flag alone
+   truncates nothing -- so removing or renaming only the marker left the summary token unchanged. The
+   extractor now reads the marker as `boundary compact_boundary` evidence beside the summary record, in
+   the file's own order, and fails on any *other* message-less record rather than skipping it; the
+   boundary-alone case (`spec: "6"`) expects both halves on the Claude route, and the boundary-excluding
+   windows assert `compact_boundary` absent beside the absent summary text. `M3a` (the marker record
+   removed) fails with `got: ["compaction …"] want: ["boundary compact_boundary" "compaction …"]`, and
+   `M3b` (the marker's subtype renamed) fails at the extractor's own refusal.
+4. **The fold's unmatched-row refusal has its own case (P2), fixed.** Both recorded negative arms appended
+   `custom_tool_call` records, so both were refused by the unkeyed-unit condition before the
+   row-attribution condition could run, and removing the latter alone changed neither arm. The case now
+   appends a `function_call` record whose `arguments` member is a JSON object where this build's written
+   records state a string: the unit walk's own reading cannot unmarshal the line, so it states no unit for
+   the record, while the inherited reader reads it as a call row all the same -- every unit under the id
+   is keyed and distinct, and the row whose key no unit states is what refuses the fold. `M4` (the
+   row-attribution condition removed) leaves the case's comparison silent (`differences = []`), while the
+   two `custom_tool_call` arms stay green under the same mutation.
+
+#### The round's mutations, each one executed
+
+One line (or one block) changed per rule, the cited test run immediately, the failure recorded, the line
+restored. The line numbers are the working tree's.
+
+| # | rule | file | the mutation | command | observed failure |
+|---|---|---|---|---|---|
+| M1 | this round's first finding (the retained place's precedence over the tool-result place) | `internal/ccc/route_shared.go` | the `fileParentRecorded`-gated retained place moved back after the tool-result place (the pre-fix order) | `go test -tags fts5 -count=1 -run '^TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor$\|^TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult$\|^TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply$' ./internal/ccc/` | `--- FAIL: TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor` — `continue_pi_test.go:3027: pi: the off-line reply's entry hangs off "feccc4ba", want call A's own entry "24c2f8a3"`; `:3050: unresolved_source_parents = 1, want none`. Both round-15 cases print `ok` under the same mutation |
+| M2a | the id-less inference's eligibility | `internal/ccc/opencode_target.go` | `!c.reservedSlots[occurrence]` → `entry.Result == nil && !c.reservedSlots[occurrence]` | `go test -tags fts5 -count=1 -run '^TestSelectionReservesARecordedResultsSlotFromAnIdLessInference$' ./internal/ccc/` | `selection_test.go:2062: the blank event before the id-less result: the written document states no outcome carrying the id-less result`; `:2067: generated_call_ids = 0, want the one inferred result`; `:2077: unpaired_tool_results = 1, want 0` |
+| M2b | the refused event arriving at a filled slot | `internal/ccc/opencode_target.go` | the `selectionReduced && !openCodeResultWritable(result)` branch removed (the pre-fix repeat count) | same case as `M2a` | `selection_test.go:2077: the blank event after the id-less result: whitespace_only_tool_results = 0, want 1`; `:2077: repeated_tool_results = 1, want 0` |
+| M2c | the arrival rule's reduction scoping (D4) | `internal/ccc/opencode_target.go` | the branch made unconditional (`if !openCodeResultWritable(result) {`) | `go test -tags fts5 -count=1 -run '^TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult$' ./internal/ccc/` | `selection_test.go:5344: an empty-text result: unflagged repeated_tool_results = 1, want the two results after the first recorded outcome` (and the whitespace-only and refused-status arms) |
+| M3a | the Claude boundary's marker half | `internal/ccc/claude_target.go` | the `system`/`compact_boundary` `b.write(claudeRecord{…})` removed | `go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/` | `selection_test.go:917: claude: selecting "6" wrote the evidence` — `got: ["compaction Summary: …"] want: ["boundary compact_boundary" "compaction Summary: …"]` |
+| M3b | the extractor fails on an unknown message-less record | `internal/ccc/claude_target.go` | the marker's `Subtype` renamed (`+ "_renamed"`) | same case as `M3a` | `selection_test.go:915: claude: unhandled message-less record map[… subtype:compact_boundary_renamed …]` |
+| M4 | the fold's row-attribution condition | `internal/ccc/codex_install.go` | the `!attributed` loop of `codexFoldableRows` removed | `go test -tags fts5 -count=1 -run '^TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute$' ./internal/ccc/` | `codex_install_test.go:419: keyed-only: differences = [], want the call the file's own `function_call` record states although the read-back's row for it states a key no unit states` |
+
+```console
+$ # M1: the retained place's precedence reverted (finding 1, S6-file-precedence)
+$ go test -tags fts5 -count=1 -run '^TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor$|^TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult$|^TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply$' ./internal/ccc/
+--- FAIL: TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor (0.01s)
+    continue_pi_test.go:3027: pi: the off-line reply's entry hangs off "feccc4ba", want call A's own
+    entry "24c2f8a3": the file's chain through the excluded result reaches the call, and the
+    tool-result place would chain the reply under A's result instead
+    continue_pi_test.go:3050: pi: --select 0,5,9,10 unresolved_source_parents = 1, want none: …
+exit=1
+$ # M2a: the id-less inference's eligibility reverted (S7-reserved-slot)
+$ go test -tags fts5 -count=1 -run '^TestSelectionReservesARecordedResultsSlotFromAnIdLessInference$' ./internal/ccc/
+--- FAIL: TestSelectionReservesARecordedResultsSlotFromAnIdLessInference (0.00s)
+    selection_test.go:2062: the blank event before the id-less result: the written document states no
+    outcome carrying the id-less result: a recorded result this target cannot write reserves no slot, …
+    selection_test.go:2067: … blank-outcome generated_call_ids = 0, want the one inferred result
+    selection_test.go:2077: … unpaired_tool_results = 1, want 0
+exit=1
+$ # M2b: the refused-arrival count removed (S7-slot-writability)
+$ go test -tags fts5 -count=1 -run '^TestSelectionReservesARecordedResultsSlotFromAnIdLessInference$' ./internal/ccc/
+--- FAIL: TestSelectionReservesARecordedResultsSlotFromAnIdLessInference (0.00s)
+    selection_test.go:2077: the blank event after the id-less result: whitespace_only_tool_results = 0, want 1
+    selection_test.go:2077: the blank event after the id-less result: repeated_tool_results = 1, want 0
+exit=1
+$ # M2c: the arrival rule made unconditional (the D4 arm; S7-slot-writability)
+$ go test -tags fts5 -count=1 -run '^TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult$' ./internal/ccc/
+--- FAIL: TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult (0.00s)
+    selection_test.go:5344: an empty-text result: unflagged repeated_tool_results = 1, want the two
+    results after the first recorded outcome
+    selection_test.go:5344: a whitespace-only result: unflagged repeated_tool_results = 1, want the two …
+    selection_test.go:5344: a status the tool states cannot spell: unflagged repeated_tool_results = 1, …
+exit=1
+$ # M3a: the marker record removed (D1)
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    selection_test.go:917: claude: selecting "6" wrote the evidence
+         got: ["compaction Summary: the build succeeded and the retry configuration is being read."]
+        want: ["boundary compact_boundary" "compaction Summary: the build succeeded and the retry
+        configuration is being read."]
+exit=1
+$ # M3b: the marker's subtype renamed (the extractor's unknown-record refusal; D1)
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    selection_test.go:915: claude: unhandled message-less record map[cwd:/home/user/code/awaiting
+    … subtype:compact_boundary_renamed … type:system uuid:… version:selection-test-0.0]
+exit=1
+$ # M4: the fold's row-attribution condition removed (S2-fold-attribution)
+$ go test -tags fts5 -count=1 -run '^TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute$' ./internal/ccc/
+--- FAIL: TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute (0.36s)
+    codex_install_test.go:419: keyed-only: differences = [], want the call the file's own
+    `function_call` record states although the read-back's row for it states a key no unit states: …
+exit=1
+```
+
+(The transcript is the mutation script's own output, laid out to one screen: `…` elides a line's tail
+inside a message, and the generated identities (entry ids, session ids, uuids) differ per run because
+each mutation run re-materializes the fixtures -- the failure and the assertion are the run's own. Under
+`M1` the two round-15 cases print `ok`; under `M4` the two `custom_tool_call` arms print nothing, so the
+new case is the condition's only pin.)
+
+The round's verification: 471 → **472** top-level `Test…` functions in the two packages' own test files
+(`^(internal|cmd)/ccc/[^/]*_test\.go$` on `672523d` and on the working tree -- the new
+`TestContinueChainsAReplyTheLineLeavesOffToTheFilesOwnAncestor`; every other addition lives inside an
+existing function, and the per-file set comparison against `HEAD` names that one addition and no removal
+or rename); `0009-citations.tsv` grown 68 → **69** rows (`S6-file-precedence` added; `D1`,
+`S2-fold-attribution`, `S6-file-excluded-result`, `S7-reserved-slot` and `S7-slot-writability` rewritten
+to what their cases now assert); `gofmt -l` names nothing. The D4 probe was re-run on this tree
+(`docs/evidence/0009-d4-probe.txt` copied in as a throw-away `zz_d4_probe_test.go`, then removed):
+**1312** lines, two runs byte-identical and identical to the previous round's current-tree run
+(`cmp` silent, `/tmp/ccc-d4-r16/after1.txt`), so this round's edits are selection-gated and §4's retained
+numbers stand as their single source. The probe's own controls printed as before
+(`PROBE-CONTROL recorded-uuid-change moves-digest=true`, `minted-identity-change moves-digest=false`).
+
+```console
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: <checkout> (redacted: this checkout's own root)
+gate: go=<go toolchain> (redacted) targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 444 tests in 8.541s (rc=0)
+  PASS     parity   … | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5728 | …
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 69 row(s) verified
+  PASS     secrets  no leaks found in 197 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
+(`parity`'s detail is elided in this transcript with `…`, as the earlier transcripts do; the numbers this
+round's record quotes are the step's own. A second run, taken after this section and §7's edits were
+folded in, printed the same steps and numbers (`selftest Ran 444 tests in 8.6xx s`,
+`0009-citations.tsv: 69 row(s) verified`), so the tree this record describes is the tree the gate passed
+twice.)
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -2986,6 +3158,11 @@ this section's transcript and §7's edits were folded in, printed the same steps
   boundary-evidence sentence. The sixteenth fix round added the retained file-backed answer's precedence
   over the read's projected parent to the ancestry clause and the read-wide marking resolved before the
   walk to the OpenCode summary clause.
+  The seventeenth fix round extended that precedence to the writer's tool-result place (the ancestry
+  clause reads the retained answer before both projected places) and extended the OpenCode slot clause to
+  the refused-arrival count and the id-less inference's eligibility (a call holding a refused result is
+  what such a result may be written for, and a refused event arriving at a filled slot is counted the way
+  the writer counts that result, the default path's own counts stated beside it).
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -3021,7 +3198,9 @@ this section's transcript and §7's edits were folded in, printed the same steps
   fold's distinct-key requirement, the summary's read-wide question on a reduced document, and the
   counted `compaction_record_tool_results` row) folded in beside them, and the sixteenth round's (the
   retained file-backed answer read before the record's projected parent, and the OpenCode marking resolved
-  from the read's own pairing before the walk) folded in as well.
+  from the read's own pairing before the walk) folded in as well, and the seventeenth round's (the
+  retained answer read before the writer's tool-result place too, and the refused-arrival count and the
+  id-less inference's eligibility on a reduced document) folded in beside them.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
   measurement behind each (the third round's four in §11.12) and the fourth through eleventh rounds' seven,
   five, six, three, four, five, four and five at its close (the seventh's as item 13, the eighth's as item
@@ -3031,6 +3210,7 @@ this section's transcript and §7's edits were folded in, printed the same steps
   item 20 with this record's `M1`–`M19` behind them, and the fifteenth round's six as item 21 with this
   record's `M1`–`M8` behind them, and the sixteenth round's five as item 22 with this record's `M1`–`M6`
   behind them.
+  The seventeenth round's four are item 23 with this record's `M1`–`M7` behind them.
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -3045,6 +3225,9 @@ this section's transcript and §7's edits were folded in, printed the same steps
   already accepted goal file sits under `docs/goals/`, so nothing moved and no index row changed. The fourteenth fix round re-checked it a fourth time: 0009 still awaits operator acceptance,
   0010–0013 are Provisional, 0014–0017 are Ready and unstarted — no already accepted goal file sits under
   `docs/goals/`, so nothing moved and no index row changed.
+  The seventeenth fix round re-checked it a sixth time and found the same answer: 0009 still awaits
+  operator acceptance, 0010–0013 are Provisional, 0014–0017 are Ready and unstarted — no already accepted
+  goal file sits under `docs/goals/`, so nothing moved and no index row changed.
 * `docs/decisions/OPEN-QUESTIONS.md` — Q-0009-01 (the strict refusal's exit code); Q-0009-02 (rewritten:
   the seam pairs a result with the call the read's own ancestry establishes where it does, else the
   nearest prior call of the same id, an id-less record carries no link); Q-0009-03 (rewritten: a supplied
@@ -3109,7 +3292,9 @@ this section's transcript and §7's edits were folded in, printed the same steps
   as one its recorded events stand in for is resolved from the read's own pairing before the walk — both on
   a document a selection produced, so a run without a selection keeps the reconstruction's projection and
   the walk's long-standing marking, and the marking's line filter follows the plan's own evidence
-  eligibility — the reversals are the pre-fix lines the round's `M1`–`M5b` record).
+  eligibility — the reversals are the pre-fix lines the round's `M1`–`M5b` record); and Q-0009-18 (the refused event's count and a refused held result's eligibility follow
+  writability on a selection's document, the default path keeping its own repeat count; the
+  reversals are the two restored lines the round's `M2a`–`M2c` record)
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the

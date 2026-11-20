@@ -3463,3 +3463,27 @@ supersede it with a newer one and say which it supersedes.
 - **Settled by:** an operator decision between "the retained file-backed answer and the read-wide marking
   answer a selection's document only, and the OpenCode marking keeps the plan's line filter" and "the
   file's own chain governs every read, and the marking follows the four tree writers' unfiltered question".
+
+## Q-0009-18 — The refused event's count and the refused held result's eligibility follow writability on a selection's document
+
+- **Status:** open (defaults taken: on a document a selection produced, a call occurrence whose held result
+  the part cannot state — no text, whitespace-only text, a status word the tool states cannot spell — is
+  what an id-less result may be written for, the walk yielding the refused slot to the inferred result and
+  counting the refused event as the writer counts that result; and a refused event that arrives at a slot
+  the document already filled is counted the same way rather than as a repeat, because the part could never
+  have stated it. A run without a selection keeps its first recorded outcome and its own
+  `repeated_tool_results` count, which is the base revision's answer and goal 0009's D4.)
+- **Question:** should the writability rule govern the default path too — the same occurrence eligible for
+  the ledger's id-keyed inference, and a refused event counted as the result it is rather than as a repeat
+  — or is the default path's repeat count (the "first recorded outcome is the one carried" answer the base
+  revision gave) the thing to keep?
+- **Default taken:** reduced-only, because the review's repros are selected conversions and a run without a
+  selection keeps its bytes, counts, installs and CLI answers (D4); the default path's own counts are the
+  arm that refuses the scoping's removal
+  (`TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`, round 17's `M2c`).
+- **Reversal:** the pre-fix behaviour returns by restoring `entry.Result == nil` in
+  `soleInferablePlannedCall`'s candidate test and by removing the `selectionReduced`-guarded arrival branch
+  in the OpenCode plan's walk; each reopens the failure its mutation records
+  (`docs/evidence/0009-selective-context.md`, seventeenth round, `M2a`–`M2c`).
+- **Settled by:** an operator decision between "writability governs every document" and "the default path
+  keeps its long-standing repeat count, the rule answering a selection's document".

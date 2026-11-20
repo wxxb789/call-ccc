@@ -847,7 +847,8 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 				result(selectionBuildCallID, selectionBuildResult),
 			},
 			absent: []string{selectionQuestion, "Starting the build now.", "The build finished.",
-				selectionReadCallID, selectionCapCallID, selectionFollowup, selectionAnswer, selectionSummary},
+				selectionReadCallID, selectionCapCallID, selectionFollowup, selectionAnswer, selectionSummary,
+				claudeSubtypeCompactBoundary},
 		},
 		{
 			// The undischarged call alone: it travels, and nothing else does -- except on OpenCode,
@@ -857,7 +858,8 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 				call(selectionReadCallID, "Read", readInput),
 			},
 			routeEvidence: map[string][]string{TargetOpenCode: nil},
-			absent:        []string{selectionBuildCallID, selectionCapCallID, selectionFollowup, selectionAnswer},
+			absent: []string{selectionBuildCallID, selectionCapCallID, selectionFollowup, selectionAnswer,
+				claudeSubtypeCompactBoundary},
 			omitted: map[string]omission{
 				TargetOpenCode: {evidence: selectionReadCallID, category: "unpaired_tool_calls"},
 			},
@@ -873,15 +875,21 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 				result(selectionCapCallID, selectionCapResult),
 			},
 			absent: []string{selectionBuildCallID, selectionBuildResult, selectionFollowup, selectionAnswer,
-				selectionBoundarySummary},
+				selectionBoundarySummary, claudeSubtypeCompactBoundary},
 		},
 		{
 			// The boundary alone: every route writes it as the record that truncates the model-visible
-			// history, carrying the summary -- the one piece of evidence the extractor reads for it.
+			// history, carrying the summary -- and Claude's document carries the loader's marker beside
+			// the summary record (the pair the native evidence says is what truncates the context), read
+			// as the boundary's own evidence, so removing either half fails the comparison.
 			spec: "6",
 			evidence: []string{
 				"compaction " + selectionBoundarySummary,
 			},
+			routeEvidence: map[string][]string{TargetClaude: {
+				"boundary " + claudeSubtypeCompactBoundary,
+				"compaction " + selectionBoundarySummary,
+			}},
 			absent: []string{selectionBuildCallID, selectionBuildResult, selectionReadCallID,
 				selectionCapCallID, selectionFollowup, selectionAnswer},
 		},
@@ -959,7 +967,18 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 	case TargetClaude:
 		for _, record := range decodeTranscript(t, ClaudeTranscript{Data: data}) {
 			if _, ok := record["message"]; !ok {
-				continue // a record this writer owns: the compaction marker and the like
+				// The writer's own message-less records: the compaction boundary marker, which is one
+				// half of the pair the native loader acts on -- the recorded native evidence is that the
+				// `isCompactSummary` flag alone changes nothing, while the marker plus the summary make
+				// the loader start its model-visible history at the summary -- so it is read as evidence
+				// of the boundary beside that record, in the file's own order. A message-less record of
+				// any other shape is one this extractor does not know, and the extractor fails on it
+				// rather than skipping it: a writer that renames the marker must not pass the comparison.
+				if record["type"] != claudeTypeSystem || record["subtype"] != claudeSubtypeCompactBoundary {
+					t.Fatalf("%s: unhandled message-less record %v", target, record)
+				}
+				evidence = append(evidence, "boundary "+claudeSubtypeCompactBoundary)
+				continue
 			}
 			// The summary record of a compaction boundary is evidence of its own kind: the loader
 			// truncates the model-visible history at the marker beside it, so its text stands for the
@@ -1994,31 +2013,70 @@ func TestSelectionReservesARecordedResultsSlotFromAnIdLessInference(t *testing.T
 	// The control: a recorded result whose text the target's output field cannot carry (whitespace only)
 	// is no outcome on the written path, so it reserves nothing -- the id-less event is the only outcome
 	// evidence that can travel and is inferred onto the call, disclosed as an inference, exactly as a
-	// call whose only recorded outcome is unwritable has always been read.
-	blank := testConversation(
-		Message{Ordinal: 0, Role: "assistant", Content: "call b", Dialogue: "call b",
-			ToolCalls: []ToolCall{{ToolUseID: firstCall, Name: "Bash", InputJSON: firstInput}}},
-		Message{Ordinal: 1, Role: "assistant", Content: "call a", Dialogue: "call a",
-			ToolCalls: []ToolCall{{ToolUseID: secondCall, Name: "Bash", InputJSON: secondInput}}},
-		Message{Ordinal: 2, Role: "user", Content: "the id-less output", Dialogue: "the id-less output",
-			ToolResults: []ToolResult{{ContentRaw: idLessText, ContentSize: len(idLessText)}}},
-		Message{Ordinal: 3, Role: "user", Content: "   ", Dialogue: "   ",
-			ToolResults: []ToolResult{{ToolUseID: secondCall, ContentRaw: "   ", ContentSize: 3}}},
-	)
-	selected, _, err := Select(blank, "1-3", false)
-	if err != nil {
-		t.Fatalf("selecting the blank-outcome window: %v", err)
+	// call whose only recorded outcome is unwritable has always been read. Both orders are pinned (round
+	// 17's second finding): the blank event standing *before* the id-less result must leave the call
+	// eligible for the inference (the part is owed the outcome the document can state, and the walk
+	// yields the refused slot to it), and the blank event standing *after* it must be counted the way
+	// the writer counts the same result -- whitespace only -- rather than as a repeat of an outcome the
+	// part could never have stated.
+	callRecord := func(ordinal int) Message {
+		return Message{Ordinal: ordinal, Role: "assistant", Content: "call a", Dialogue: "call a",
+			ToolCalls: []ToolCall{{ToolUseID: secondCall, Name: "Bash", InputJSON: secondInput}}}
 	}
-	converted, err := route.Convert(selected, selectionProbeOptions())
-	if err != nil {
-		t.Fatalf("converting the blank-outcome window: %v", err)
+	idLessRecord := func(ordinal int) Message {
+		return Message{Ordinal: ordinal, Role: "user", Content: "the id-less output",
+			Dialogue:    "the id-less output",
+			ToolResults: []ToolResult{{ContentRaw: idLessText, ContentSize: len(idLessText)}}}
 	}
-	if !strings.Contains(string(converted.Data), idLessText) {
-		t.Errorf("the written document does not hold the id-less result: a recorded result this target " +
-			"cannot write reserves no slot, so the inference was the only outcome that could travel")
+	blankRecord := func(ordinal int) Message {
+		return Message{Ordinal: ordinal, Role: "user", Content: "   ", Dialogue: "   ",
+			ToolResults: []ToolResult{{ToolUseID: secondCall, ContentRaw: "   ", ContentSize: 3}}}
 	}
-	if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 1 {
-		t.Errorf("blank-outcome generated_call_ids = %d, want the one inferred result", got)
+	callBRecord := Message{Ordinal: 0, Role: "assistant", Content: "call b", Dialogue: "call b",
+		ToolCalls: []ToolCall{{ToolUseID: firstCall, Name: "Bash", InputJSON: firstInput}}}
+	for _, order := range []struct {
+		name     string
+		messages []Message
+	}{
+		{"the blank event before the id-less result",
+			[]Message{callBRecord, callRecord(1), blankRecord(2), idLessRecord(3)}},
+		{"the blank event after the id-less result",
+			[]Message{callBRecord, callRecord(1), idLessRecord(2), blankRecord(3)}},
+	} {
+		blank := testConversation(order.messages...)
+		selected, _, err := Select(blank, "1-3", false)
+		if err != nil {
+			t.Fatalf("%s: selecting the blank-outcome window: %v", order.name, err)
+		}
+		converted, err := route.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the blank-outcome window: %v", order.name, err)
+		}
+		idLessWritten := false
+		for _, line := range selectionCallAndResultLines(t, TargetOpenCode, converted.Data) {
+			if strings.HasPrefix(line, "result ") && strings.Contains(line, idLessText) {
+				idLessWritten = true
+			}
+		}
+		if !idLessWritten {
+			t.Errorf("%s: the written document states no outcome carrying the id-less result: a recorded "+
+				"result this target cannot write reserves no slot, so the inference was the only outcome "+
+				"that could travel", order.name)
+		}
+		if got := lossCount(t, converted.Losses, "generated_call_ids").Count; got != 1 {
+			t.Errorf("%s: blank-outcome generated_call_ids = %d, want the one inferred result",
+				order.name, got)
+		}
+		for category, want := range map[string]int{
+			"whitespace_only_tool_results": 1, // the blank event, counted as the writer counts it
+			"repeated_tool_results":        0, // nothing the part could state was recorded twice
+			"unpaired_tool_results":        0, // the id-less result was inferred, not omitted
+			"unpaired_tool_calls":          0, // the call's part states the inferred outcome
+		} {
+			if got := lossCount(t, converted.Losses, category).Count; got != want {
+				t.Errorf("%s: %s = %d, want %d", order.name, category, got, want)
+			}
+		}
 	}
 }
 
