@@ -291,6 +291,8 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 		// document to reconstruct them (goal 0009's D6).
 		builder.selectionReduced = true
 		builder.pairings = pairedCallOccurrences(conv)
+		builder.excludedOwners = conv.sourceExcludedResultOwners
+		builder.callEvents = conv.sourceCallRecordedEvents
 		builder.finality = callFinalities(conv, builder.pairings)
 		builder.writtenCalls = map[callOccurrence]string{}
 		builder.boundaries = conv.sourceBoundaries
@@ -362,9 +364,13 @@ type codexRolloutBuilder struct {
 	// under, so a result is written under the call occurrence the *read* paired it with rather than
 	// under an id another written occurrence happens to share, and no result is inferred onto an
 	// occurrence the read did not name (ID-less ownership inference on a selected run is its own later
-	// increment).
+	// increment). excludedOwners names the carried results whose recorded owner the selection left out
+	// (the read paired them; the reduced stream cannot say so), and callEvents names the carried calls
+	// the read answered with at least one recorded event, which is what the summary question asks.
 	selectionReduced bool
 	pairings         map[resultOccurrence]callOccurrence
+	excludedOwners   map[resultOccurrence]bool
+	callEvents       map[callOccurrence]bool
 	finality         map[callOccurrence]callFinality
 	writtenCalls     map[callOccurrence]string
 	boundaries       map[int]boundaryLedger
@@ -414,6 +420,7 @@ type codexRolloutBuilder struct {
 	// count of boundaries whose replaced history the read cannot establish at all).
 	lossNonterminal       int
 	lossOutstanding       int
+	lossExcludedOwners    int
 	lossBoundaryCalls     int
 	lossBoundaryResults   int
 	lossBoundaryUncertain int
@@ -543,6 +550,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		// the record's text. So the text alone is suppressed; the tool evidence travels exactly as a
 		// dialogue record's would, because a call and its output carry no role of their own.
 		b.lossSystemRecords++
+		b.currentReason = "system_records"
 		b.writeToolEvidence(message)
 		return
 	}
@@ -651,10 +659,13 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 //
 // On a document a selection produced, the pairing and the outcome question are asked of the seam, not of
 // the reduced stream: a result is written only under the call occurrence the *read* paired it with (and
-// only where that occurrence was written), a result whose recorded status is progress is omitted and
-// counted (this format's function_call_output carries an outcome or nothing), and the archive's derived
-// summary of a call is written only where the read pairs no recorded event with the call at all -- a
-// summary whose call the read answers with a progress event is that event's view, not an outcome.
+// only where that occurrence was written), a result the read paired with a call the selection left out is
+// counted under its own category rather than collapsed with a link-less one, a result whose recorded
+// status is progress is omitted and counted (this format's function_call_output carries an outcome or
+// nothing), and the archive's derived summary of a call is written only where the seam says the read
+// paired *no* recorded event with the call at all -- a summary whose call the read answers with a
+// progress event is that event's view, not an outcome, even where the selection left the event's own
+// record behind.
 func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	for index, call := range message.ToolCalls {
 		b.toolCall(index, call, message.Timestamp)
@@ -664,6 +675,16 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 			place := resultOccurrence{message: b.messageIndex, result: resultIndex}
 			owner, ok := b.pairings[place]
 			if !ok {
+				if b.excludedOwners[place] {
+					// The read *did* pair this result -- with a call the selection left out, so the
+					// reduced stream can no longer name the occurrence. The disposition travels on the
+					// seam (sourceExcludedResultOwners), and the result is counted under its own category
+					// rather than as one the source never linked: omitted by selection and absent in
+					// source are different states (D6(c)).
+					b.lossExcludedOwners++
+					b.currentReason = "tool_results_of_excluded_calls"
+					continue
+				}
 				// The read recorded no link between this result and any call: on a reduced document the
 				// writer does not infer one (ID-less ownership inference is its own later increment), so
 				// the result is omitted and counted rather than written under a call the read never
@@ -690,10 +711,11 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 			}
 			b.toolResult(result, message.Timestamp, &owner)
 		}
-		// The archive's own summary of a call is a view of the events the read recorded for it. Where
-		// the read's pairing names such an event, the summary is that event's view and is not written;
-		// where it names none, the summary is the outcome evidence the read holds and is written -- but
-		// only when the read established an outcome at all: a call whose paired events are progress is
+		// The archive's own summary of a call is a view of the events the read recorded for it. Where the
+		// seam's own answer says the read paired such an event with the call -- any status, carried or
+		// left out by the selection -- the summary is that event's view and is not written; where it
+		// paired none, the summary is the outcome evidence the read holds and is written -- but only
+		// when the read established an outcome at all: a call whose paired events are progress is
 		// written with no output (counted as outstanding), never with the progress text.
 		for _, entry := range b.writtenCallPlaces(message) {
 			place := entry.place
@@ -702,7 +724,7 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 			if !ok {
 				continue
 			}
-			if hasPairedResult(b.pairings, place) || !b.finality[place].stateAnOutcome() {
+			if b.callEvents[place] || !b.finality[place].stateAnOutcome() {
 				continue
 			}
 			b.toolResult(result, message.Timestamp, &place)
@@ -1395,6 +1417,16 @@ func (b *codexRolloutBuilder) reductionLosses() []Loss {
 				"progress, or the source recorded none at all), so writing the archive's derived " +
 				"summary of the call would state a completion the source never recorded. The call " +
 				"record itself travels, and the summary's text does not",
+		},
+		{
+			Category:    "tool_results_of_excluded_calls",
+			Disposition: DispositionOmitted,
+			Count:       b.lossExcludedOwners,
+			Detail: "the read paired these results with recorded calls, and the selection left those " +
+				"calls out: with the call omitted there is no record in the target for the result to " +
+				"answer, and this is a different state from a result the source never linked (counted " +
+				"as unpaired_tool_results) -- the disposition that says so travels on the seam " +
+				"(sourceExcludedResultOwners), because the reduced stream cannot tell the two apart",
 		},
 		{
 			Category:    "compaction_record_tool_calls",

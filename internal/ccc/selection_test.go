@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -179,20 +180,28 @@ func TestSelectionRefusesABadSpecificationByName(t *testing.T) {
 
 	// CheckSelectionOptions answers the same refusals before any read, and refuses a supplied value that
 	// names nothing (an unset shell variable), a value that holds whitespace alone whatever the presence
-	// bit says, as well as the strict arm without a selection.
-	if err := CheckSelectionOptions("", false, true); !errors.Is(err, ErrBadSelection) {
+	// bit says, as well as the strict arm -- supplied at all, a false value included -- without a
+	// selection.
+	if err := CheckSelectionOptions("", false, false, true); !errors.Is(err, ErrBadSelection) {
 		t.Errorf("a supplied empty specification: err = %v, want ErrBadSelection", err)
 	}
-	if err := CheckSelectionOptions("", true, false); !errors.Is(err, ErrBadSelection) {
+	if err := CheckSelectionOptions("", true, false, false); !errors.Is(err, ErrBadSelection) {
 		t.Errorf("--strict-selection without --select: err = %v, want ErrBadSelection", err)
 	}
-	if err := CheckSelectionOptions(" 0-2 ", true, true); err != nil {
+	if err := CheckSelectionOptions("", false, true, false); !errors.Is(err, ErrBadSelection) {
+		t.Errorf("--strict-selection=false without --select: err = %v, want ErrBadSelection: the "+
+			"flag's presence is the request, and a false value must not read as its absence", err)
+	}
+	if err := CheckSelectionOptions(" 0-2 ", true, false, true); err != nil {
 		t.Errorf("a well-formed specification: err = %v, want nil", err)
 	}
-	if err := CheckSelectionOptions("", false, false); err != nil {
+	if err := CheckSelectionOptions(" 0-2 ", false, true, true); err != nil {
+		t.Errorf("a well-formed specification with the strict arm spelled false: err = %v, want nil", err)
+	}
+	if err := CheckSelectionOptions("", false, false, false); err != nil {
 		t.Errorf("the flag's absence: err = %v, want nil", err)
 	}
-	if err := CheckSelectionOptions("   ", false, false); !errors.Is(err, ErrBadSelection) {
+	if err := CheckSelectionOptions("   ", false, false, false); !errors.Is(err, ErrBadSelection) {
 		t.Errorf("whitespace alone without the presence bit: err = %v, want ErrBadSelection", err)
 	}
 }
@@ -529,10 +538,12 @@ func TestSelectionEndsAWindowOffTheReadsLineWithoutMovingIt(t *testing.T) {
 		t.Errorf("the rollout holds the off-line result: a record written into this target's log " +
 			"becomes model-visible history, so the window revived the branch the read left")
 	}
-	// The mutation: the same reduced document with the carried line answer removed. The writer's own
-	// walk over the window reaches the result and writes it -- the behaviour the seam exists to stop.
+	// The mutation: the same reduced document with only the line answer invalidated -- every record
+	// answered as on-line -- while selected mode stays on, so the writer's own walk over the window
+	// reaches the result and writes it. (Clearing the seam's marker instead would switch the whole
+	// writer to the unflagged path, which would make this arm pass for the wrong reason.)
 	mutated := selected
-	mutated.sourceLineInactive = nil
+	mutated.sourceLineInactive = make([]bool, len(mutated.Messages))
 	mutatedRollout, err := ConvertToCodexRollout(mutated, testOptions())
 	if err != nil {
 		t.Fatalf("converting the mutated window: %v", err)
@@ -596,17 +607,22 @@ func TestSelectionAnswersNoProgressEventAsACallOutcome(t *testing.T) {
 		t.Errorf("outstanding_tool_calls = %d (present=%v), want the call counted", count, ok)
 	}
 
-	// The mutation: the same reduced document, the carried lifecycle answer gone. The writer asks the
-	// message-local question, finds no recorded result in the window and writes the summary -- the
-	// behaviour the carried disposition exists to stop.
+	// The mutation: the same reduced document with this call's carried dispositions invalidated to what
+	// the reduced stream alone would suggest -- no recorded event for the call in the window, and the
+	// surviving summary looking like the completion -- while selected mode stays on. The writer then
+	// publishes the summary: the behaviour the carried answers exist to stop. (Clearing the seam's
+	// marker instead would switch the whole writer to the unflagged path, so the arm would pass even if
+	// selected mode recomputed these answers from the window.)
 	mutated := selected
-	mutated.sourceLineInactive = nil
+	place := callOccurrence{message: 0, call: 0}
+	mutated.sourceCallFinality = map[callOccurrence]callFinality{place: callFinalityCompleted}
+	mutated.sourceCallRecordedEvents = map[callOccurrence]bool{}
 	mutatedRollout, err := ConvertToCodexRollout(mutated, testOptions())
 	if err != nil {
 		t.Fatalf("converting the mutated window: %v", err)
 	}
 	if output, ok := rolloutOutputFor(t, mutatedRollout.Data, "call_wait"); !ok || output != progressText {
-		t.Errorf("the mutation did not turn the arm red: without the carried lifecycle answer the "+
+		t.Errorf("the mutation did not turn the arm red: without the carried dispositions the "+
 			"writer wrote no summary output (present=%v, %q)", ok, output)
 	}
 }
@@ -783,17 +799,24 @@ func TestSelectionCountsTheEvidenceACompactionRecordAccountsFor(t *testing.T) {
 		t.Errorf("the rollout writes the accounted result as an outcome: the boundary record's evidence " +
 			"is the history the boundary replaced")
 	}
-	// The mutation: the carried ledger gone. The writer reads the boundary record as it always has and
-	// the accounted call and result vanish from the report -- what the seam's answer prevents.
+	// The mutation: the same reduced document with only the boundary ledger invalidated -- the seam
+	// answers nothing for the boundary record -- while selected mode stays on. The writer reads the
+	// missing answer as the unknown it is (nothing counted, unestablished_compaction_history = 1), so
+	// the arm is red for the recomputation the carried ledger exists to prevent, not because the whole
+	// writer fell back to the unflagged path.
 	mutated := selected
-	mutated.sourceLineInactive = nil
+	mutated.sourceBoundaries = nil
 	mutatedRollout, err := ConvertToCodexRollout(mutated, testOptions())
 	if err != nil {
 		t.Fatalf("converting the mutated boundary window: %v", err)
 	}
-	if count, ok := optionalLoss(mutatedRollout.Losses, "compaction_record_tool_results"); ok {
+	if count, ok := optionalLoss(mutatedRollout.Losses, "compaction_record_tool_results"); ok && count != 0 {
 		t.Errorf("the mutation did not turn the arm red: the uncounted conversion still reports %d "+
 			"accounted result(s)", count)
+	}
+	if count, ok := optionalLoss(mutatedRollout.Losses, "unestablished_compaction_history"); !ok || count != 1 {
+		t.Errorf("unestablished_compaction_history = %d (present=%v) for the mutated conversion, want "+
+			"the missing ledger reported as the unknown it is, never as none", count, ok)
 	}
 
 	// The unknown state: the same boundary with no evidence of its own, read through a provider whose
@@ -904,8 +927,10 @@ func TestSelectionRefusesACounterpartOffTheReadsLine(t *testing.T) {
 
 // TestSelectionIsRefusedOnEveryOtherPair pins D7: the flag is honoured on the reference pair alone, and
 // every other pair is refused by name in the core's Continue -- before the source is opened, so the
-// error a caller sees is the refusal itself and never a read failure. The control arm is the same
-// invocation with the flag absent, which reaches the read and fails there instead.
+// refused run's reads of the source stay at zero: an error a read produced would be indistinguishable
+// from one the gate produced after discarding a read, which is why the count itself is asserted. The
+// control arm is the same invocation with the flag absent, which reaches the read and fails there
+// instead.
 func TestSelectionIsRefusedOnEveryOtherPair(t *testing.T) {
 	cfg := configWithoutSources(t)
 	for _, testCase := range []struct {
@@ -917,11 +942,12 @@ func TestSelectionIsRefusedOnEveryOtherPair(t *testing.T) {
 		{ref: Ref{Provider: "claude", ID: claudeSelectionFixtureRef.ID}, target: TargetOMP},
 		{ref: Ref{Provider: "claude", ID: claudeSelectionFixtureRef.ID}, target: TargetClaude},
 	} {
+		reads := &countingSourceReads{}
 		_, err := Continue(context.Background(), ContinueOptions{
 			Ref:               testCase.ref,
 			Target:            testCase.target,
 			Config:            cfg,
-			Reader:            NewSourceReader(cfg),
+			Reader:            reads,
 			Selection:         "0-",
 			SelectionSupplied: true,
 		})
@@ -934,10 +960,55 @@ func TestSelectionIsRefusedOnEveryOtherPair(t *testing.T) {
 			!strings.Contains(err.Error(), testCase.target) {
 			t.Errorf("the pair refusal does not name the pair: %v", err)
 		}
+		if reads.calls != 0 {
+			t.Errorf("Continue(%s → %s, --select) read the source %d time(s): the refusal must be "+
+				"answered before the source is opened, and a read whose error was discarded would "+
+				"still have opened it", testCase.ref.Provider, testCase.target, reads.calls)
+		}
 	}
+
+	// The strict arm, supplied with an explicit false value, is still the flag's presence: the same
+	// unsupported pair is refused by name rather than allowed past the gate to install the full history
+	// the caller's command line kept out.
+	reads := &countingSourceReads{}
+	_, err := Continue(context.Background(), ContinueOptions{
+		Ref:                     Ref{Provider: "claude", ID: claudeSelectionFixtureRef.ID},
+		Target:                  TargetPi,
+		Config:                  cfg,
+		Reader:                  reads,
+		Selection:               "0-",
+		SelectionSupplied:       true,
+		StrictSelection:         false,
+		StrictSelectionSupplied: true,
+	})
+	if !errors.Is(err, ErrSelectionUnsupportedPair) {
+		t.Errorf("Continue(claude → pi, --select 0- --strict-selection=false): err = %v, want "+
+			"ErrSelectionUnsupportedPair -- a false value is the flag's presence, not its absence", err)
+	}
+	if reads.calls != 0 {
+		t.Errorf("the strict-false refused run read the source %d time(s)", reads.calls)
+	}
+
+	// The strict arm alone -- a false value included -- names no selection at all, and is refused before
+	// the pair gate even answers: a request about nothing is answered before it is answered about a pair.
+	reads = &countingSourceReads{}
+	_, err = Continue(context.Background(), ContinueOptions{
+		Ref:                     Ref{Provider: "claude", ID: claudeSelectionFixtureRef.ID},
+		Target:                  TargetPi,
+		Config:                  cfg,
+		Reader:                  reads,
+		StrictSelectionSupplied: true,
+	})
+	if !errors.Is(err, ErrBadSelection) {
+		t.Errorf("Continue(claude → pi, --strict-selection=false): err = %v, want ErrBadSelection", err)
+	}
+	if reads.calls != 0 {
+		t.Errorf("the strict-only refused run read the source %d time(s)", reads.calls)
+	}
+
 	// The control arm: the same invocation without a selection is not refused by the pair gate. It
 	// reaches the read, which fails -- the config's roots are empty -- and the failure is the read's.
-	_, err := Continue(context.Background(), ContinueOptions{
+	_, err = Continue(context.Background(), ContinueOptions{
 		Ref:    Ref{Provider: "codex", ID: codexFixtureRef.ID},
 		Target: TargetCodex,
 		Config: cfg,
@@ -949,6 +1020,19 @@ func TestSelectionIsRefusedOnEveryOtherPair(t *testing.T) {
 	if errors.Is(err, ErrSelectionUnsupportedPair) {
 		t.Errorf("the unflagged control arm was refused by the pair gate: %v", err)
 	}
+}
+
+// countingSourceReads answers one read call with an error, and counts the calls: the D7 pair gate's
+// promise is that a refused pair costs no read of the source, and a count is the only place that promise
+// is observable -- a read whose error a buggy run discarded would be invisible in the run's error
+// sentence.
+type countingSourceReads struct {
+	calls int
+}
+
+func (r *countingSourceReads) Read(context.Context, Ref) (Conversation, error) {
+	r.calls++
+	return Conversation{}, errors.New("the source must not be opened for a refused pair")
 }
 
 // configWithoutSources is a configuration with no provider roots and no archive: a read through it
@@ -1060,10 +1144,13 @@ func TestSelectionNamesTheCategoryBehindALostToolResult(t *testing.T) {
 	}
 }
 
-// TestSelectionRefusesADocumentASelectionProduced pins the one input a selection cannot answer for: the
+// TestSelectionRefusesADocumentASelectionProduced pins the one input a selection cannot answer for -- the
 // per-record line, ancestry and pairing answers are the read's own, and re-deriving them from a window is
-// how a window would revive a branch the first selection left off the line. Applying the specification to
-// the read is the caller's move.
+// how a window would revive a branch the first selection left off the line (applying the specification to
+// the read is the caller's move) -- and its writer-side half: a document a selection produced handed to a
+// writer that does not consume the seam is refused by name rather than written by a writer that would
+// recompute those answers from the punctured stream. The reference route's own writer is the one that
+// accepts it, so the refusal is the seam's boundary rather than a refusal of selected documents as such.
 func TestSelectionRefusesADocumentASelectionProduced(t *testing.T) {
 	conversation := selectionFixtureConversation(t)
 	selected, _, err := Select(conversation, "0-3", false)
@@ -1072,6 +1159,42 @@ func TestSelectionRefusesADocumentASelectionProduced(t *testing.T) {
 	}
 	if _, _, err := Select(selected, "0", false); !errors.Is(err, ErrSelectionReduced) {
 		t.Errorf("reducing a reduced document: err = %v, want ErrSelectionReduced", err)
+	}
+	for _, testCase := range []struct {
+		target string
+		write  func() error
+	}{
+		{target: TargetClaude, write: func() error {
+			_, err := ConvertToClaudeTranscript(selected, ClaudeTargetOptions{})
+			return err
+		}},
+		{target: TargetPi, write: func() error {
+			_, err := ConvertToPiSession(selected, PiTargetOptions{})
+			return err
+		}},
+		{target: TargetOMP, write: func() error {
+			_, err := ConvertToOMPSession(selected, OMPTargetOptions{})
+			return err
+		}},
+		{target: TargetOpenCode, write: func() error {
+			_, err := ConvertToOpenCodeSession(selected, OpenCodeTargetOptions{})
+			return err
+		}},
+	} {
+		err := testCase.write()
+		if !errors.Is(err, ErrSelectionUnsupportedWriter) {
+			t.Errorf("writing the selected document to %s: err = %v, want ErrSelectionUnsupportedWriter",
+				testCase.target, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), testCase.target) {
+			t.Errorf("the %s writer's refusal does not name the target it is: %v", testCase.target, err)
+		}
+	}
+	// The reference route's writer consumes the seam, so the same document is written rather than
+	// refused: the boundary is the writer's own consumption, not the document.
+	if _, err := ConvertToCodexRollout(selected, testOptions()); err != nil {
+		t.Errorf("the Codex writer refused a document a selection produced: %v", err)
 	}
 }
 
@@ -1156,5 +1279,289 @@ func TestSelectionTimeStampsAreNeverOlderThanTheReadsRecord(t *testing.T) {
 		if _, ok := recorded[at.UnixNano()]; !ok {
 			t.Errorf("a written record is stamped %s, which is no instant the read recorded", line.Timestamp)
 		}
+	}
+}
+
+// fixedSourceReads answers every read with one document a case built: the Continue-level cases drive the
+// engine's whole flow -- the pair gate, the boundary question, the reduction, the writer and the refusal
+// -- over a document no committed fixture can produce, and an injected reader is where the document
+// enters (SourceReads).
+type fixedSourceReads struct {
+	conversation Conversation
+}
+
+func (r *fixedSourceReads) Read(context.Context, Ref) (Conversation, error) {
+	return r.conversation, nil
+}
+
+// selectionContinueConversation is the document the Continue-level cases drive: a call whose recorded
+// result has no text the target's output could carry. The source file's own path is cleared, because no
+// file stands behind a document a case built: the boundary answers "no path" instead of stopping the run
+// on a file that does not exist, exactly as it does for an archive read.
+func selectionContinueConversation(t *testing.T) Conversation {
+	t.Helper()
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "calling", Dialogue: "calling",
+			SourceUUID: "c1",
+			ToolCalls:  []ToolCall{{ToolUseID: "call_empty_result", Name: "Bash", InputJSON: `{}`}}},
+		Message{Ordinal: 1, Role: "user", SourceUUID: "r2", SourceParentUUID: "c1",
+			ToolResults: []ToolResult{{ToolUseID: "call_empty_result"}}},
+	)
+	conversation.Source.SourcePath = ""
+	conversation.Source.DisplayPath = ""
+	return conversation
+}
+
+// selectionContinueFiles counts the files below a directory, so a refused run can be shown to have
+// installed nothing at all rather than only that one expected file is absent.
+func selectionContinueFiles(t *testing.T, root string) int {
+	t.Helper()
+	count := 0
+	err := filepath.WalkDir(root, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+	return count
+}
+
+// TestSelectionRefusesACounterpartTheWriterCannotCarry pins D3's writer-side closure eligibility: a
+// selection that separates a recorded call from its recorded result carries the counterpart, but only
+// where the route can represent it -- and this route's output carries text, so a result whose recorded
+// text is empty is one the walk drops (empty_tool_results). The whole selection is refused by name
+// before anything is installed (the pair and both ordinals, and the category the counterpart was
+// counted under), rather than publishing a call whose declared necessity was silently dropped. The
+// same records named explicitly are not refused: the result is then the caller's own selection rather
+// than a declared necessity, and D1's accounting discloses it lost under its own category.
+func TestSelectionRefusesACounterpartTheWriterCannotCarry(t *testing.T) {
+	conversation := selectionContinueConversation(t)
+	selected, report, err := Select(conversation, "0", false)
+	if err != nil {
+		t.Fatalf("selecting the call alone: %v", err)
+	}
+	if report.NecessitiesAdded.Count != 1 || report.NecessitiesAdded.Added[0].Ordinal != 1 ||
+		report.NecessitiesAdded.Added[0].PulledBy != 0 {
+		t.Fatalf("necessities_added = %+v, want the empty-text result at ordinal 1 pulled in by 0",
+			report.NecessitiesAdded)
+	}
+	rollout, err := ConvertToCodexRollout(selected, testOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	if count, ok := optionalLoss(rollout.Losses, "empty_tool_results"); !ok || count != 1 {
+		t.Fatalf("empty_tool_results = %d (present=%v), want the counterpart dropped by its own shape",
+			count, ok)
+	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	fillSelectionUndischargedSplit(&report)
+	err = lostNecessityRefusal(&report)
+	if !errors.Is(err, ErrSelectionUnrepresentable) {
+		t.Fatalf("lostNecessityRefusal = %v, want ErrSelectionUnrepresentable", err)
+	}
+	for _, want := range []string{"ordinal 0", "ordinal 1", "empty_tool_results"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+
+	// The engine's own flow: the same document read through an injected reader, the same selection, and
+	// the refusal answered before anything is installed -- the target home stays empty and the run's
+	// error is the refusal, not a conversion.
+	home := t.TempDir()
+	_, err = Continue(context.Background(), ContinueOptions{
+		Ref:               Ref{Provider: "claude", ID: "selection-empty-result"},
+		Target:            TargetCodex,
+		Config:            fixtureConfig(t),
+		Reader:            &fixedSourceReads{conversation: conversation},
+		TargetHome:        home,
+		TargetBinary:      missingTargetBinary,
+		Selection:         "0",
+		SelectionSupplied: true,
+		Verify:            VerifyNone,
+	})
+	if !errors.Is(err, ErrSelectionUnrepresentable) {
+		t.Fatalf("Continue with the split selection: err = %v, want ErrSelectionUnrepresentable", err)
+	}
+	if !strings.Contains(err.Error(), "ordinal 1") || !strings.Contains(err.Error(), "empty_tool_results") {
+		t.Errorf("the engine's refusal does not name the counterpart and its category: %v", err)
+	}
+	if files := selectionContinueFiles(t, home); files != 0 {
+		t.Errorf("a refused selection wrote %d file(s) into the target home", files)
+	}
+
+	// The explicit selection of both records is not refused: the caller named the result itself, so its
+	// loss with a reason is D1's accounting rather than a declared necessity the writer dropped.
+	selected, report, err = Select(conversation, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting both records: %v", err)
+	}
+	rollout, err = ConvertToCodexRollout(selected, testOptions())
+	if err != nil {
+		t.Fatalf("converting the explicit pair: %v", err)
+	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	if err := lostNecessityRefusal(&report); err != nil {
+		t.Errorf("an explicitly selected pair was refused: %v", err)
+	}
+	if len(report.Records) != 2 || report.Records[1].Necessity ||
+		report.Records[1].Became != BecameLost || report.Records[1].Reason != "empty_tool_results" {
+		t.Errorf("the explicit pair's rows = %+v, want the result lost under empty_tool_results and "+
+			"not marked a necessity", report.Records)
+	}
+}
+
+// TestSelectionNamesAnExcludedOwnerRatherThanALinklessResult pins D6(c) on the shape the reduced stream
+// cannot state: the progress event alone is selected and its recorded call is left out. The read paired
+// the two, so the writer must count the event under its own category (tool_results_of_excluded_calls)
+// rather than under the category for a result the source never linked (unpaired_tool_results) -- and the
+// mutation removes that one carried disposition while leaving selected mode on, so the writer falls into
+// the link-less category and the arm turns red.
+func TestSelectionNamesAnExcludedOwnerRatherThanALinklessResult(t *testing.T) {
+	const progressText = "Still working"
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "spawning", Dialogue: "spawning",
+			SourceUUID: "p1",
+			ToolCalls:  []ToolCall{{ToolUseID: "call_wait", Name: "wait"}}},
+		Message{Ordinal: 1, Role: "user", SourceUUID: "p2", SourceParentUUID: "p1",
+			ToolResults: []ToolResult{{ToolUseID: "call_wait", Status: "running",
+				ContentRaw: progressText, ContentSize: len(progressText)}}},
+	)
+	selected, report, err := Select(conversation, "1", false)
+	if err != nil {
+		t.Fatalf("selecting the progress event: %v", err)
+	}
+	if got := selectionOrdinals(selected); !slices.Equal(got, []int{1}) {
+		t.Fatalf("carried ordinals = %v, want the progress record alone", got)
+	}
+	if report.Excluded.Count != 1 || strings.Join(report.Excluded.Regions, ",") != "0" {
+		t.Fatalf("excluded = %+v, want the call's record left out", report.Excluded)
+	}
+	rollout, err := ConvertToCodexRollout(selected, testOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	if count, ok := optionalLoss(rollout.Losses, "tool_results_of_excluded_calls"); !ok || count != 1 {
+		t.Errorf("tool_results_of_excluded_calls = %d (present=%v), want the event counted under the "+
+			"owner the selection left out", count, ok)
+	}
+	if count, _ := optionalLoss(rollout.Losses, "unpaired_tool_results"); count != 0 {
+		t.Errorf("unpaired_tool_results = %d, want 0: the read paired this event, so its category is "+
+			"the excluded owner, not a link the source never recorded", count)
+	}
+	if rolloutHolds(rollout.Data, progressText) {
+		t.Errorf("the rollout holds the progress text: no record in the target states the event")
+	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	if len(report.Records) != 1 || report.Records[0].Became != BecameLost ||
+		report.Records[0].Reason != "tool_results_of_excluded_calls" {
+		t.Errorf("the event's row = %+v, want it lost under tool_results_of_excluded_calls",
+			report.Records)
+	}
+
+	// The mutation: the same reduced document with only the excluded-owner disposition gone, while
+	// selected mode stays on. The writer then reads the result as one the source never linked -- the
+	// collapse the carried disposition exists to prevent.
+	mutated := selected
+	mutated.sourceExcludedResultOwners = map[resultOccurrence]bool{}
+	mutatedRollout, err := ConvertToCodexRollout(mutated, testOptions())
+	if err != nil {
+		t.Fatalf("converting the mutated window: %v", err)
+	}
+	if count, ok := optionalLoss(mutatedRollout.Losses, "unpaired_tool_results"); !ok || count != 1 {
+		t.Errorf("the mutation did not turn the arm red: unpaired_tool_results = %d (present=%v), want "+
+			"the link-less category the mutation produces", count, ok)
+	}
+}
+
+// TestSelectionAttributesASystemRecordsOmissionToItsRow pins D1's reason column for a record the writer
+// drops by its kind: a selected standalone system reminder is counted (system_records), and its row must
+// say so rather than fall back to the sentence for a record no count explains -- the row's whole contract
+// is that a lost record's reason is the category behind its loss.
+func TestSelectionAttributesASystemRecordsOmissionToItsRow(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "a system reminder", IsSystem: true,
+			SourceUUID: "s1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "the answer", Dialogue: "the answer",
+			SourceUUID: "a2", SourceParentUUID: "s1"},
+	)
+	selected, report, err := Select(conversation, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting both records: %v", err)
+	}
+	rollout, err := ConvertToCodexRollout(selected, testOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	if count, ok := optionalLoss(rollout.Losses, "system_records"); !ok || count != 1 {
+		t.Fatalf("system_records = %d (present=%v), want the reminder counted", count, ok)
+	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	if len(report.Records) != 2 {
+		t.Fatalf("the report accounts for %d record(s), want the two the specification named",
+			len(report.Records))
+	}
+	if report.Records[0].Became != BecameLost || report.Records[0].Reason != "system_records" {
+		t.Errorf("the reminder's row = %+v, want it lost under system_records -- the category the "+
+			"writer counted it under, not the fallback sentence", report.Records[0])
+	}
+}
+
+// TestSelectionReconcilesUndischargedCallsWithTheWritersFates pins D6(b) and D1 on the shape the two
+// report surfaces could disagree about: a selected sidechain record carries a call the source never
+// answered, and the writer drops the whole record (sidechain_messages). calls_undischarged still counts
+// the source's own state among the carried records (1), but its split says those calls did not travel
+// (calls_undischarged_lost = 1) while the conversion's outstanding_tool_calls stays 0 -- and the row's
+// own fate is the category the call went under, so total minus lost is what the target holds.
+func TestSelectionReconcilesUndischargedCallsWithTheWritersFates(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "subagent turn", Dialogue: "subagent turn",
+			IsSidechain: true, SourceUUID: "s1",
+			ToolCalls: []ToolCall{{ToolUseID: "call_sub", Name: "Bash", InputJSON: `{}`}}},
+		Message{Ordinal: 1, Role: "assistant", Content: "after", Dialogue: "after", SourceUUID: "a2"},
+	)
+	selected, report, err := Select(conversation, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the window: %v", err)
+	}
+	if report.CallsUndischarged.Count != 1 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "0" {
+		t.Fatalf("calls_undischarged = %+v, want the source's own unanswered call on record 0",
+			report.CallsUndischarged)
+	}
+	rollout, err := ConvertToCodexRollout(selected, testOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	if count, _ := optionalLoss(rollout.Losses, "outstanding_tool_calls"); count != 0 {
+		t.Fatalf("outstanding_tool_calls = %d, want 0: the call's record was dropped whole", count)
+	}
+	if count, ok := optionalLoss(rollout.Losses, "sidechain_messages"); !ok || count != 1 {
+		t.Fatalf("sidechain_messages = %d (present=%v), want the record's own category", count, ok)
+	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	fillSelectionUndischargedSplit(&report)
+	if report.CallsUndischargedLost.Count != 1 ||
+		strings.Join(report.CallsUndischargedLost.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged_lost = %+v, want the one call whose record was not published",
+			report.CallsUndischargedLost)
+	}
+	if len(report.Records) != 2 || report.Records[0].CallsUndischarged != 1 ||
+		report.Records[0].Became != BecameLost || report.Records[0].Reason != "sidechain_messages" {
+		t.Errorf("record 0's row = %+v, want one undischarged call lost under sidechain_messages",
+			report.Records[0])
+	}
+	// The reconciliation the split exists for: the calls the target holds with no outcome are exactly
+	// the class minus its lost part.
+	outstanding, _ := optionalLoss(rollout.Losses, "outstanding_tool_calls")
+	if written := report.CallsUndischarged.Count - report.CallsUndischargedLost.Count; written != outstanding {
+		t.Errorf("the class minus its lost part = %d, but outstanding_tool_calls = %d: the two report "+
+			"surfaces do not reconcile", written, outstanding)
 	}
 }

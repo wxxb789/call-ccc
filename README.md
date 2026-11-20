@@ -137,13 +137,17 @@ the specification names and the conversion writes that window as a fresh target 
 an inverted or duplicated region and a non-numeric value are refused by name with the usage exit code
 before anything is installed. A window that would separate a recorded call from its recorded result
 carries the counterpart as a declared necessity (the report's `selection.necessities_added`) — but only
-where the counterpart stands on the line the read's own last record answers; where it does not, the whole
-selection is refused by name rather than activating a branch the source's conversation left — and
+where the counterpart stands on the line the read's own last record answers and the route's own writer can
+state it truthfully; where it does not, the whole selection is refused by name (the pair and both
+ordinals) rather than activating a branch the source's conversation left or leaving a declared counterpart
+unpublished — and
 `--strict-selection` refuses a separated window by name instead. The report (human and `--json`) names the
 transformation per class — included, excluded, necessities added, and the calls the source itself left
-undischarged — and accounts for every kept record by its ordinal and the items it became. The option is
+undischarged (with the part of them whose records did not travel) — and accounts for every kept record by
+its ordinal and the items it became. The option is
 a capability of the **reference pair alone** (a Claude Code source → a Codex target); every other pair,
-and `--strict-selection` without `--select`, is refused by name before the source is opened. A run
+and `--strict-selection` without `--select`, is refused by name before the source is opened, and the
+strict flag counts by its **presence**: an explicit `--strict-selection=false` is still the flag. A run
 without the flag is byte-identical to the same run before the option existed.
 
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the

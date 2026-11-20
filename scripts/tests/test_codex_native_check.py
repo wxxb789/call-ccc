@@ -632,6 +632,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               selection_document_ok: bool = True,
               selection_view_ok: bool = True,
               selection_view_excluded: bool = False,
+              selection_view_incomplete: bool = False,
+              selection_view_wrong_role: bool = False,
+              first_selection_overwritten: bool = False,
               session: str | None = None
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
@@ -701,14 +704,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         to put a mutation in; their cases assert both turns' own checks passed, so a window whose turn was
         skipped cannot read as one whose mutation nothing caught.
 
-        ``selection_document_ok`` and ``selection_view_ok`` are the selection arm's own controls (goal
-        0009): the stub's flagged-conversion document reports the named window (``0,4`` kept and
-        ``1-3,5-7`` left out) and its view of a selected session lists the kept record's marker. Turning
-        either off leaves those facts out of the stub's answers, so the arm's own checks -- that the
-        report names the window, and that the target's own view holds the kept record and not the
-        excluded one -- must fail, and only they may. ``selection_view_excluded`` adds the excluded
-        record's marker to a selected session's view as well, so the second half of the view check
-        (``SELECTION_EXCLUDED not in the view``) has its own failing arm.
+        ``selection_document_ok``, ``selection_view_ok``, ``selection_view_incomplete``,
+        ``selection_view_wrong_role`` and ``selection_view_excluded`` are the selection arm's own
+        controls (goal 0009): the stub's flagged-conversion document reports the named window (``0,4``
+        kept and ``1-3,5-7`` left out) and its view of a selected session lists the carried window
+        exactly -- the ordered role/text pairs. Turning ``selection_document_ok`` off leaves the named
+        window out of the document; ``selection_view_ok`` off leaves the window out of the view;
+        ``selection_view_incomplete`` lists only the kept record (the user prompt missing);
+        ``selection_view_wrong_role`` lists the kept record under the user's role, which is the shape a
+        marker search accepted; and ``selection_view_excluded`` adds the excluded record's marker to a
+        selected session's view as well. ``first_selection_overwritten`` is the repeat assertion's own
+        control: the second flagged conversion replaces the first artifact while installing its own, so
+        the comparison of the first artifact's bytes across the second invocation alone must fail -- two
+        distinct session ids alone cannot see that overwrite. Each control fails the arm's own checks and
+        only they, so neither half can be green by never asking.
 
         ``session`` names the session the run converts: the default is the shipped check's own fixture
         (``SOURCE_SESSION``), whose records every selection-arm constant describes. Another session
@@ -872,6 +881,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         path = selected_installed[session]
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_text(json.dumps({"type": "session_meta"}) + "\n")
+                        if conversions["selected"] == 2 and first_selection_overwritten:
+                            # The repeat assertion's own red arm: the second invocation replaces the
+                            # first artifact while installing its own. The ids are still distinct, so
+                            # only the comparison of the first artifact's bytes can catch this.
+                            first = selected_installed[selected_sessions[0]]
+                            first.write_text(json.dumps({"type": "session_meta"}) + "\n"
+                                             + json.dumps({"type": "turn"}) + "\n")
                         selected_views.add(session)
                         selection_document = {
                             "conversion": {
@@ -992,20 +1008,33 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
         def fake_thread_view(server, thread):
             lines = [f"thread {thread} (the case's stub's own view)"]
+            messages: list[tuple[str, str]] = []
             if str(thread) in selected_views:
-                # A selected session's own view: the kept record's marker, as the harness itself would
-                # list it, and nothing of the records the specification excluded -- unless the case asks
-                # the stub to leak the excluded record's marker, which is the view check's own red arm
-                # for its second half.
+                # A selected session's own view: the carried window as the harness itself would list
+                # it -- the ordered role/text pairs -- and nothing of the records the specification
+                # excluded, unless a control asks the stub for another shape. The controls are the
+                # window checks' own red arms: the kept record alone (the prompt missing), the kept
+                # record under the user's role (the shape a marker search accepted), or the excluded
+                # record's marker leaked in beside the whole window.
                 if selection_view_ok:
-                    lines.append(f"    userMessage: {NATIVE_CHECK.SELECTION_KEPT}")
+                    messages = [("userMessage", NATIVE_CHECK.SELECTION_PROMPT),
+                                ("agentMessage", NATIVE_CHECK.SELECTION_KEPT)]
+                    if selection_view_wrong_role:
+                        messages = [(messages[0][0], messages[0][1]),
+                                    ("userMessage", messages[1][1])]
+                    if selection_view_incomplete:
+                        messages = messages[1:]
                 if selection_view_excluded:
-                    lines.append(f"    userMessage: {NATIVE_CHECK.SELECTION_EXCLUDED}")
-            elif str(thread) == second_thread_id and include_growth_in_second:
+                    messages.append(("userMessage", NATIVE_CHECK.SELECTION_EXCLUDED))
+                lines += [f"    {kind}: {text}" for kind, text in messages]
+                return lines, [kind for kind, _ in messages], messages
+            if str(thread) == second_thread_id and include_growth_in_second:
                 # The target's own view of the later session: the turn the source gained, as the harness
                 # itself lists it.
-                lines += [f"    userMessage: {GROWTH_QUESTION}", f"    agentMessage: {GROWTH_ANSWER}"]
-            return lines, ["userMessage", "agentMessage"]
+                messages = [("userMessage", GROWTH_QUESTION), ("agentMessage", GROWTH_ANSWER)]
+                lines += [f"    {kind}: {text}" for kind, text in messages]
+                return lines, [kind for kind, _ in messages], messages
+            return lines, ["userMessage", "agentMessage"], []
 
         def fake_which(name, *args, **kwargs):
             return codex if name == "codex" else go
@@ -1100,12 +1129,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         """The flagged arm's assertions are red exactly when the target or the report is not what they name.
 
         The selection arm (goal 0009) holds the reference route to its window at the native level: the
-        conversion's own report names the classes, and the target harness's own view holds the kept
-        record's marker and not the excluded one's. Three controls drive the stub's answers: a document
-        reporting another window, a view omitting the kept record, and a view that also carries the
-        excluded record's marker -- so each half of the view assertion, the present and the absent one,
-        has a failing arm -- and each control fails its own checks and only they beyond the intact run's
-        own, so none can be green by never asking.
+        conversion's own report names the classes, the target harness's own view lists the carried window
+        exactly -- both records, each in its own role and order -- and the excluded record's marker is
+        absent. Five controls drive the stub's answers: a document reporting another window; a view
+        omitting the window; a view listing only the kept record (the user prompt missing); a view
+        listing the kept record under the user's role (the shape a marker search accepted); and a view
+        carrying the excluded record's marker in beside the whole window. Each control fails its own
+        checks and only they beyond the intact run's own, so the arm's checks cannot be green by never
+        asking, and the exactness of the window is itself red-armed rather than assumed.
         """
         code, results = self.drive(selection_document_ok=False)
         failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
@@ -1125,6 +1156,24 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"{results}")
         self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
 
+        code, results = self.drive(selection_view_incomplete=True)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         ["the selection arm's session 1 holds the carried window and not the rest",
+                          "the selection arm's session 2 holds the carried window and not the rest"],
+                         f"a stub view holding only the kept record -- a window missing the user prompt "
+                         f"it was selected with -- did not fail the arm's own view check: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
+
+        code, results = self.drive(selection_view_wrong_role=True)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         ["the selection arm's session 1 holds the carried window and not the rest",
+                          "the selection arm's session 2 holds the carried window and not the rest"],
+                         f"a stub view listing the kept record under the user's role did not fail the "
+                         f"arm's own view check: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
+
         code, results = self.drive(selection_view_excluded=True)
         failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
         self.assertEqual(failed,
@@ -1132,6 +1181,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                           "the selection arm's session 2 holds the carried window and not the rest"],
                          f"a stub view carrying the excluded record's marker did not fail the arm's own "
                          f"view check: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
+
+        code, results = self.drive(first_selection_overwritten=True)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed, ["the first selection's session is unchanged by the second"],
+                         f"a second selection overwriting the first artifact did not fail the "
+                         f"comparison of its bytes: {results}")
         self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
         # The intact run is the other direction: both checks pass, so neither is red for its own reasons.
         code, results = self.drive()
@@ -1141,7 +1197,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                      "the target harness's own loader opens the selection arm's session 2",
                      "the selection arm's session 1 holds the carried window and not the rest",
                      "the selection arm's session 2 holds the carried window and not the rest",
-                     "the same selection command re-runs into its own fresh sessions"):
+                     "the same selection command re-runs into its own fresh sessions",
+                     "the first selection's session is unchanged by the second"):
             state, detail = results.get(name, ("missing", ""))
             self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")

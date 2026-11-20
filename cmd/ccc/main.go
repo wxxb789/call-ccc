@@ -467,13 +467,17 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, continueUsage)
 		return exitUsage
 	}
-	// Whether --select was supplied at all, even with an empty value: `--select "$SPEC"` whose shell
-	// variable was unset is a request that names nothing, and the core refuses it instead of reading it
-	// as the flag's absence (which would install the whole history the caller meant to cut).
-	selectionSupplied := false
+	// Whether each selection flag was supplied at all, even with an empty or false value: `--select
+	// "$SPEC"` whose shell variable was unset is a request that names nothing, and an explicit
+	// `--strict-selection=false` is the flag's presence -- the core refuses both instead of reading
+	// them as the flags' absence (which would install the whole history the caller meant to cut).
+	selectionSupplied, strictSupplied := false, false
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "select" {
+		switch f.Name {
+		case "select":
 			selectionSupplied = true
+		case "strict-selection":
+			strictSupplied = true
 		}
 	})
 	if strings.TrimSpace(*target) == "" {
@@ -505,20 +509,21 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result, err := continueRun(context.Background(), ccc.ContinueOptions{
-		Ref:               ref,
-		Target:            *target,
-		Config:            cfg,
-		Reader:            ccc.NewSourceReader(cfg),
-		ArchivePath:       cfg.DBPath,
-		TargetHome:        *targetHome,
-		TargetBinary:      *targetBinary,
-		DryRun:            *dryRun,
-		Selection:         *selectFlag,
-		SelectionSupplied: selectionSupplied,
-		StrictSelection:   *strictSelection,
-		Verify:            *verify,
-		ResumePrompt:      *resumePrompt,
-		Stderr:            stderr,
+		Ref:                     ref,
+		Target:                  *target,
+		Config:                  cfg,
+		Reader:                  newContinueReader(cfg),
+		ArchivePath:             cfg.DBPath,
+		TargetHome:              *targetHome,
+		TargetBinary:            *targetBinary,
+		DryRun:                  *dryRun,
+		Selection:               *selectFlag,
+		SelectionSupplied:       selectionSupplied,
+		StrictSelection:         *strictSelection,
+		StrictSelectionSupplied: strictSupplied,
+		Verify:                  *verify,
+		ResumePrompt:            *resumePrompt,
+		Stderr:                  stderr,
 	})
 	if err != nil {
 		// A run that failed after the conversion is not a run without an answer: the report it came back
@@ -568,6 +573,12 @@ func writesTarget(target string) bool {
 // beside a report still writes the report, and still fails the run), and the default is the real
 // conversion.
 var continueRun = ccc.Continue
+
+// newContinueReader builds the reader a continue run reads its source with. It is a variable beside
+// continueRun so the D7 pair-gate case can hand in a reader that counts reads: the gate's promise is
+// that a refused pair never opens the source, and the reader itself -- not an error message a discarded
+// read could produce -- is where that promise is observable.
+var newContinueReader = func(cfg config.Config) ccc.SourceReads { return ccc.NewSourceReader(cfg) }
 
 // writeContinueReport writes one conversion report in the shape the caller asked for, and answers whether
 // it was written.
@@ -748,6 +759,13 @@ func writeSelection(out io.Writer, selection *ccc.SelectionReport) {
 	}
 	fmt.Fprintf(out, "  undischarged: %d call(s) at %s\n", selection.CallsUndischarged.Count,
 		selectionRegions(selection.CallsUndischarged.Regions))
+	if selection.CallsUndischargedLost.Count > 0 {
+		// The split that lets a caller reconcile the class above with the conversion's own
+		// outstanding_tool_calls: these calls sat on records the conversion did not publish.
+		fmt.Fprintf(out, "  calls lost:   %d call(s) at %s (their records did not travel; see the "+
+			"record rows)\n", selection.CallsUndischargedLost.Count,
+			selectionRegions(selection.CallsUndischargedLost.Regions))
+	}
 	for _, record := range selection.Records {
 		necessity := ""
 		if record.Necessity && record.PulledBy != nil {

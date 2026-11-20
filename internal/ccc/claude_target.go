@@ -145,6 +145,13 @@ type ClaudeTranscript struct {
 // resumed while a report called it installed. A document that records none is refused here, before
 // anything is written.
 func ConvertToClaudeTranscript(conv Conversation, opts ClaudeTargetOptions) (ClaudeTranscript, error) {
+	if conv.selectionReduced() {
+		// A document a selection produced is refused before anything else is read of it: this writer does
+		// not consume the seam, and re-walking the window would re-derive exactly the cross-record facts
+		// the seam exists to carry (goal 0009's D6; the pair gate keeps the CLI from reaching this at
+		// all, and an embedding caller is told the same sentence).
+		return ClaudeTranscript{}, selectionUnsupportedWriterRefusal(TargetClaude)
+	}
 	// The recorded directory travels as it was recorded: trimming answers only whether one was recorded
 	// at all. A directory name may legitimately end in whitespace, and every use this value has -- the
 	// project directory the target's own discovery spells (ClaudeProjectDir), the recorded `cwd`, the

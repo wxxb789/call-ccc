@@ -342,8 +342,11 @@ says so.
   records, so 0 and 4 are not its ends) — and holds the report to the window it was asked for
   (`included`/`excluded`/`undischarged`, and the installed path the conversion reports), then reads
   **both** installed sessions
-  through the harness's own loader and asserts each view holds the kept turn's words and not the
-  excluded ones; it runs the same selection command a second time and shows that run installs its own
+  through the harness's own loader and asserts each view lists the carried window **exactly** — the
+  ordered role/text pairs, both records, each in the role the source recorded — and none of the excluded
+  records' words; it runs the same selection command a second time, compares the **first** selected
+  artifact's bytes across the second invocation (a second conversion that replaced it is caught, which
+  two fresh ids alone cannot see), and shows that run installs its own
   **fresh** session rather than writing twice into one (the same snapshot-succeeds-by-repeating rule the
   repeat scenario measures on the ordinary path), and the ids it installed are named in the summary
   line and in `--json` (`selected_sessions`). The arm works at the load level and adds no turn of its

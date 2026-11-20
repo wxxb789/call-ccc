@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"go.kenn.io/agentsview/internal/ccc"
+	"go.kenn.io/agentsview/internal/config"
 )
 
 // sha256Hex answers one byte string's SHA-256 in hex, for the tree digests the refusal cases compare.
@@ -337,40 +342,59 @@ func TestContinueRefusesABadSelectionWithTheUsageExitCode(t *testing.T) {
 
 // TestSelectionIsRefusedOnEveryOtherPairBeforeTheSourceIsOpened pins D7 at the CLI and the "zero reader
 // calls" arm the plan asks for: on every pair but the reference one, the flag is refused by name before
-// the source is opened, so the run's sentence is the refusal and never a read failure -- the sources here
-// do not resolve at all, and a run that opened one would say so -- and nothing is installed.
+// the source is opened, so the run's sentence is the refusal and never a read failure -- and the run's
+// own reader is where that is observed, because a bug that read the source and discarded the error would
+// still print the refusal (the empty-root trick the earlier case used could not see that read at all).
+// The strict arm spelled `false` is covered here too: Go's flag parser accepts it, and its presence is
+// the request -- without a selection it is refused as a request about nothing, and beside one the pair
+// gate answers it.
 func TestSelectionIsRefusedOnEveryOtherPairBeforeTheSourceIsOpened(t *testing.T) {
 	_, targetHome := continueEnvironment(t)
 	sessionID, _ := selectionFixture(t)
-	// The Claude reference cannot resolve: the root below is empty, so a read through it fails before
-	// any conversion, and an error that is not a read failure is an answer the run gave without reading.
-	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	reads := &countingContinueReader{}
+	original := newContinueReader
+	t.Cleanup(func() { newContinueReader = original })
 	for _, testCase := range []struct {
 		name string
 		args []string
+		want string
 	}{
 		{name: "a supported target with a non-Claude source",
 			args: []string{"continue", "codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812", "--to", "codex",
-				"--select", "0-", "--target-binary", missingTargetBinary}},
+				"--select", "0-", "--target-binary", missingTargetBinary},
+			want: "a selection is honoured on one pair only"},
 		{name: "the Claude source with another supported target",
 			args: []string{"continue", "claude:" + sessionID, "--to", "pi",
-				"--select", "0-", "--target-binary", missingTargetBinary}},
+				"--select", "0-", "--target-binary", missingTargetBinary},
+			want: "a selection is honoured on one pair only"},
 		{name: "the strict arm on another pair",
 			args: []string{"continue", "claude:" + sessionID, "--to", "claude",
-				"--select", "0-", "--strict-selection", "--target-binary", missingTargetBinary}},
+				"--select", "0-", "--strict-selection", "--target-binary", missingTargetBinary},
+			want: "a selection is honoured on one pair only"},
+		{name: "the strict arm spelled false on another pair",
+			args: []string{"continue", "claude:" + sessionID, "--to", "pi",
+				"--select", "0-", "--strict-selection=false", "--target-binary", missingTargetBinary},
+			want: "a selection is honoured on one pair only"},
+		{name: "the strict arm alone, spelled false",
+			args: []string{"continue", "claude:" + sessionID, "--to", "pi",
+				"--strict-selection=false", "--target-binary", missingTargetBinary},
+			want: "--strict-selection is the strict arm of a selection"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			reads.calls = 0
+			newContinueReader = func(config.Config) ccc.SourceReads { return reads }
 			code, stdout, stderr := runCLI(t, testCase.args...)
 			if code != exitUsage {
 				t.Errorf("exit %d, want %d (stdout %q, stderr %q)", code, exitUsage, stdout, stderr)
 			}
-			if !strings.Contains(stderr, "a selection is honoured on one pair only") {
-				t.Errorf("stderr = %q, want the pair refusal", stderr)
+			if !strings.Contains(stderr, testCase.want) {
+				t.Errorf("stderr = %q, want it to name %q", stderr, testCase.want)
 			}
-			// The read the run would have made fails (the root is empty); the refusal is not that
-			// failure, which is what makes this arm about the source never being opened.
-			if strings.Contains(stderr, "not found") || strings.Contains(stderr, "no such") {
-				t.Errorf("stderr reads as a source-read failure: %q", stderr)
+			// The count is the promise itself: a run that opened the source on the way to the refusal
+			// would have called this reader, whether or not it discarded what the read answered.
+			if reads.calls != 0 {
+				t.Errorf("the refused run read the source %d time(s): the refusal must be answered "+
+					"before the source is opened", reads.calls)
 			}
 			if files := targetTreeDigest(t, targetHome); len(files) != 0 {
 				t.Errorf("a refused run wrote %d file(s) under the target home: %v", len(files), files)
@@ -378,14 +402,27 @@ func TestSelectionIsRefusedOnEveryOtherPairBeforeTheSourceIsOpened(t *testing.T)
 		})
 	}
 	// The control arm: the reference pair accepts the same specification, so the gate refuses the *pair*,
-	// never the flag everywhere. The fixture root comes back, because a refusal that read nothing has to
-	// be told apart from one that read nothing *successfully*.
+	// never the flag everywhere. The run reads through the real reader again -- and the fixture root is
+	// named -- so a refusal that read nothing is told apart from one that read nothing *successfully*.
+	newContinueReader = original
 	t.Setenv("CLAUDE_PROJECTS_DIR", filepath.Join(fixtureRoot(t), "claude"))
 	code, _, stderr := runCLI(t, continueArgs(sessionID, "--select", "0-", "--dry-run")...)
 	if code != exitOK {
 		t.Errorf("the reference pair with the same specification: exit %d, want %d (stderr %q)",
 			code, exitOK, stderr)
 	}
+}
+
+// countingContinueReader answers every read with an error and counts the calls: the D7 pair gate's
+// promise is that a refused pair costs no read of the source, and the reader itself is where that
+// promise is observable -- a read a buggy run discarded would leave no trace in the run's error.
+type countingContinueReader struct {
+	calls int
+}
+
+func (r *countingContinueReader) Read(context.Context, ccc.Ref) (ccc.Conversation, error) {
+	r.calls++
+	return ccc.Conversation{}, errors.New("the source must not be opened for a refused pair")
 }
 
 // TestTheUnflaggedRunKeepsItsReportWithoutASelectionSection pins D4's report half at the CLI: a run

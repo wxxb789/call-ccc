@@ -205,6 +205,19 @@ func CheckVerifyOptions(verify, resumePrompt string) error {
 	return nil
 }
 
+// SourceReads is the reading a continue run needs from a source reader: one recorded session by its
+// reference. *SourceReader is this build's implementation; the interface exists so a caller -- an
+// embedder, or the pair-gate's own case -- can hand in a reader that observes whether a run read
+// anything at all, which is the only way "refused before the source is opened" is shown rather than
+// inferred from an error message. Where the reader also carries the two answers this build's own reader
+// can give -- the configuration it was built with, and a provider's own declaration that its source is a
+// transcript of appended line records -- they are asked through a type assertion; an injected reader
+// that carries neither is read conservatively (the caller's Config is completed from disk, and a
+// boundary claims no record offsets), never answered with a guess.
+type SourceReads interface {
+	Read(ctx context.Context, ref Ref) (Conversation, error)
+}
+
 // ContinueOptions configures one conversion: what to read, where to write it, and how far to verify.
 type ContinueOptions struct {
 	// Ref identifies the source session, exactly as Inspect does.
@@ -216,8 +229,11 @@ type ContinueOptions struct {
 
 	// Config supplies the provider roots and enabled agents, as in InspectOptions.
 	Config config.Config
-	// Reader, when set, is used instead of building one from Config.
-	Reader *SourceReader
+	// Reader, when set, is used instead of building one from Config. It is an interface (SourceReads) so
+	// a caller can hand in a reader that observes the reads themselves -- the pair gate's promise that a
+	// refused pair costs no read is only observable at the reader -- and *SourceReader is what this build
+	// passes.
+	Reader SourceReads
 	// ArchivePath is an AgentsView archive consulted when the source session is not readable from its
 	// own file. Empty means "source only".
 	ArchivePath string
@@ -250,6 +266,11 @@ type ContinueOptions struct {
 	// that answers it (or the reverse), by name and before anything is installed, instead of carrying
 	// the counterpart.
 	StrictSelection bool
+	// StrictSelectionSupplied says the caller wrote --strict-selection at all, whatever its value: an
+	// explicit `--strict-selection=false` is the flag's presence, and the presence is what the strict
+	// arm's own refusal and the pair gate ask about. A false value tracks as a request that has to be
+	// answered rather than silently turning the run into one the flag was never given.
+	StrictSelectionSupplied bool
 	// Verify is "none", "load" (default) or "resume".
 	Verify string
 	// ResumePrompt is the turn a "resume" verification runs. It is required for that level, because the
@@ -380,11 +401,12 @@ func conversionSourceReport(conversation Conversation) SessionReport {
 
 // selectionRequested answers whether a command line asked for a selection at all: a specification that
 // names something, a value the caller supplied (even an empty one, which CheckSelectionOptions refuses
-// before this is asked), or the strict arm alone. It is the presence test the pair gate and the
-// conversion use, so a run without the flag keeps its exact behaviour and a run with it is answered
-// about the flag rather than silently ignored.
-func selectionRequested(selection string, supplied, strict bool) bool {
-	return supplied || strict || strings.TrimSpace(selection) != ""
+// before this is asked), or the strict arm -- supplied at all, whatever its value. It is the presence
+// test the pair gate and the conversion use, so a run without the flag keeps its exact behaviour and a
+// run with it is answered about the flag rather than silently ignored; `--strict-selection=false` is
+// the flag, and only its absence is not.
+func selectionRequested(selection string, supplied, strict, strictSupplied bool) bool {
+	return supplied || strict || strictSupplied || strings.TrimSpace(selection) != ""
 }
 
 // Continue converts a source session into a new native session of the target harness, installs it, and
@@ -414,10 +436,12 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	// Both are answered here, before any source is opened and before anything is installed; a refused
 	// run costs no read of the source and no target identity, and the CLI maps the errors to the usage
 	// exit code (IsSelectionRefusal).
-	if err := CheckSelectionOptions(opts.Selection, opts.StrictSelection, opts.SelectionSupplied); err != nil {
+	if err := CheckSelectionOptions(opts.Selection, opts.StrictSelection,
+		opts.StrictSelectionSupplied, opts.SelectionSupplied); err != nil {
 		return ContinueResult{}, err
 	}
-	if selectionRequested(opts.Selection, opts.SelectionSupplied, opts.StrictSelection) {
+	if selectionRequested(opts.Selection, opts.SelectionSupplied, opts.StrictSelection,
+		opts.StrictSelectionSupplied) {
 		if err := CheckSelectionPair(opts.Ref, target); err != nil {
 			return ContinueResult{}, err
 		}
@@ -500,14 +524,14 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// source's own loader walks from is a property of the source file and the read, and a window the
 	// selection carries neither moves it nor narrows the read's own last record.
 	conversationForWrite := conversation
-	if selectionRequested(opts.Selection, opts.SelectionSupplied, opts.StrictSelection) {
+	if selectionRequested(opts.Selection, opts.SelectionSupplied, opts.StrictSelection,
+		opts.StrictSelectionSupplied) {
 		selected, report, err := Select(conversation, opts.Selection, opts.StrictSelection)
 		if err != nil {
 			return ContinueResult{}, err
 		}
 		conversationForWrite = selected
 		result.Selection = &report
-		result.Warnings = append(result.Warnings, selectionWarnings(&report)...)
 	}
 
 	// The record the source's own loader selects as the conversation's leaf, asked of the source file's own
@@ -559,7 +583,24 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	if result.Selection != nil {
 		// D1's per-record table is filled from the writer's own walk, which is the only place that knows
 		// what each record became: the item kinds written for it, or the category it was counted under.
+		// The undischarged class is split against those fates in the same pass, because only the walk
+		// says which of the source's undischarged calls sit on records the conversion did not publish,
+		// and the two report surfaces (the selection's class and the conversion's
+		// outstanding_tool_calls) reconcile through that split.
 		fillSelectionRecords(result.Selection, session.RecordFates)
+		fillSelectionUndischargedSplit(result.Selection)
+		// D3's closure eligibility, answered where the writer's own walk has just answered it: a
+		// counterpart the route did not publish refuses the whole selection by name, before anything is
+		// installed and before any verification, rather than leaving the pair half written while the
+		// necessity class declared the counterpart carried. Nothing is published before this point, so
+		// the refusal costs no target file and no target identity -- the same shape as the refusals
+		// raised before the read.
+		if err := lostNecessityRefusal(result.Selection); err != nil {
+			return ContinueResult{}, err
+		}
+		// The selection's warnings travel here rather than beside the selection itself: the undischarged
+		// one names the split against the writer's fates, which only the walk above can answer.
+		result.Warnings = append(result.Warnings, selectionWarnings(result.Selection)...)
 	}
 	result.Conversion = ConversionReport{
 		State:          ConversionStateConverted,
@@ -940,19 +981,22 @@ func reportAfterFailure(
 }
 
 // resolveContinueConfig answers the configuration and reader a conversion reads with, the same way
-// Inspect does: a caller-supplied reader's own configuration wins over the caller's zero value.
-func resolveContinueConfig(opts ContinueOptions) (config.Config, *SourceReader, error) {
+// Inspect does: a caller-supplied reader this build built lends its own configuration over the caller's
+// zero value, while an injected reader (SourceReads) has none to lend and the zero Config is completed
+// from disk exactly as it would be with no reader at all.
+func resolveContinueConfig(opts ContinueOptions) (config.Config, SourceReads, error) {
 	cfg := opts.Config
 	reader := opts.Reader
-	switch {
-	case cfg.AgentDirs == nil && reader != nil:
-		cfg = reader.cfg
-	case cfg.AgentDirs == nil:
-		loaded, err := config.LoadReadOnly()
-		if err != nil {
-			return config.Config{}, nil, fmt.Errorf("reading the AgentsView configuration: %w", err)
+	if cfg.AgentDirs == nil {
+		if concrete, ok := reader.(*SourceReader); ok {
+			cfg = concrete.cfg
+		} else {
+			loaded, err := config.LoadReadOnly()
+			if err != nil {
+				return config.Config{}, nil, fmt.Errorf("reading the AgentsView configuration: %w", err)
+			}
+			cfg = loaded
 		}
-		cfg = loaded
 	}
 	if reader == nil {
 		reader = NewSourceReader(cfg)
@@ -971,7 +1015,7 @@ func resolveContinueConfig(opts ContinueOptions) (config.Config, *SourceReader, 
 // could not complete, a query that failed -- is reported as that, because "the source session was not
 // found" would hide the very candidates a caller needs to name the session.
 func readForConversion(
-	ctx context.Context, reader *SourceReader, cfg config.Config, ref Ref, archivePath string,
+	ctx context.Context, reader SourceReads, cfg config.Config, ref Ref, archivePath string,
 ) (Conversation, string, []string, error) {
 	conversation, err := reader.Read(ctx, ref)
 	if err == nil {
@@ -1067,7 +1111,7 @@ func sourceFileOf(conversation Conversation) sourceFile {
 // source file open, and a container member's bytes are the container's, not this conversation's
 // (sourceFileOf). Only a file that cannot be read stops the run, the way the pre-conversion digest already
 // did.
-func takeSourceBoundary(reader *SourceReader, conversation Conversation, readFrom string) (SourceBoundary, error) {
+func takeSourceBoundary(reader SourceReads, conversation Conversation, readFrom string) (SourceBoundary, error) {
 	if readFrom != "source" {
 		return SourceBoundary{
 			State:  SourceBoundaryNotTaken,
@@ -1160,11 +1204,15 @@ func fillReadCoverage(boundary *SourceBoundary, readBytes int64) {
 // record boundary, because that claim is the provider's to make and never this build's guess about a
 // format. A provider whose format is line-recorded but that declares nothing therefore gets no byte-level
 // record boundary, which is a narrowing this build states rather than a claim it invents.
-func sourceRecordsAreLines(reader *SourceReader, provider string) bool {
-	if reader == nil {
+func sourceRecordsAreLines(reader SourceReads, provider string) bool {
+	concrete, ok := reader.(*SourceReader)
+	if !ok {
+		// An injected reader cannot answer a provider's own declarations: the boundary still measures the
+		// file's bytes and digest, and only the record offsets are withheld -- a claim this build would
+		// otherwise make from an answer nobody gave.
 		return false
 	}
-	_, factory, err := reader.resolveFactory(provider)
+	_, factory, err := concrete.resolveFactory(provider)
 	if err != nil {
 		return false
 	}

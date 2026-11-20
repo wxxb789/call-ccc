@@ -145,6 +145,13 @@ func piTitleSlotLine(timestamp string) []byte {
 // one could never be found while a report called it installed. A document that records none is refused
 // here (ErrNoTargetCwd), before anything is written.
 func ConvertToOMPSession(conv Conversation, opts OMPTargetOptions) (PiSession, error) {
+	if conv.selectionReduced() {
+		// A document a selection produced is refused before anything else is read of it: this writer does
+		// not consume the seam, and re-walking the window would re-derive the cross-record facts the seam
+		// exists to carry (goal 0009's D6). The pair gate keeps the CLI from reaching this at all; an
+		// embedding caller is told the same sentence.
+		return PiSession{}, selectionUnsupportedWriterRefusal(TargetOMP)
+	}
 	return convertToPiFamilySession(conv, PiTargetOptions{
 		SessionID:    opts.SessionID,
 		CLIVersion:   opts.CLIVersion,

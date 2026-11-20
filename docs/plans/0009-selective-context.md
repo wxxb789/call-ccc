@@ -322,7 +322,9 @@ abstraction-boundary failure to report, not a budget to raise.
      (`TestSelectionCarriesTheCounterpartOfASeparatedPair`, `TestSelectionRefusesASeparatedPairUnderStrictSelection`,
      `TestSelectionRefusesACounterpartOffTheReadsLine`, `TestSelectionAnswersNoProgressEventAsACallOutcome`,
      `TestSelectionPublishesAProgressEventOnlyThroughItsCall`).
-  2. **The seam's encoding** is six unexported `Conversation` fields, all nil on a document that is the read
+  2. **The seam's encoding** is six unexported `Conversation` fields at the implementation stage — two
+     more (`sourceExcludedResultOwners`, `sourceCallRecordedEvents`) joined in the review r1 fix round
+     below, for eight — all nil on a document that is the read
      itself (`selectionReduced`, the D4 marker — `internal/ccc/selection.go`, `conversation.go`):
      `sourceLineInactive`/`sourceLineUnresolved` (per carried record, from the walk `readLineAnswers` now
      answers per record as well as in total), `sourceResultPairs` (the read's pairing, keyed to the reduced
@@ -355,3 +357,41 @@ abstraction-boundary failure to report, not a budget to raise.
      `scripts/codex-native-check.py`, whose view assertions the harness's own selftest drives through its
      subprocess/app-server seams (`test_the_selection_arms_own_checks_are_not_vacuous`); the real loader run
      is quoted in the increment's evidence record.
+
+### Review r1's fix round (2026-11-20, uncommitted)
+
+The seven findings were all taken as fixes, with these readings where the plan left the shape open (each
+pinned by a gate-runnable test; the evidence record's §3 names them beside the citation rows):
+
+1. **D3's closure eligibility gained the writer-side shape**: a counterpart the route's writer does not
+   publish refuses the whole selection by name **after the writer's walk and before anything is
+   installed** (`lostNecessityRefusal`, asked of the same fates the report publishes — the writer is the
+   only place that knows what each record became), rather than presenting a call whose declared
+   counterpart was dropped. The counterpart's own *explicit* selection still converts: D1's lost-with-a-
+   reason accounting is the selected record's disclosure, not a broken declaration.
+2. **The seam grew two fields** for the collapses the reduced stream was being asked to carry:
+   `sourceExcludedResultOwners` (a carried result the read paired with a call the selection left out —
+   D6(c)'s omitted-by-selection vs absent-in-source; the writer counts it
+   `tool_results_of_excluded_calls`) and `sourceCallRecordedEvents` (per carried call, whether the read
+   paired any recorded event with it — the summary fallback's question, answered pre-cut instead of by a
+   scan of the reduced map). `hasPairedResult` is gone with its scan.
+3. **D6(b)'s class split**: `SelectionRecord.CallsUndischarged` is the per-record unit and
+   `SelectionReport.CallsUndischargedLost` splits the class against the writer's fates, so
+   class-minus-lost is exactly the conversion's `outstanding_tool_calls`; the human block names the split
+   when it is non-zero.
+4. **Writers that do not consume the seam refuse a selected document by name**
+   (`ErrSelectionUnsupportedWriter`): the pair gate cannot be reached by a CLI run, but an embedding
+   caller can hand `Select`'s output to any writer, and the OpenCode writer's own line walk would
+   otherwise make a selection-omitted result the window's new leaf. Pi, OMP, Claude and OpenCode writers
+   refuse; the Codex writer is the seam's consumer.
+5. **`--strict-selection` is tracked by its presence** (`StrictSelectionSupplied` on
+   `ContinueOptions`, the CLI visiting the flag beside `--select`): an explicit false is the flag, and the
+   strict arm alone — false included — is refused as a request about nothing.
+6. **D7's test observes the reads themselves**: `ContinueOptions.Reader` is the `SourceReads` interface,
+   and the CLI's reader factory is a test seam, so the core and CLI pair-gate cases hand in a counting
+   reader and assert zero calls rather than inferring "the source was not opened" from an error sentence.
+7. **The D6 negative tests invalidate the individual answer while selected mode stays on** (clearing
+   `sourceLineInactive` switched the whole writer to the unflagged path and made a case pass for the
+   wrong reason); **the native arm asserts the exact ordered role/text window and re-hashes the first
+   selected artifact** across the second invocation; **D4's probe drives the OpenCode source fixture
+   too** (materialised through `internal/ccc/opencodefixture`), 60 conversions over 12 fixtures.

@@ -242,8 +242,23 @@ type Conversation struct {
 	// nearer occurrence the window happened to carry. A result the read recorded with no link at all
 	// (an id-less occurrence) has no entry, and a writer on a reduced document omits and counts it
 	// rather than inventing an owner -- ID-less ownership inference on a selected run is its own later
-	// increment, and an ambiguous shape is never inferred.
+	// increment, and an ambiguous shape is never inferred. A result the read paired with a call the
+	// selection did not carry has no entry here either; that fact travels in sourceExcludedResultOwners,
+	// because the reduced stream cannot tell "omitted by selection" from "absent in source".
 	sourceResultPairs map[resultOccurrence]callOccurrence
+	// sourceExcludedResultOwners carries, per carried result occurrence, the read's own answer that the
+	// result *was* paired with a call the selection did not carry (taken before the cut). It is the fact
+	// sourceResultPairs cannot hold -- the owner has no position in the reduced document -- and it is
+	// kept apart from sourceResultPairs' absence, which means "the read recorded no link": a writer
+	// reports the two states under their own categories instead of collapsing them (D6(c)).
+	sourceExcludedResultOwners map[resultOccurrence]bool
+	// sourceCallRecordedEvents carries, per carried call occurrence, whether the read's own pairing
+	// named at least one recorded result event for the call -- any status, taken before the cut. It is
+	// what the summary question consumes: the archive's derived summary of a call is a view of the
+	// events the read recorded for it, so the writer must ask whether such an event exists rather than
+	// scan the reduced pairing map, which cannot show an event the selection left out (a progress event
+	// the caller excluded, for one).
+	sourceCallRecordedEvents map[callOccurrence]bool
 	// sourceCallFinality carries, per message of Messages, the read's own finality for every call
 	// occurrence it holds (callFinalities): completed, failed, interrupted, in-progress, or
 	// unknown-undischarged. It is what tells a writer whether an outcome is established at all: a call

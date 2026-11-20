@@ -122,9 +122,14 @@ GROWTH_TURN = "claude-complete-turn.jsonl"
 #: spec names two ordinals of the committed transcript's own space -- the assistant record at 4 and the
 #: user record at 0 -- and leaves every other record out, so the markers below are the target's own view
 #: read for a kept and an excluded record. The spec keeps no record of the fixture's tool call (ordinal
-#: 2) or of its recorded result (ordinal 3), so the closure rule has nothing to reunite.
+#: 2) or of its recorded result (ordinal 3), so the closure rule has nothing to reunite. The carried
+#: window is asserted exactly -- the ordered (role, text) pair the harness's own view must list -- because
+#: a predicate that only searched for the kept marker accepted a one-item view, or the marker in the wrong
+#: role: what `--select 0,4` promises is both records, in their own order and roles.
 SELECTION_SPEC = "0,4"
-SELECTION_KEPT = "Four attempts with exponential backoff"
+SELECTION_PROMPT = "Summarize the retry policy in internal/retry/policy.go."
+SELECTION_KEPT = "Four attempts with exponential backoff, capped at 30s between attempts."
+SELECTION_WINDOW = (("userMessage", SELECTION_PROMPT), ("agentMessage", SELECTION_KEPT))
 SELECTION_EXCLUDED = "Now check where the backoff cap is configured"
 
 #: The provider root the copy is written under: a Claude Code transcript is resolved through the directory
@@ -618,17 +623,22 @@ def copy_of_fixture(fixture: Path, root: Path) -> Path:
     return target
 
 
-def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]]:
-    """The target harness's own view of a thread: the lines it shows, and the item types it lists.
+def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    """The target harness's own view of a thread: the lines it shows, the item types it lists, and the
+    ordered ``(type, text)`` of every message item it lists.
 
     The item types come from the reply's own ``thread.turns[].items[].type`` fields, so the check that
     the converted turns are listed reads the structured answer rather than the lines this script
-    rendered from it (a message body could contain the word the lines are searched for).
+    rendered from it (a message body could contain the word the lines are searched for). The message
+    pairs are the structured answer the selection arm asserts its window against: a rendered line can be
+    searched for a marker whatever role or order it stands in, which is exactly what a window check must
+    not accept.
     """
     result = server.call("thread/read", {"threadId": thread_id, "includeTurns": True})
     thread = result.get("thread") or {}
     lines = [f"thread {thread.get('id')} [{thread.get('historyMode')}] provider={thread.get('modelProvider')}"]
     kinds: list[str] = []
+    messages: list[tuple[str, str]] = []
     for turn in thread.get("turns") or []:
         lines.append(f"  turn {turn.get('id')}")
         for item in turn.get("items") or []:
@@ -638,8 +648,10 @@ def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]
                 text = "".join(part.get("text", "") for part in item.get("content") or [])
             else:
                 text = item.get("text") or ""
+            if kind in ("userMessage", "agentMessage"):
+                messages.append((kind, text))
             lines.append(f"    {kind}: {text}")
-    return lines, kinds
+    return lines, kinds, messages
 
 
 def record_installed_jsonl(path: Path, check_name: str, note: str = "") -> None:
@@ -689,16 +701,19 @@ def readback_verdict(thread_id: str, counts: dict, carried: dict) -> tuple[bool,
 
 
 def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
-                  loader_name: str, view_label: str) -> tuple[list[str], list[str]]:
+                  loader_name: str, view_label: str) -> tuple[list[str], list[str], list[tuple[str, str]]]:
     """One installed session as the target harness itself answers for it: its own view, or the failure.
 
     The strings a run records about a load are the run's own -- each conversion's checks have their own
     names and the second session's own view has its own heading -- and the loader's answer is the
     harness's reply itself: a server that stopped answering is a failed check carrying its diagnostics,
-    not a traceback, because the protocol is bounded and so is this run's verdict.
+    not a traceback, because the protocol is bounded and so is this run's verdict. The ordered message
+    pairs travel beside the rendered lines, so a check that must read the view's own roles and order
+    reads the structured reply rather than the rendering.
     """
     view: list[str] = []
     kinds: list[str] = []
+    messages: list[tuple[str, str]] = []
     server = AppServer(codex, home)
     try:
         server.handshake()
@@ -708,7 +723,7 @@ def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
                loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
                f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
                f"cwd={loaded_thread.get('cwd')}")
-        view, kinds = thread_view(server, thread_id)
+        view, kinds, messages = thread_view(server, thread_id)
     except RuntimeError as failure:
         record(loader_name, False, str(failure))
     finally:
@@ -718,7 +733,7 @@ def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
         print(view_label)
         for line in view:
             print("   ", line)
-    return view, kinds
+    return view, kinds, messages
 
 
 def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> list[str]:
@@ -922,7 +937,7 @@ def main(argv: list[str] | None = None) -> int:
             detail += f"; inspect rc={readback.returncode}: {last_meaningful_line(readback.stderr)}"
         record("the inherited reader reads the installed file back as what was written", agreed, detail)
 
-        view, item_kinds = load_and_view(
+        view, item_kinds, _ = load_and_view(
             codex, home, thread_id, installed,
             "the target harness's own loader opens the installed session",
             "the target harness's own view of the installed session:")
@@ -981,6 +996,8 @@ def main(argv: list[str] | None = None) -> int:
                    f"not attempted: --session {args.session} names another session than the arm's own "
                    f"fixture ({SOURCE_SESSION})", skipped=True)
         selected_sessions: list[str] = []
+        first_selected_installed: Path | None = None
+        first_selected_digest = ""
         for attempt in arm_sessions:
             selected = run([
                 str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
@@ -1003,23 +1020,38 @@ def main(argv: list[str] | None = None) -> int:
                    classes == (["0", "4"], ["1-3", "5-7"], 0) and selected_installed.is_file(),
                    f"included={classes[0]} excluded={classes[1]} undischarged={classes[2]}; "
                    f"installed {selected_installed.relative_to(home)}")
-            selected_view, selected_kinds = load_and_view(
+            selected_view, selected_kinds, selected_messages = load_and_view(
                 codex, home, selected_thread, selected_installed,
                 f"the target harness's own loader opens the selection arm's session {attempt}",
                 f"the target harness's own view of the selection arm's session {attempt}:")
             selected_view_text = "\n".join(selected_view)
+            # The window is asserted exactly: the ordered (role, text) pairs the harness's own view
+            # lists must be the two carried records, each in the role the source recorded and in the
+            # order the source recorded them. A search for the kept marker alone would accept a view
+            # holding one of the two records, or the marker listed as the other role -- both are
+            # windows this arm must not pass.
             record(f"the selection arm's session {attempt} holds the carried window and not the rest",
-                   SELECTION_KEPT in selected_view_text
+                   tuple(selected_messages) == SELECTION_WINDOW
                    and SELECTION_EXCLUDED not in selected_view_text,
-                   f"{len(selected_kinds)} item(s); kept marker present="
-                   f"{SELECTION_KEPT in selected_view_text}, excluded present="
+                   f"{len(selected_kinds)} item(s); messages={selected_messages!r} against the window "
+                   f"{list(SELECTION_WINDOW)!r}; excluded present="
                    f"{SELECTION_EXCLUDED in selected_view_text}")
             selected_sessions.append(selected_thread)
+            if attempt == arm_sessions[0]:
+                # The first selected artifact's own bytes, so the second invocation can be shown to
+                # have installed its own fresh session rather than replacing this one.
+                first_selected_installed = selected_installed
+                first_selected_digest = sha256(selected_installed)
         if arm_sessions:
             record("the same selection command re-runs into its own fresh sessions",
                    len(set(selected_sessions)) == 2 and selected_sessions[0] not in existing_ids
                    and selected_sessions[1] not in existing_ids,
                    f"two invocation(s) installed {selected_sessions[0]} then {selected_sessions[1]}")
+            record("the first selection's session is unchanged by the second",
+                   first_selected_installed is not None and first_selected_installed.is_file()
+                   and sha256(first_selected_installed) == first_selected_digest,
+                   f"sha256 {first_selected_digest[:16]}… before and after the second selection's "
+                   f"conversion and load")
 
         # ---------------------------------------------------------------- the source grows, and is
         # converted again. Everything above is the first conversion's own answer; what follows is the
@@ -1114,7 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
         record("the inherited reader reads the second installed file back as what was written",
                second_readback.returncode == 0 and second_agreed, second_detail)
 
-        second_view, second_kinds = load_and_view(
+        second_view, second_kinds, _ = load_and_view(
             codex, home, second_thread_id, second_installed,
             "the target harness's own loader opens the second installed session",
             "the target harness's own view of the second installed session:")

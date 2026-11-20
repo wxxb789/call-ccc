@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,14 +34,19 @@ var ErrStrictSelection = errors.New(
 	"the selection separates a recorded tool call from its recorded result")
 
 // ErrSelectionUnrepresentable reports a selection whose counterpart the reference route cannot carry
-// without changing the disposition the source gave it: the record a recorded call/result pair's other
-// half would pull in is one the read's own line leaves inactive, and this target's log is one sequence of
-// records with no parent relation -- a record written there becomes model-visible history -- so carrying
-// it to satisfy closure would activate a branch the source's conversation left. The whole selection is
-// refused by name (the pair and both of its ordinals), by default as well as under --strict-selection.
+// without changing the disposition the source gave it. Two shapes are known, and both refuse the whole
+// selection by name -- the pair and both of its ordinals -- by default as well as under
+// --strict-selection: (1) the record a recorded call/result pair's other half would pull in is one the
+// read's own line leaves inactive, and this target's log is one sequence of records with no parent
+// relation -- a record written there becomes model-visible history -- so carrying it to satisfy closure
+// would activate a branch the source's conversation left; and (2) the counterpart is a record the route's
+// own writer does not publish -- its recorded outcome has no text this format's output could carry, for
+// one, or its whole shape is one this target has no place for -- so the pair would be written with half
+// its recorded structure while the selection's own report declared the counterpart carried. The caller's
+// move in both is a specification that holds both records.
 var ErrSelectionUnrepresentable = errors.New(
-	"the selection separates a recorded tool call from its recorded result, and the record the route " +
-		"would have to carry as the counterpart is off the line the read's last record answers")
+	"the selection separates a recorded tool call from its recorded result, and the record the pair " +
+		"requires cannot be carried by this route")
 
 // ErrSelectionUnsupportedPair reports a selection asked of a pair this build does not honour. The flag
 // is accepted on the reference pair alone -- a Claude Code source with a Codex target -- because the
@@ -64,14 +70,33 @@ var ErrSelectionReduced = errors.New(
 	"a selection cannot reduce a document a selection produced: its line, ancestry and pairing answers " +
 		"are the read's own and cannot be re-derived from the window; apply the specification to the read")
 
+// ErrSelectionUnsupportedWriter reports a document a selection produced handed to a target writer that
+// does not consume the seam. The pair gate already refuses the CLI's routes (a Claude Code source with a
+// Codex target alone honours the flag), so a command line cannot reach one of these writers with a
+// reduced document; the refusal exists for a caller embedding the core, which can apply Select itself
+// and then hand the window to any writer. Writing it there would let the writer recompute from the
+// punctured stream exactly the cross-record facts the seam exists to carry -- the OpenCode writer's own
+// line walk would make a selection-omitted result the conversation's new leaf, for one -- so the writer
+// refuses by name instead. The caller's move is the reference route's writer (ConvertToCodexRollout) or
+// no selection at all.
+var ErrSelectionUnsupportedWriter = errors.New(
+	"a document a selection produced cannot be written here: only the Codex writer consumes the " +
+		"selection seam")
+
+// selectionUnsupportedWriterRefusal words the writer-side refusal for one target, so every writer that
+// does not consume the seam says the same thing and names the target it is.
+func selectionUnsupportedWriterRefusal(target string) error {
+	return fmt.Errorf("%w: this run would write %q", ErrSelectionUnsupportedWriter, target)
+}
+
 // IsSelectionRefusal reports whether a run failed because of the selection it was handed: a
-// specification this build refuses, a strict refusal, a counterpart the route cannot carry, or a pair
-// the flag is not honoured on. The CLI answers these with the usage exit code, because the run's
-// command line is what has to change.
+// specification this build refuses, a strict refusal, a counterpart the route cannot carry, a pair the
+// flag is not honoured on, or a writer that does not consume the seam. The CLI answers these with the
+// usage exit code, because the run's command line is what has to change.
 func IsSelectionRefusal(err error) bool {
 	return errors.Is(err, ErrBadSelection) || errors.Is(err, ErrStrictSelection) ||
 		errors.Is(err, ErrSelectionUnrepresentable) || errors.Is(err, ErrSelectionUnsupportedPair) ||
-		errors.Is(err, ErrSelectionReduced)
+		errors.Is(err, ErrSelectionUnsupportedWriter) || errors.Is(err, ErrSelectionReduced)
 }
 
 // OrdinalSpace is the space a selection spec is written against and a refusal names: the ordinal values
@@ -147,6 +172,11 @@ type SelectionRecord struct {
 	// counted under a loss category (a system record whose text is omitted while its tool result is
 	// written), which the conversion's own losses state beside this table.
 	Written []string `json:"written,omitempty"`
+	// CallsUndischarged is how many calls this record carries that the read left without an outcome (the
+	// unit CallsUndischarged counts). Together with Became and Written it lets a caller check the class's
+	// split: a record whose fate wrote its calls contributes them to the conversion's
+	// outstanding_tool_calls, and a lost one carries them into CallsUndischargedLost instead.
+	CallsUndischarged int `json:"calls_undischarged,omitempty"`
 }
 
 // SelectionReport is what one selection did to the read, in the classes the goal names: the space the
@@ -166,6 +196,13 @@ type SelectionReport struct {
 	Excluded          SelectionClass       `json:"excluded"`
 	NecessitiesAdded  SelectionNecessities `json:"necessities_added"`
 	CallsUndischarged SelectionClass       `json:"calls_undischarged"`
+	// CallsUndischargedLost is the part of CallsUndischarged whose records the writer's own walk did not
+	// publish: those calls are lost with their records (each row's own category is on the per-record
+	// table), so they are not in the conversion's outstanding_tool_calls -- the rest of the class is, and
+	// this split is what makes the two report surfaces reconcile. It is filled from the writer's fates
+	// (fillSelectionUndischargedSplit); zero on a report the writer's walk has not answered, which the
+	// warning channel words as an answer not yet made rather than as "none lost".
+	CallsUndischargedLost SelectionClass `json:"calls_undischarged_lost"`
 	// Records pairs every carried record with the fate the writer gave it (D1).
 	Records []SelectionRecord `json:"records"`
 }
@@ -174,25 +211,27 @@ type SelectionReport struct {
 // the CLI refuses a command line with as well: a specification has to be the grammar parseSelectionSpec
 // reads, a value the caller *supplied* has to name something -- an empty `--select "$SPEC"` whose shell
 // variable was unset is a refused request, not the flag's absence, because a run that installed the whole
-// history would be the one thing the caller's command was written to prevent -- and asking for the strict
-// arm without naming a selection is a request about nothing. The refusals that need the read -- an
-// ordinal the read's own space does not hold, a spec that selects nothing -- are Select's, because only a
-// read can answer them; Continue calls both, so a caller embedding the core and one driving the CLI are
-// told the same thing about the same request.
+// history would be the one thing the caller's command was written to prevent -- and the strict arm, with
+// or without a value (an explicit `--strict-selection=false` is still the flag's presence), is a request
+// about a selection and needs --select to name the selection it is about. The refusals that need the
+// read -- an ordinal the read's own space does not hold, a spec that selects nothing -- are Select's,
+// because only a read can answer them; Continue calls both, so a caller embedding the core and one
+// driving the CLI are told the same thing about the same request.
 //
 // The *flag's absence* is the literal empty string with no presence bit, and nothing else: a value that
 // holds whitespace alone names nothing whether or not the caller set the bit, so it is refused with the
 // same sentence the empty supplied value is.
-func CheckSelectionOptions(selection string, strict, supplied bool) error {
+func CheckSelectionOptions(selection string, strict, strictSupplied, supplied bool) error {
 	spec := strings.TrimSpace(selection)
 	if spec == "" {
 		if supplied || selection != "" {
 			return emptySelectionRefusal()
 		}
-		if strict {
+		if strict || strictSupplied {
 			return fmt.Errorf(
-				"%w: --strict-selection refuses a selection that would separate a recorded call from its "+
-					"recorded result, so it needs --select to name the selection it is about", ErrBadSelection)
+				"%w: --strict-selection is the strict arm of a selection, so it needs --select to name "+
+					"the selection it is about -- the flag's presence is the request, whether its value "+
+					"is spelled true or false", ErrBadSelection)
 		}
 		return nil
 	}
@@ -573,6 +612,8 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	reduced.sourceLineUnresolved = make([]bool, len(reducedMessages))
 	reduced.sourceKeptAncestor = make([]int, len(reducedMessages))
 	reduced.sourceResultPairs = make(map[resultOccurrence]callOccurrence, len(paired))
+	reduced.sourceExcludedResultOwners = make(map[resultOccurrence]bool)
+	reduced.sourceCallRecordedEvents = make(map[callOccurrence]bool)
 	reduced.sourceCallFinality = make(map[callOccurrence]callFinality, len(finality))
 	reduced.sourceBoundaries = make(map[int]boundaryLedger, len(ledgers))
 	for readIndex, at := range reducedOf {
@@ -589,13 +630,26 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 			reduced.sourceBoundaries[at] = ledger
 		}
 	}
+	// The pairing the read established, split by what the reduced document can still name: a result
+	// whose owner is carried keeps its entry (the writer writes it under that call), a result whose owner
+	// the selection left out keeps the fact *that it was paired* in its own set (the states the reduced
+	// stream would otherwise collapse into "the source recorded no link"), and every carried call the
+	// read answered with any event is marked, so the summary question is answered from the read rather
+	// than from a scan of the reduced map.
 	for place, call := range paired {
 		at, callAt := reducedOf[place.message], reducedOf[call.message]
-		if at < 0 || callAt < 0 {
-			continue
+		switch {
+		case at < 0:
+			// The result itself is not carried, so no writer asks about its owner.
+		case callAt < 0:
+			reduced.sourceExcludedResultOwners[resultOccurrence{message: at, result: place.result}] = true
+		default:
+			reduced.sourceResultPairs[resultOccurrence{message: at, result: place.result}] =
+				callOccurrence{message: callAt, call: call.call}
 		}
-		reduced.sourceResultPairs[resultOccurrence{message: at, result: place.result}] =
-			callOccurrence{message: callAt, call: call.call}
+		if callAt >= 0 {
+			reduced.sourceCallRecordedEvents[callOccurrence{message: callAt, call: call.call}] = true
+		}
 	}
 	for place, answer := range finality {
 		if at := reducedOf[place.message]; at >= 0 {
@@ -606,7 +660,10 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	// The report's rows are built in the document's own order, one per carried record -- the order the
 	// reduced document holds its records and the writer's walk answers its fates in -- because the
 	// ordinal value cannot identify a row: the read's own text allows two records to share one, and the
-	// position is what pairs each row with the record it came from.
+	// position is what pairs each row with the record it came from. The undischarged calls are counted
+	// per record, so the class and its rows cannot disagree about where they sit and the fate fill can
+	// split the class against what the writer published.
+	undischargedAt := undischargedPerRecord(messages, carried, finality)
 	included := make([]int, 0, selectedCount)
 	excluded := make([]int, 0, len(messages)-selectedCount)
 	records := make([]SelectionRecord, 0, len(reducedMessages))
@@ -615,7 +672,9 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		switch {
 		case selected[index]:
 			included = append(included, message.Ordinal)
-			records = append(records, SelectionRecord{Ordinal: message.Ordinal})
+			records = append(records, SelectionRecord{
+				Ordinal: message.Ordinal, CallsUndischarged: undischargedAt[index],
+			})
 		case !carried[index]:
 			excluded = append(excluded, message.Ordinal)
 		default:
@@ -623,12 +682,13 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 			pulledBy := messages[necessityAt[index]].Ordinal
 			records = append(records, SelectionRecord{
 				Ordinal: message.Ordinal, Necessity: true, PulledBy: &pulledBy,
+				CallsUndischarged: undischargedAt[index],
 			})
 			added = append(added, SelectionNecessity{Ordinal: message.Ordinal, PulledBy: pulledBy})
 		}
 	}
 
-	undischarged, undischargedCount := undischargedClass(messages, carried, finality)
+	undischarged, undischargedCount := undischargedClass(messages, carried, undischargedAt)
 	return reduced, SelectionReport{
 		Spec:              trimmed,
 		Strict:            strict,
@@ -641,27 +701,39 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	}, nil
 }
 
-// undischargedClass answers the carried calls the read leaves without an outcome: the calls as the class's
-// own unit, and the ordinal values of the records that carry them, each value once.
-func undischargedClass(
+// undischargedPerRecord answers, per read record, how many of its calls the read left without an
+// outcome: the calls as the class's own unit, counted per message so the class, the rows and the
+// writer's own walk all rest on one number. A call a read never discharged is one whose finality is not
+// an outcome the source established (unknown-undischarged and in-progress alike), and only carried
+// records count -- a record the selection excluded contributes nothing.
+func undischargedPerRecord(
 	messages []Message, carried []bool, finality map[callOccurrence]callFinality,
-) ([]int, int) {
-	var ordinals []int
-	count := 0
+) []int {
+	counts := make([]int, len(messages))
 	for index, message := range messages {
 		if !carried[index] {
 			continue
 		}
-		here := 0
 		for callIndex := range message.ToolCalls {
 			if !finality[callOccurrence{message: index, call: callIndex}].stateAnOutcome() {
-				here++
+				counts[index]++
 			}
 		}
-		if here > 0 {
-			count += here
-			ordinals = append(ordinals, message.Ordinal)
+	}
+	return counts
+}
+
+// undischargedClass answers the class from the per-record counts: the calls as the class's own unit, and
+// the ordinal values of the records that carry them, each value once.
+func undischargedClass(messages []Message, carried []bool, perRecord []int) ([]int, int) {
+	var ordinals []int
+	count := 0
+	for index, message := range messages {
+		if !carried[index] || perRecord[index] == 0 {
+			continue
 		}
+		count += perRecord[index]
+		ordinals = append(ordinals, message.Ordinal)
 	}
 	return ordinals, count
 }
@@ -886,20 +958,6 @@ func finalityOfStatus(status string) callFinality {
 	}
 }
 
-// hasPairedResult answers whether the read's pairing names a recorded result event for one call
-// occurrence, wherever that event's record sits. It is the question the summary fallback asks: a summary
-// whose call the read answers with a recorded event is that event's view, not an outcome recorded beside
-// it, and only a call the read pairs no event with has its summary as the outcome evidence the read
-// holds.
-func hasPairedResult(paired map[resultOccurrence]callOccurrence, call callOccurrence) bool {
-	for _, place := range paired {
-		if place == call {
-			return true
-		}
-	}
-	return false
-}
-
 // callFinality is the seam's answer about one carried call's recorded finality: what the source itself
 // established, answered before the reduction. It is one value, never a synonym for *omitted by
 // selection*, and no value is ever published as a completion by a writer without the evidence the read
@@ -1047,6 +1105,61 @@ func fillSelectionRecords(report *SelectionReport, fates []RecordFate) {
 	}
 }
 
+// fillSelectionUndischargedSplit completes the undischarged class from the writer's own fates, which the
+// per-record table has just been filled with: a carried record whose written item kinds include the calls
+// it carries contributes its undischarged calls to the conversion's outstanding_tool_calls, and a record
+// the walk did not publish (no tool_call item, whatever its fate -- a lost record, a record published as
+// a compaction boundary alone) carries them into CallsUndischargedLost instead. The split is filled
+// after fillSelectionRecords and reads only what that fill wrote, so the class and the table cannot
+// disagree; a report whose fates have not been filled answers zero lost, which the field's own wording
+// names as an answer not yet made.
+func fillSelectionUndischargedSplit(report *SelectionReport) {
+	lost := 0
+	var ordinals []int
+	for _, record := range report.Records {
+		if record.CallsUndischarged == 0 {
+			continue
+		}
+		if slices.Contains(record.Written, string(ItemToolCall)) {
+			continue
+		}
+		lost += record.CallsUndischarged
+		ordinals = append(ordinals, record.Ordinal)
+	}
+	report.CallsUndischargedLost = SelectionClass{Count: lost, Regions: spellOrdinalRuns(ordinals)}
+}
+
+// lostNecessityRefusal answers the refusal for a counterpart the route's own writer did not publish: the
+// selection carried a record because a recorded call and the recorded result that answers it are one
+// structure, and the writer's walk made nothing of it -- the fate's reason is the loss category it was
+// counted under -- so the pair would be written with half its recorded structure while the report's
+// necessity class declared the counterpart carried. D3's closure eligibility refuses such a selection by
+// name rather than presenting a broken pair as a whole one, and it does so here, after the walk (the
+// only place that knows what each record became) and before anything is installed. It is asked of the
+// per-record table, so it uses the very fates the report publishes.
+func lostNecessityRefusal(report *SelectionReport) error {
+	for _, record := range report.Records {
+		if !record.Necessity || record.Became != BecameLost {
+			continue
+		}
+		pulledBy := 0
+		if record.PulledBy != nil {
+			pulledBy = *record.PulledBy
+		}
+		reason := record.Reason
+		if reason == "" {
+			reason = "no target record states this source record"
+		}
+		return fmt.Errorf(
+			"%w: the recorded call and the recorded result at ordinals %d and %d are one structure, "+
+				"and the record the selection carried as the counterpart (ordinal %d, pulled in by "+
+				"ordinal %d) is not published by this route (%s): the pair would be written with its "+
+				"recorded counterpart missing; name a region that holds both records",
+			ErrSelectionUnrepresentable, pulledBy, record.Ordinal, record.Ordinal, pulledBy, reason)
+	}
+	return nil
+}
+
 // selectionWarnings names the selection's own answer in the report's warning channel, so a caller who
 // reads the human block's head -- or only the warnings -- learns that the history is a window and what
 // the window leaves behind rather than reading "converted" as "the whole conversation travelled".
@@ -1068,10 +1181,20 @@ func selectionWarnings(report *SelectionReport) []string {
 			report.NecessitiesAdded.Count, spellNecessityOrdinals(report.NecessitiesAdded.Added)))
 	}
 	if report.CallsUndischarged.Count > 0 {
-		warnings = append(warnings, fmt.Sprintf(
+		sentence := fmt.Sprintf(
 			"the source left %d call(s) undischarged in the carried records (ordinals %s): no recorded "+
 				"outcome answers them, and no outcome is written for them", report.CallsUndischarged.Count,
-			joinOrNone(report.CallsUndischarged.Regions)))
+			joinOrNone(report.CallsUndischarged.Regions))
+		if report.CallsUndischargedLost.Count > 0 {
+			// Only a report whose writer's fates have been filled can answer this: those calls sit on
+			// records the conversion did not publish, counted under each record's own category, and a
+			// caller reconciling the two surfaces must not read the class as calls the target holds.
+			sentence += fmt.Sprintf("; %d of them sit on records the conversion did not publish "+
+				"(ordinals %s, counted under those records' own loss categories), so they are not in "+
+				"the conversion's outstanding_tool_calls", report.CallsUndischargedLost.Count,
+				joinOrNone(report.CallsUndischargedLost.Regions))
+		}
+		warnings = append(warnings, sentence)
 	}
 	return warnings
 }

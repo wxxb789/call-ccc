@@ -285,6 +285,14 @@ type OpenCodeTargetOptions struct {
 // without one could not be installed where the harness would read it. A document that records none is
 // refused here (ErrNoTargetCwd), before anything is written.
 func ConvertToOpenCodeSession(conv Conversation, opts OpenCodeTargetOptions) (OpenCodeSession, error) {
+	if conv.selectionReduced() {
+		// A document a selection produced is refused before anything else is read of it: this writer does
+		// not consume the seam, and its own line walk over the shortened stream would make a
+		// selection-omitted result the window's new leaf and plan it as the call's outcome -- the
+		// cross-record recomputation the seam exists to prevent (goal 0009's D6). The pair gate keeps the
+		// CLI from reaching this at all; an embedding caller is told the same sentence.
+		return OpenCodeSession{}, selectionUnsupportedWriterRefusal(TargetOpenCode)
+	}
 	// The recorded directory is kept exactly as the read answered it: a path may legitimately hold
 	// leading or trailing spaces, and trimming one would hand the document, the importer's `--directory`
 	// and the printed resume command a directory the source did not record. Only emptiness is checked,

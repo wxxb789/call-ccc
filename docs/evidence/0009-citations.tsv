@@ -4,12 +4,15 @@
 # clauses (docs/goals/0009-selective-context.md), each clause split where it holds several decisions:
 #   D1      every selected record has an attributable disposition, and every written item pairs with the
 #           ordinal it came from (the reconciliation of included + necessities + excluded with the read);
+#           D1.2 the reason column names the writer's own category for a record dropped by its kind (a
+#           standalone system reminder);
 #   D2.1    the transformation's own classes, with counts, in the report; D2.2 the human report's lines
 #           for them; D2.3 the run's selection warning;
 #   D3.1    a split pair carries its counterpart by default and the report discloses it; D3.2 the same
 #           selection under --strict-selection is refused by name; D3.3 closure eligibility — a
 #           counterpart the source's line leaves inactive refuses the whole selection (default as well
-#           as strict), and never activates the record;
+#           as strict), and never activates the record; D3.4 a counterpart the route's own writer does
+#           not publish refuses the whole selection by name before anything is installed;
 #   D4      the unflagged path is untouched — no row (see below);
 #   D5.1    the specification's own space: an ordinal is a value the read supplied, never a position;
 #           D5.2 an ill-formed specification is refused with the core's own sentence; D5.3 the CLI
@@ -19,11 +22,15 @@
 #           event reaches the writer only from the record the read paired it with; D6.4
 #           unknown-undischarged stays distinct from omitted-by-selection; D6.5 the calls and results a
 #           compaction boundary accounts for; D6.6 retained-vs-carried ancestry; D6.7 the record's own
-#           membership on the source's active line, taken before the cut;
+#           membership on the source's active line, taken before the cut; D6.8 the undischarged class
+#           splits against the writer's fates so the selection's class and the conversion's
+#           outstanding_tool_calls reconcile; D6.9 a result the read paired with a call the selection
+#           left out is counted under its own category, never collapsed with a link-less one;
 #   D7.1    the other pairs are refused by name in the core (before a read); D7.2 the CLI refuses them
-#           before the source is opened (the run's reader calls stay at zero);
+#           before the source is opened (the run's reader calls stay at zero, --strict-selection=false
+#           included);
 #   X1      a document a selection already produced is refused as a selection input (the seam is not
-#           guessed from a reduced stream);
+#           guessed from a reduced stream), and the writers that do not consume the seam refuse it too;
 #   X2      a selected window keeps the read's own recorded instants (nothing is re-timed by the cut).
 #
 # scripts/obligation-citations.py is the arbiter: every row's cited test must exist in the named package
@@ -35,10 +42,11 @@
 # scripts/gate-targets.txt covers, so a rule whose gate evidence is a python case the required `selftest`
 # step runs, or a native harness run, cannot hold one):
 #   D4  — the default path is byte-identical to the pre-change tree. Its evidence is the throw-away
-#         before/after probe (the goal's acceptance surface names this form): the probe converted the
-#         committed file-backed fixtures — the new selection fixture included — through every route with no
-#         selection flag in a pristine checkout of the base revision and in this tree, and the two outputs
-#         — 55 conversions, 360 lines, digests over normalized bytes — are identical (`diff` exit 0). The
+#         before/after probe (the goal's acceptance surface names this form): the probe converted every
+#         committed fixture — the file-backed ones (the new selection fixture included) and the OpenCode
+#         source fixture, materialised from its committed document — through every route with no selection
+#         flag in a pristine checkout of the base revision and in this tree, and the two outputs
+#         — 60 conversions, 408 lines, digests over normalized bytes — are identical (`diff` exit 0). The
 #         verbatim after-tree output is docs/evidence/0009-d4-probe.txt; the probe file itself was removed,
 #         so no gate-runnable Go test stands behind the clause.
 #   D7's and D3's native halves, and D6's negative cases at the wire level — the reference route's
@@ -52,12 +60,14 @@
 #         rows hold that half in cmd/ccc, which is a gate package.
 rule_id	test	package	artifact
 D1	TestSelectionAccountsForEveryCarriedRecord	./internal/ccc	0009-selective-context.md §1 (the reference route end to end)
+D1.2	TestSelectionAttributesASystemRecordsOmissionToItsRow	./internal/ccc	0009-selective-context.md §3 (the reason column names the writer's own category)
 D2.1	TestContinueWithASelectionReportsTheClassesAndFates	./cmd/ccc	0009-selective-context.md §1 (the report classes and D1's per-record table)
 D2.2	TestContinueWithASelectionInstallsExactlyTheWindow	./cmd/ccc	0009-selective-context.md §1 (the human report's classes, non-zero ones included)
 D2.3	TestSelectionWarningsNameTheWindow	./internal/ccc	0009-selective-context.md §1 (the run's selection warning: carried/excluded counts, the pulled-in necessity, the undischarged call)
 D3.1	TestSelectionCarriesTheCounterpartOfASeparatedPair	./internal/ccc	0009-selective-context.md §1 (ordinal 3 carried as a declared necessity)
 D3.2	TestSelectionRefusesASeparatedPairUnderStrictSelection	./internal/ccc	0009-selective-context.md §2 (the strict refusal, quoted)
 D3.3	TestSelectionRefusesACounterpartOffTheReadsLine	./internal/ccc	0009-selective-context.md §3 (closure eligibility's own refusal)
+D3.4	TestSelectionRefusesACounterpartTheWriterCannotCarry	./internal/ccc	0009-selective-context.md §3 (the writer-side closure refusal, before anything is installed)
 D5.1	TestSelectionMatchesTheOrdinalValuesTheReadSupplied	./internal/ccc	0009-selective-context.md §2 (the ordinal-space sentence)
 D5.2	TestSelectionRefusesABadSpecificationByName	./internal/ccc	0009-selective-context.md §2 (the core's sentences, quoted)
 D5.3	TestContinueRefusesABadSelectionWithTheUsageExitCode	./cmd/ccc	0009-selective-context.md §2 (exit=2, nothing installed)
@@ -68,6 +78,8 @@ D6.4	TestSelectionLeavesAnUndischargedCallAsTheSourceLeftIt	./internal/ccc	0009-
 D6.5	TestSelectionCountsTheEvidenceACompactionRecordAccountsFor	./internal/ccc	0009-selective-context.md §3 (the compaction ledger's three states; mutation row 2)
 D6.6	TestSelectionKeepsTheNearestCarriedAncestor	./internal/ccc	0009-selective-context.md §3 (ancestry)
 D6.7	TestSelectionEndsAWindowOffTheReadsLineWithoutMovingIt	./internal/ccc	0009-selective-context.md §3 (the off-line mutation row 3)
+D6.8	TestSelectionReconcilesUndischargedCallsWithTheWritersFates	./internal/ccc	0009-selective-context.md §3 (the undischarged split against the writer's fates)
+D6.9	TestSelectionNamesAnExcludedOwnerRatherThanALinklessResult	./internal/ccc	0009-selective-context.md §3 (omitted-by-selection vs absent-in-source)
 D7.1	TestSelectionIsRefusedOnEveryOtherPair	./internal/ccc	0009-selective-context.md §2 (the pair-gate sentence, raised before the read)
 D7.2	TestSelectionIsRefusedOnEveryOtherPairBeforeTheSourceIsOpened	./cmd/ccc	0009-selective-context.md §2 (the CLI half, zero reader calls)
 X1	TestSelectionRefusesADocumentASelectionProduced	./internal/ccc	0009-selective-context.md §3 (a produced document refused as input)
