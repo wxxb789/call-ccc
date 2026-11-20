@@ -1,0 +1,51 @@
+# Obligation citations — goal 0009a (freeze the native oracle), the machine-checked half of the
+# increment's acceptance surface (docs/goals/0009a-native-oracle.md).
+#
+# **What a row here is, exactly.** This increment makes no Go change (its Bounds), so it adds no Go test;
+# docs/conventions.md still holds a citations row to be one *gate-runnable Go test* in a package
+# scripts/gate-targets.txt covers. Every row below therefore names one **oracle rule** — the rule ids are
+# `scripts/codex-native-check.py`'s `ORACLE_RULES` keys — and the existing Go test that already pins the
+# same claim about this tree's own bytes: the sentence the rule restates, true of the writer today and
+# re-derived by this step when the gate runs. A row makes no claim that a Go test runs the oracle.
+#
+# The oracle's own firing is re-derived by the required `selftest` step instead:
+# `scripts/tests/test_codex_native_check.py`'s `CodexArtifactOracle` holds the rule table and its mutation
+# table in bijection — every rule has at least one committed synthetic fixture whose mutation turns that
+# rule red and no other, and a mutation without a rule fails too
+# (`test_every_rule_has_a_mutation_that_turns_its_fixture_red`, the increment's D1). The fixtures are
+# `scripts/tests/testdata/codex-oracle/` (the two synthetic artifacts, their manifest receipts).
+#
+# Deliberately not covered, with the reason (form-based: a row is one Go test in a package
+# scripts/gate-targets.txt covers, so a rule whose gate re-derivation is a python case the required
+# `selftest` step runs, or a native harness run, cannot hold one):
+#   oracle.receipt, oracle.plan-emitted, oracle.plan-accounted, oracle.plan-pairs — the manifest-receipt
+#         half. No Go test grounds it, because nothing in this tree produces a receipt yet: the receipt's
+#         producer is goal 0009c/0009d (this goal's Non-scope), and the rules are stated over the
+#         synthetic receipts committed with the fixtures. Their re-derivation is the same `selftest`
+#         case's mutation table (two mutations for `oracle.receipt`, two for `oracle.plan-accounted`, one
+#         each for the others), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2)
+#         and `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total).
+#   the oracle's `--validate` mode — the CLI half of the same python subject
+#         (`test_the_validate_mode_reports_a_verdict`); no native-or-Go half exists for it.
+#   D1 — every rule has its own negative fixture: the `selftest` case named above.
+#   D2 — the oracle needs no knowledge of the source or the selection: the same case's
+#         `test_a_reduced_artifact_is_validated_from_the_artifact_alone` drives the validator with
+#         `builtins.open` refusing every file, and §3 of docs/evidence/0009a-native-oracle.md validates
+#         the reduced fixture from a scratch directory that holds nothing else.
+#   D3 — the existing acceptance path is unchanged: `scripts/codex-native-check.py`'s own unflagged run is
+#         a native harness run, not a gate step; its before/after verdicts are quoted in §4 of the record
+#         (26 check(s) passed, 0 failed, 2 skipped, exit 0, both times) and the acceptance path itself is a
+#         Go suite the `test` step already runs.
+#   D4 — the freeze is stated where a later lane reads it: prose in the checker's own oracle section,
+#         docs/harness.md and AGENTS.md; the oracle-lock signal that enforces it is the conductor's, not a
+#         command in this tree.
+rule_id	test	package	artifact
+oracle.jsonl-objects	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the writer's own bytes: every line decodes as one JSON object — the case decodes every line and fails one that is not, a `null` included, because the emptied line then carries no type)
+oracle.envelope	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the same decode: every record carries a `type` and a `timestamp`, and a payload read for a member decodes as an object)
+oracle.record-type	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the record types are the carried reader's own literals, asserted as the file's exact sequence)
+oracle.session-meta	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the exact sequence opens with one `session_meta` and carries no second)
+oracle.session-meta-members	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (its `id`, `originator` and `cli_version` are asserted against the values the conversion used)
+oracle.clock	TestCodexRolloutStampsRecordsInOneOrderedRun	./internal/ccc	0009a-native-oracle.md §1 (every line's timestamp parses as RFC3339Nano and no line goes back in time)
+oracle.message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (each written message is exactly one model-visible record, under its role's own block type, holding its text)
+oracle.event-message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (exactly one `user_message`/`agent_message` event per written message, carrying that message's text)
+oracle.call-pairing	TestCodexRolloutDoesNotReportOmittedResultsAsCarried	./internal/ccc	0009a-native-oracle.md §1 (a result whose call the conversion did not write is not written as an output at all)

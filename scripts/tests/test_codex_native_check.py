@@ -55,6 +55,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path, PureWindowsPath
+from typing import Callable, NamedTuple
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -1329,6 +1330,607 @@ class RecordStatesTheChecksOwnOrder(unittest.TestCase):
         self.assertNotIn(WRONG_ORDER, document,
                          f"{RECORD.name} places the comparison ahead of both real turns: the shipped "
                          f"script takes it after the first session's turn and before the second's")
+
+
+# ===================================================================================================
+# The frozen artifact oracle (goal 0009a): its committed synthetic fixtures, the one-or-more mutations
+# that remove one rule each and turn their fixture red, and the cases that hold
+# `scripts/codex-native-check.py`'s `validate_artifact` and its `--validate` mode to both.
+#
+# The rule table is frozen for the rest of goal 0009 (the section header in the shipped script states
+# the oracle lock and its reason), so this half is the contract's other end: the table and this mutation
+# table are asserted to be in bijection -- a rule without a red mutation, or a mutation without a rule,
+# fails the required `selftest` step -- and each mutation's own case asserts it turns *its* rule red and
+# no other, which is what makes the report a reading rather than a net.
+# ===================================================================================================
+
+#: The committed synthetic Codex artifacts and manifest receipts the oracle is exercised with: one
+#: positive fixture (a two-turn session with a call, its result and a compaction boundary, plus record
+#: types this build's writer never writes), the same session's own records with the second turn taken
+#: out, and a receipt for each. Nothing here is a converted source session: these are the oracle's own
+#: hand-constructed inputs, which is what lets a rule's fixture be reasoned about without a source.
+ORACLE_FIXTURES = SCRIPTS / "tests" / "testdata" / "codex-oracle"
+
+
+def oracle_fixture(name: str) -> str:
+    """One committed fixture's own text."""
+    return (ORACLE_FIXTURES / name).read_text(encoding="utf-8")
+
+
+def oracle_receipt(name: str) -> dict:
+    """One committed manifest receipt, parsed."""
+    return json.loads(oracle_fixture(name))
+
+
+def oracle_receipt_edit(receipt: dict, match: Callable[[dict], bool],
+                        change: Callable[[dict], None]) -> dict:
+    """One parsed receipt with its first entry `match` answers for changed.
+
+    A mutation whose entry the fixture no longer holds raises instead of editing nothing: a case that
+    silently mutated nothing would stay green and read as a rule nothing can break.
+    """
+    for entry in receipt["occurrences"]:
+        if match(entry):
+            change(entry)
+            return receipt
+    raise AssertionError("the receipt holds no entry this mutation edits")
+
+
+def oracle_entry_kind(kind: str) -> Callable[[dict], bool]:
+    """A matcher for the receipt entry whose occurrence kind is `kind`."""
+    return lambda entry: entry.get("kind") == kind
+
+
+def _entry_disposition_omitted(entry: dict) -> None:
+    entry["disposition"] = "omitted"
+
+
+def _entry_disposition_kept(entry: dict) -> None:
+    entry["disposition"] = "kept"
+
+
+def _entry_call_id_dropped(entry: dict) -> None:
+    entry.pop("call_id")
+
+
+def _without_record(text: str, match: Callable[[dict], bool]) -> str:
+    """One fixture's text with the first record `match` answers for deleted, and nothing else moved."""
+    lines = text.splitlines()
+    kept = [line for line in lines if not match(json.loads(line))]
+    if len(kept) != len(lines) - 1:
+        raise AssertionError("the fixture holds no single record this mutation deletes")
+    return "\n".join(kept) + "\n"
+
+
+def oracle_quote(record: dict) -> str:
+    """One record as the fixture's own line: compact, the way the committed files are written."""
+    return json.dumps(record, separators=(",", ":"))
+
+
+def oracle_edit(text: str, match: Callable[[dict], bool], change: Callable[[dict], None] | None = None,
+                replacement: str | None = None) -> str:
+    """One fixture's text with the first record `match` answers for changed — or replaced whole.
+
+    A fixture that no longer holds the record raises rather than editing nothing, for the same reason a
+    receipt mutation does: a mutation that edited nothing would leave its case green.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip() or not match(json.loads(line)):
+            continue
+        if replacement is not None:
+            lines[index] = replacement
+        else:
+            assert change is not None
+            record = json.loads(line)
+            change(record)
+            lines[index] = oracle_quote(record)
+        return "\n".join(lines) + "\n"
+    raise AssertionError("the fixture holds no record this mutation edits")
+
+
+def oracle_record_is(kind: str) -> Callable[[dict], bool]:
+    """A matcher for the record whose envelope `type` is `kind`."""
+    return lambda record: record.get("type") == kind
+
+
+def oracle_event_is(kind: str) -> Callable[[dict], bool]:
+    """A matcher for the record whose `event_msg` payload type is `kind`."""
+    def match(record: dict) -> bool:
+        return record.get("type") == "event_msg" and (record.get("payload") or {}).get("type") == kind
+    return match
+
+
+def oracle_item_is(kind: str, needle: str) -> Callable[[dict], bool]:
+    """A matcher for the `response_item` whose payload type is `kind` and whose line holds `needle`."""
+    def match(record: dict) -> bool:
+        return (record.get("type") == "response_item"
+                and (record.get("payload") or {}).get("type") == kind
+                and needle in oracle_quote(record))
+    return match
+
+
+class OracleMutation(NamedTuple):
+    """One negative fixture: the mutation that removes a rule, the fixture pair it is applied to, and
+    what a failure names it by."""
+
+    label: str
+    artifact: str
+    receipt: str | None
+    mutate: Callable[[str, dict | None], tuple[str, dict | None]]
+
+
+def _drop_timestamp(record: dict) -> None:
+    record.pop("timestamp")
+
+
+def _payload_becomes_a_list(record: dict) -> None:
+    record["payload"] = ["not", "an", "object"]
+
+
+def _type_becomes_unknown(record: dict) -> None:
+    record["type"] = "conversation_item"
+
+
+def _id_becomes_empty(record: dict) -> None:
+    record["payload"]["id"] = ""
+
+
+def _cli_version_dropped(record: dict) -> None:
+    record["payload"].pop("cli_version")
+
+
+def _content_becomes_empty(record: dict) -> None:
+    record["payload"]["content"] = []
+
+
+def _content_block_type_is_not_read(record: dict) -> None:
+    record["payload"]["content"][0]["type"] = "input_image"
+
+
+def _content_text_becomes_blank(record: dict) -> None:
+    record["payload"]["content"][0]["text"] = "   "
+
+
+def _event_message_is_not_a_string(record: dict) -> None:
+    record["payload"]["message"] = None
+
+
+def _output_names_an_absent_call(record: dict) -> None:
+    record["payload"]["call_id"] = "call_oracle_0002"
+
+
+def _mutation_line_not_json(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_record_is("event_msg"), replacement="this line is not JSON"), receipt
+
+
+def _mutation_line_is_an_array(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_record_is("world_state"), replacement='["world_state"]'), receipt
+
+
+def _mutation_line_nested_past_reading(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One line nested past what this reader can parse.
+
+    It is the rule's own subject either way a host answers it: the parse refuses the line (this
+    interpreter raises `RecursionError` at 200 000 levels, measured) and the oracle names it unreadable,
+    or the line reads as what it is — not an object. A validator that raised here would answer about its
+    own stack rather than about the file.
+    """
+    return oracle_edit(text, oracle_record_is("event_msg"),
+                       replacement="[" * 200000 + "]" * 200000), receipt
+
+
+def _mutation_envelope_without_timestamp(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_event_is("user_message"), change=_drop_timestamp), receipt
+
+
+def _mutation_envelope_payload_not_an_object(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_record_is("world_state"), change=_payload_becomes_a_list), receipt
+
+
+def _mutation_record_type_unknown(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_record_is("world_state"), change=_type_becomes_unknown), receipt
+
+
+def _mutation_session_meta_deleted(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    lines = text.splitlines()
+    kept = [line for line in lines if json.loads(line).get("type") != "session_meta"]
+    if len(kept) != len(lines) - 1:
+        raise AssertionError("the fixture no longer opens with exactly one session_meta")
+    return "\n".join(kept) + "\n", receipt
+
+
+def _mutation_session_meta_duplicated(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    lines = text.splitlines()
+    if json.loads(lines[0]).get("type") != "session_meta":
+        raise AssertionError("the fixture no longer opens with its session_meta")
+    return "\n".join([lines[0], lines[0]] + lines[1:]) + "\n", receipt
+
+
+def _mutation_every_record_deleted(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The artifact holds no records at all, its metadata record among them: nothing to open with."""
+    if not text.strip():
+        raise AssertionError("the fixture is already empty")
+    return "", receipt
+
+
+def _mutation_session_meta_id_empty(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_record_is("session_meta"), change=_id_becomes_empty), receipt
+
+
+def _mutation_session_meta_cli_version_dropped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_record_is("session_meta"), change=_cli_version_dropped), receipt
+
+
+def _mutation_clock_swapped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The compaction boundary and the turn context after it trade instants: one written backwards.
+
+    The pair is adjacent and the swap touches no other rule: the boundary's own line and the turn
+    context that follows it carry each other's instant, so exactly one record is stamped before the
+    record written before it, which is the rule's own shape.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if json.loads(line).get("type") != "compacted":
+            continue
+        following = json.loads(lines[index + 1])
+        if following.get("type") != "turn_context":
+            raise AssertionError("the fixture no longer puts a turn context after its boundary")
+        record = json.loads(line)
+        record["timestamp"], following["timestamp"] = following["timestamp"], record["timestamp"]
+        lines[index], lines[index + 1] = oracle_quote(record), oracle_quote(following)
+        return "\n".join(lines) + "\n", receipt
+    raise AssertionError("the fixture no longer holds a compacted record")
+
+
+def _mutation_message_content_empty(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_item_is("message", "The synthetic one."),
+                       change=_content_becomes_empty), receipt
+
+
+def _mutation_message_block_type_not_read(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_item_is("message", "Which fixture is this?"),
+                       change=_content_block_type_is_not_read), receipt
+
+
+def _mutation_message_text_blank(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_item_is("message", "And now?"),
+                       change=_content_text_becomes_blank), receipt
+
+
+def _mutation_event_message_not_a_string(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_event_is("agent_message"),
+                       change=_event_message_is_not_a_string), receipt
+
+
+def _mutation_output_names_an_absent_call(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    return oracle_edit(text, oracle_item_is("function_call_output", "call_oracle_0001"),
+                       change=_output_names_an_absent_call), receipt
+
+
+def _mutation_call_id_duplicated(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if json.loads(line).get("type") != "response_item":
+            continue
+        if (json.loads(line).get("payload") or {}).get("type") != "function_call":
+            continue
+        return "\n".join(lines[:index + 1] + [line] + lines[index + 1:]) + "\n", receipt
+    raise AssertionError("the fixture no longer holds a function_call")
+
+
+def _mutation_plan_emitted_shortfall(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The artifact loses one message the plan still marks emitted (a shortfall, not a split)."""
+    return _without_record(text, oracle_item_is("message", "And now?")), receipt
+
+
+def _mutation_plan_omitted_present(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The plan marks the compaction boundary omitted while the artifact still holds it."""
+    assert receipt is not None
+    return text, oracle_receipt_edit(receipt, oracle_entry_kind("compaction_boundary"),
+                                     _entry_disposition_omitted)
+
+
+def _mutation_plan_names_it_nowhere(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The plan names the boundary nowhere at all: the artifact holds an occurrence it never planned."""
+    assert receipt is not None
+    kept = [entry for entry in receipt["occurrences"]
+            if entry.get("kind") != "compaction_boundary"]
+    if len(kept) != len(receipt["occurrences"]) - 1:
+        raise AssertionError("the fixture's plan no longer holds the boundary occurrence")
+    receipt["occurrences"] = kept
+    return text, receipt
+
+
+def _mutation_plan_pair_split(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A call the plan emits while its recorded result is marked omitted, and the result is not there.
+
+    The artifact is made to hold the call without its output, which is exactly the shape the receipt
+    then describes: the plan's own split is the defect, and the artifact cannot be asked about it (a call
+    with no recorded result is legitimate, so no structural rule forbids a bare call).
+    """
+    assert receipt is not None
+    return (_without_record(text, oracle_item_is("function_call_output", "call_oracle_0001")),
+            oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"), _entry_disposition_omitted))
+
+
+def _mutation_receipt_disposition_unknown(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    assert receipt is not None
+    return text, oracle_receipt_edit(receipt, oracle_entry_kind("message"),
+                                     _entry_disposition_kept)
+
+
+def _mutation_receipt_call_id_dropped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    assert receipt is not None
+    return text, oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"),
+                                     _entry_call_id_dropped)
+
+
+#: Every rule, and the negative fixture (or fixtures) that removes it: each mutation is applied to the
+#: named committed artifact (and plan, where it names one) and must turn **its own rule** red and no
+#: other — which is what makes the oracle a reading of one defect at a time rather than a net.
+ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
+    "oracle.jsonl-objects": (
+        OracleMutation("a line that is not JSON", "session.jsonl", None, _mutation_line_not_json),
+        OracleMutation("a line that parses as an array", "session.jsonl", None, _mutation_line_is_an_array),
+        OracleMutation("a line nested past reading", "session.jsonl", None,
+                       _mutation_line_nested_past_reading),
+    ),
+    "oracle.envelope": (
+        OracleMutation("a record without its timestamp", "session.jsonl", None,
+                       _mutation_envelope_without_timestamp),
+        OracleMutation("a payload that is not an object", "session.jsonl", None,
+                       _mutation_envelope_payload_not_an_object),
+    ),
+    "oracle.record-type": (
+        OracleMutation("a record type the format does not define", "session.jsonl", None,
+                       _mutation_record_type_unknown),
+    ),
+    "oracle.session-meta": (
+        OracleMutation("the metadata record deleted", "session.jsonl", None, _mutation_session_meta_deleted),
+        OracleMutation("a second metadata record", "session.jsonl", None, _mutation_session_meta_duplicated),
+        OracleMutation("every record deleted", "session.jsonl", None, _mutation_every_record_deleted),
+    ),
+    "oracle.session-meta-members": (
+        OracleMutation("an empty id", "session.jsonl", None, _mutation_session_meta_id_empty),
+        OracleMutation("no cli_version", "session.jsonl", None, _mutation_session_meta_cli_version_dropped),
+    ),
+    "oracle.clock": (
+        OracleMutation("two adjacent instants swapped", "session.jsonl", None, _mutation_clock_swapped),
+    ),
+    "oracle.message": (
+        OracleMutation("a message with no content", "session.jsonl", None, _mutation_message_content_empty),
+        OracleMutation("a block the reader does not read", "session.jsonl", None,
+                       _mutation_message_block_type_not_read),
+        OracleMutation("a message whose text is blank", "session.jsonl", None, _mutation_message_text_blank),
+    ),
+    "oracle.event-message": (
+        OracleMutation("an event message that is not a string", "session.jsonl", None,
+                       _mutation_event_message_not_a_string),
+    ),
+    "oracle.call-pairing": (
+        OracleMutation("an output naming no call", "session.jsonl", None,
+                       _mutation_output_names_an_absent_call),
+        OracleMutation("a call id carried twice", "session.jsonl", None, _mutation_call_id_duplicated),
+    ),
+    "oracle.receipt": (
+        OracleMutation("a disposition the vocabulary does not hold", "session.jsonl",
+                       "session-receipt.json", _mutation_receipt_disposition_unknown),
+        OracleMutation("a result entry with no call_id", "session.jsonl", "session-receipt.json",
+                       _mutation_receipt_call_id_dropped),
+    ),
+    "oracle.plan-emitted": (
+        OracleMutation("a message the plan emits and the artifact lost", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_emitted_shortfall),
+    ),
+    "oracle.plan-accounted": (
+        OracleMutation("an occurrence the plan marks omitted and the artifact holds", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_omitted_present),
+        OracleMutation("an occurrence the plan names nowhere", "session.jsonl", "session-receipt.json",
+                       _mutation_plan_names_it_nowhere),
+    ),
+    "oracle.plan-pairs": (
+        OracleMutation("a call emitted while its recorded result is omitted", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_pair_split),
+    ),
+}
+
+
+class CodexArtifactOracle(unittest.TestCase):
+    """The frozen oracle (goal 0009a): its committed fixtures, its mutations, and its `--validate` mode.
+
+    Every case drives the shipped module in-process, imported by path, with no harness and no source
+    session: the oracle's subject is an artifact's own bytes, so a case that needed the Codex binary or a
+    Claude transcript would not be a gate step. The rule table's other end is `ORACLE_MUTATIONS` above:
+    each rule has at least one mutation that removes it, each mutation turns its own rule red and no
+    other, and the two tables are in bijection — which is the increment's D1 in the form the required
+    `selftest` step can re-derive.
+    """
+
+    def test_the_committed_fixtures_validate(self) -> None:
+        """The positive fixtures are green, with and without their plans, and the reduced one is the
+        full session's own records with the turn its plan marks omitted taken out.
+
+        Both readings of "reduced" are pinned here: the reduced artifact is the full fixture's lines as a
+        subsequence (so it is the same session's records, in the source's own order), and its occurrence
+        count is the full one's minus exactly the two messages its plan marks omitted — an artifact that
+        had merely dropped a rule, or that still held the turn, could not satisfy both.
+        """
+        session = oracle_fixture("session.jsonl")
+        reduced = oracle_fixture("reduced.jsonl")
+        for name, text, receipt in (
+            ("session.jsonl", session, None),
+            ("session.jsonl + its plan", session, "session-receipt.json"),
+            ("reduced.jsonl", reduced, None),
+            ("reduced.jsonl + its plan", reduced, "reduced-receipt.json"),
+        ):
+            with self.subTest(fixture=name):
+                document = oracle_receipt(receipt) if receipt else None
+                self.assertEqual(NATIVE_CHECK.validate_artifact(text, receipt=document), [],
+                                 f"{name} is not green")
+        lines = session.splitlines()
+        cursor = 0
+        for line in reduced.splitlines():
+            while cursor < len(lines) and lines[cursor] != line:
+                cursor += 1
+            self.assertLess(cursor, len(lines),
+                            f"the reduced fixture holds a line the full fixture does not, in order: {line}")
+            cursor += 1
+        counted = [len(NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(text)[0]))
+                   for text in (session, reduced)]
+        self.assertEqual(counted, [7, 5],
+                         f"the fixtures' own occurrences are {counted}: the reduced artifact is the "
+                         f"session with the two messages its plan marks omitted left out")
+
+    def test_a_reduced_artifact_is_validated_from_the_artifact_alone(self) -> None:
+        """A reduced artifact and its plan are validated with nothing but the two documents in hand.
+
+        The validator is driven with `open` refusing to hand out any file at all, so a reading that
+        reached for a source transcript, the fixture on disk or any other document could not have
+        answered: the oracle's input is the artifact's text and, at most, a plan (goal 0009a, D2). The
+        full artifact against the reduced plan is the other direction — the two occurrences the plan
+        marks omitted are present there — which is what keeps "reduced" a statement about the artifact
+        rather than about an oracle that ignores plans.
+        """
+        reduced = oracle_fixture("reduced.jsonl")
+        receipt = oracle_receipt("reduced-receipt.json")
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the oracle opened a file: its input is the artifact, not a path")
+
+        with mock.patch("builtins.open", refuse):
+            self.assertEqual(NATIVE_CHECK.validate_artifact(reduced, receipt=receipt), [],
+                             "the reduced artifact and its plan are not green from their own texts")
+        present = NATIVE_CHECK.validate_artifact(oracle_fixture("session.jsonl"), receipt=receipt)
+        self.assertEqual([violation.rule for violation in present], ["oracle.plan-accounted"] * 2,
+                         f"the unreduced artifact against the reduced plan: {present}")
+        self.assertEqual([violation.line for violation in present], [14, 17],
+                         f"the plan's omitted occurrences are not the ones the artifact holds: {present}")
+
+    def test_every_rule_has_a_mutation_that_turns_its_fixture_red(self) -> None:
+        """The rule table and the mutation table are one contract, read from both ends.
+
+        Each rule states something; each has at least one mutation; each mutation leaves its fixture
+        changed (a mutation that edited nothing would pass for a rule nothing can break) and turns
+        exactly its own rule red, with a detail that says what was found — no other rule, so a report is
+        a reading of one defect rather than a net that catches everything at once.
+        """
+        self.assertEqual(set(ORACLE_MUTATIONS), set(NATIVE_CHECK.ORACLE_RULES),
+                         "a rule has no mutation, or a mutation has no rule")
+        for rule, sentence in NATIVE_CHECK.ORACLE_RULES.items():
+            self.assertTrue(sentence.strip(), f"the rule {rule} states nothing")
+        for rule, mutations in sorted(ORACLE_MUTATIONS.items()):
+            self.assertTrue(mutations, f"{rule} has no mutation")
+            for mutation in mutations:
+                with self.subTest(rule=rule, mutation=mutation.label):
+                    text = oracle_fixture(mutation.artifact)
+                    receipt = oracle_receipt(mutation.receipt) if mutation.receipt else None
+                    base = NATIVE_CHECK.validate_artifact(text, receipt=receipt)
+                    self.assertEqual(base, [],
+                                     f"{mutation.artifact} is not green before {mutation.label!r}: {base}")
+                    before = (text, json.dumps(receipt, sort_keys=True))
+                    mutated_text, mutated_receipt = mutation.mutate(text, receipt)
+                    after = (mutated_text, json.dumps(mutated_receipt, sort_keys=True))
+                    self.assertNotEqual(after, before,
+                                        f"the mutation {mutation.label!r} changed nothing")
+                    violations = NATIVE_CHECK.validate_artifact(mutated_text, receipt=mutated_receipt)
+                    self.assertEqual({violation.rule for violation in violations}, {rule},
+                                     f"{mutation.label!r} on {mutation.artifact} turned "
+                                     f"{sorted({violation.rule for violation in violations})} red "
+                                     f"instead of only {rule}: {violations}")
+                    for violation in violations:
+                        self.assertTrue(violation.detail.strip(),
+                                        f"the {rule} violation says nothing: {violation}")
+
+    def test_a_receipt_that_declares_nothing_cannot_pass(self) -> None:
+        """A plan that accounts for no occurrence, and one that cannot be read, both refuse the artifact.
+
+        The plan is total or it is not a plan: an empty `occurrences` list leaves every occurrence the
+        artifact holds unaccounted, and a receipt that is not an object carrying that list is reported
+        under `oracle.receipt` alone — the artifact is structurally green and the verdict is FAIL either
+        way, so a caller cannot hand in nothing and read a pass.
+        """
+        session = oracle_fixture("session.jsonl")
+        unaccounted = NATIVE_CHECK.validate_artifact(session, receipt={"occurrences": []})
+        self.assertEqual({violation.rule for violation in unaccounted}, {"oracle.plan-accounted"},
+                         f"an empty plan did not leave the artifact's occurrences unaccounted: {unaccounted}")
+        self.assertEqual(len(unaccounted), 7, f"the empty plan accounts for something: {unaccounted}")
+        unreadable = NATIVE_CHECK.validate_artifact(session, receipt={})
+        self.assertEqual([violation.rule for violation in unreadable], ["oracle.receipt"],
+                         f"a receipt that is not a plan was not named as one: {unreadable}")
+
+    def test_the_citations_manifest_accounts_for_every_rule(self) -> None:
+        """Every oracle rule is either a row of this increment's citations manifest or named in it.
+
+        The manifest is this increment's acceptance surface (`docs/conventions.md`), so a rule it neither
+        rows nor names in its header is one the ledger silently dropped, and a row whose rule id no longer
+        exists is one it kept past its subject. The rows' other end — that each cites a test the gate runs
+        and that the test passes — is the required `citations` step's own subject; this case reads the ids
+        and the header only.
+        """
+        manifest = (SCRIPTS.parent / "docs" / "evidence" / "0009a-citations.tsv").read_text(encoding="utf-8")
+        lines = manifest.splitlines()
+        rows = [line.split("\t")[0] for line in lines
+                if line.strip() and not line.startswith("#") and not line.startswith("rule_id")]
+        self.assertTrue(rows, "the citations manifest carries no rows")
+        unknown = sorted(set(rows) - set(NATIVE_CHECK.ORACLE_RULES))
+        self.assertEqual(unknown, [], f"the manifest cites ids that are not oracle rules: {unknown}")
+        header = "\n".join(line for line in lines if line.startswith("#"))
+        missing = [rule for rule in NATIVE_CHECK.ORACLE_RULES if rule not in rows and rule not in header]
+        self.assertEqual(missing, [],
+                         f"rules the manifest neither rows nor names as not covered: {missing}")
+
+    def test_the_validate_mode_reports_a_verdict(self) -> None:
+        """`--validate` answers for one artifact (and its plan): PASS, FAIL and INCOMPLETE, with the
+        numbers it read and the verdict line last.
+
+        The same three answers the rest of this repository's checks give, on the mode goal 0009's later
+        increments (and a person) read an installed rollout with: a green fixture and its plan pass, the
+        unreduced artifact against the reduced plan fails naming the rule and the record, `--json`
+        carries the same reading as a document, and an artifact that cannot be read at all is INCOMPLETE
+        with exit 2 rather than a pass.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            artifact = Path(scratch) / "session.jsonl"
+            plan = Path(scratch) / "plan.json"
+            artifact.write_text(oracle_fixture("session.jsonl"), encoding="utf-8")
+            plan.write_text(oracle_fixture("session-receipt.json"), encoding="utf-8")
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(plan)])
+            self.assertEqual(code, 0, f"exit {code} for a green artifact: {output.getvalue()}")
+            self.assertEqual(output.getvalue().strip().splitlines()[-1],
+                             "oracle: PASS — 17 record(s), 7 occurrence(s)",
+                             f"the verdict line is not the run's last line: {output.getvalue()}")
+
+            plan.write_text(oracle_fixture("reduced-receipt.json"), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(plan)])
+            self.assertEqual(code, 1, f"exit {code} for a red artifact: {output.getvalue()}")
+            self.assertIn("oracle: oracle.plan-accounted line 14 —", output.getvalue(),
+                          f"the failing record is not named: {output.getvalue()}")
+            self.assertEqual(output.getvalue().strip().splitlines()[-1],
+                             "oracle: FAIL — 17 record(s), 7 occurrence(s), 2 violation(s)",
+                             f"the verdict line is not the run's last line: {output.getvalue()}")
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--json"])
+            self.assertEqual(code, 0, f"exit {code} for a green artifact: {output.getvalue()}")
+            document = json.loads(output.getvalue()[:output.getvalue().index("\noracle: ")])
+            self.assertEqual((document["verdict"], document["records"], document["occurrences"],
+                              document["violations"], document["receipt"]),
+                             ("PASS", 17, 7, [], None),
+                             f"the JSON document is not the run's own reading: {document}")
+
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(Path(scratch) / "absent.jsonl")])
+            self.assertEqual(code, 2, f"exit {code} for an artifact that is not there")
+            self.assertIn("oracle: INCOMPLETE", errors.getvalue(),
+                          f"an unreadable artifact is not INCOMPLETE: {errors.getvalue()}")
 
 
 if __name__ == "__main__":

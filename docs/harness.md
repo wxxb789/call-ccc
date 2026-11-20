@@ -370,6 +370,25 @@ says so.
   can grow this harness's memory with it, while the pipe stays empty so the server cannot block on it.
   Every check prints its own verdict and the script exits non-zero when one fails, so a run that could
   not do the native half says so instead of reporting a pass.
+  **The same file carries a second, offline half — the frozen artifact oracle (goal 0009a).**
+  `validate_artifact` — reachable as `python3 scripts/codex-native-check.py --validate <artifact>
+  [--receipt <document>] [--json]` — judges a Codex session **artifact** against thirteen stated rules,
+  from the artifact's own bytes and, at most, an explicit **manifest receipt** (the plan's per-occurrence
+  dispositions: `emitted` / `omitted` over messages, tool calls, results and compaction boundaries). It
+  needs no harness, no source transcript and no selection semantics: its input is the artifact's text, so
+  a reduced (selective) artifact is validated with the source absent from the process. Its verdict line is
+  the last one printed — `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — …` —
+  with exit 0/1/2, and a file or receipt that cannot be read is INCOMPLETE, never a pass. Its rules and
+  their one-sentence statements live in the script's own `ORACLE_RULES`, its positive fixtures are the
+  committed synthetic Codex JSONL under `scripts/tests/testdata/codex-oracle/`, and each rule is turned
+  red by its own mutation: the required `selftest` step's `CodexArtifactOracle` holds the rule table and
+  its mutation table in bijection, so a rule without a red fixture — or a mutation without a rule — fails
+  the gate. **This section, the rule table and `--validate` are read-only for the rest of goal 0009 (the
+  oracle lock):** a fix round that moves this checker alongside production code moves both sides of "the
+  implementation satisfies the oracle" at once, which is the co-mutation both cross-family consults named
+  as goal 0009's root cause (`docs/plans/0009-decomposition.md`), and the conductor blocks it. A change
+  to the rules after goal 0009 is an ordinary increment: add the rule (or the record type) and the
+  mutation that turns its fixture red.
 - `scripts/claude-native-check.py` — the target-side native verification for the Codex → Claude Code
   route, and **deliberately not a gate step** for the same reason: it needs the Claude Code binary
   installed, and its `resume` half also needs model access. The **`load` half needs no model access**: it

@@ -41,12 +41,23 @@ server that stops answering is reported as a failed check with its own diagnosti
 the run; those diagnostics are a bounded tail of bounded lines, read in bounded pieces, so a server that
 floods that pipe cannot grow this harness's memory either.
 
+**The frozen artifact oracle (goal 0009a).** The same file carries a second, offline half: a
+well-formedness oracle over a Codex session **artifact** — `validate_artifact` below, reachable as
+`--validate <artifact> [--receipt <document>]` — which needs no harness, no source transcript and no
+selection semantics, because its input is the artifact and, at most, an explicit manifest receipt. It is
+what goal 0009's later increments read an installed rollout with, and its rule table, its fixtures'
+mutations and this mode are **read-only for the rest of goal 0009**: a round that moves this checker
+alongside production code moves both sides of "the implementation satisfies the oracle" at once, which is
+the oracle lock (goal 0009a, D4; stated in full at the section itself). The native checks above are
+untouched by it — they are the acceptance path this increment must leave reporting the same verdict.
+
     python3 scripts/codex-native-check.py
     python3 scripts/codex-native-check.py --resume-prompt "Which file did you read, and why?"
     python3 scripts/codex-native-check.py --model-provider tencent-litellm --model deepseek-v4.1-flash-fast \
         --resume-prompt "Which file did you read, and why?"
     python3 scripts/codex-native-check.py --repeat-resume-prompt "What budget do retries share per session?"
     python3 scripts/codex-native-check.py --json          # machine-readable summary on stdout
+    python3 scripts/codex-native-check.py --validate bin/rollout.jsonl --receipt plan.json --json
 
 `--model-provider`/`--model` name what the throw-away Codex configuration should use, because the
 target's loader checks a session against the provider *its* configuration names: the load check only
@@ -67,9 +78,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -746,6 +759,618 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
         print("   ", line)
 
 
+# ===================================================================================================
+# The frozen Codex artifact oracle (goal 0009a).
+#
+# The native checks above ask the target harness itself. This section answers the other, offline half:
+# whether a **Codex session artifact** is well-formed — including one a selection reduced — judged from
+# the artifact's own bytes and, at most, an explicit **manifest receipt** (the plan's per-occurrence
+# dispositions). It never reads a source transcript, never re-derives Claude Code structure or selection
+# semantics, and needs no harness: `validate_artifact` takes the artifact's text and nothing else, so "a
+# reduced artifact is validated with the source absent from the process" is a property of what it *can*
+# read rather than a promise about its behaviour.
+#
+# **Freeze and oracle lock (goal 0009a, D4).** This section, the rule table and `--validate` are read-only
+# for the rest of goal 0009, and the reason is mechanical rather than moral: this checker is the verifier
+# a later lane's implementation is judged by, so a fix round that moves it *alongside* production code
+# moves both sides of "the implementation satisfies the oracle" at once and buys a reviewer round instead
+# of a convergence — measured on goal 0009's superseded attempt, where that co-mutation is the root cause
+# both cross-family consults named. The conductor reads that shape as the **oracle lock** and blocks the
+# series; the rule set, its fixtures and its mutations are the contract the later lanes read, not a draft
+# they may tune. After goal 0009, a format change (a new record type, say) is an ordinary increment: add
+# the rule or the record type, and add the mutation that turns its fixture red — the suite's bijection
+# between `ORACLE_RULES` and its mutation table is what keeps that honest, because a rule without a red
+# mutation, or a mutation without a rule, fails the required `selftest` step.
+#
+# The rules are statements about the *format*, measured on Codex 0.170.0's own sessions (`~/.codex/
+# sessions`, 25 files) and on artifacts this build's writer installs; each rule's own mutation, in
+# `scripts/tests/test_codex_native_check.py`, is what makes it a claim a case can break rather than an
+# aspiration. They are the artifact's rules and never the source's: which records a source contributed,
+# which a selection kept and what the target planned are the receipt's own statements, and the oracle only
+# compares a receipt with the artifact it plans. The structural half is deliberately silent about a call
+# whose recorded result was never written — the writer retires those by design
+# (`TestCodexRolloutRetiresACallWhenItsResultIsOmitted`), so the artifact alone cannot tell "the source
+# recorded no result" from "the result was left out": that answer is the receipt's own, and it is the pair
+# rule below that refuses a plan which splits a pair.
+# ===================================================================================================
+
+#: Every rule the oracle states: rule id → the sentence it states. The ids are this report's own
+#: vocabulary and the keys of the tests' mutation table, which is asserted to be in bijection with this
+#: table, so a rule cannot be added without a fixture that turns it red and vice versa.
+ORACLE_RULES: dict[str, str] = {
+    "oracle.jsonl-objects":
+        "every non-empty line of the artifact is exactly one JSON object",
+    "oracle.envelope":
+        "every record carries a parseable `timestamp`, a non-empty `type` and an object `payload`",
+    "oracle.record-type":
+        "every record's `type` is one the rollout format defines — the five this route's writer emits "
+        "and the further ones Codex 0.170.0 writes; payload types stay open",
+    "oracle.session-meta":
+        "the artifact's first record is its `session_meta`, and the artifact carries exactly one",
+    "oracle.session-meta-members":
+        "that record's `id`, `originator` and `cli_version` are non-empty strings",
+    "oracle.clock":
+        "the envelope instants never decrease: no written record is stamped before the record written "
+        "before it",
+    "oracle.message":
+        "a `response_item` message's `role` is a non-empty string and its `content` is a non-empty list "
+        "of blocks typed as text the carried reader reads (`input_text`, `output_text`, `text`), at "
+        "least one of them non-blank",
+    "oracle.event-message":
+        "a `user_message`/`agent_message` event carries a non-empty string `message` — the record the "
+        "harness's own view of the turn is built from",
+    "oracle.call-pairing":
+        "every call's `call_id` is a non-empty string no other call of the artifact carries, and every "
+        "call output names a call the artifact carries",
+    "oracle.receipt":
+        "a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's "
+        "occurrence vocabulary, the identity that kind needs and a `disposition` of `emitted` or "
+        "`omitted`; an unreadable receipt is reported and not compared with the artifact",
+    "oracle.plan-emitted":
+        "every occurrence the receipt marks `emitted` is in the artifact as many times as it is marked",
+    "oracle.plan-accounted":
+        "the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks "
+        "`omitted` and one it names nowhere are both refused — the plan is total",
+    "oracle.plan-pairs":
+        "a call and its recorded result carry one disposition: a `call_id` whose call and result the "
+        "receipt splits is the pair the closure rule forbids",
+}
+
+#: The record types the rollout format defines: the five this build's writer emits and the three more
+#: that Codex 0.170.0 writes of its own (measured: `token_usage_record`, `world_state`,
+#: `inter_agent_communication_metadata`). A type outside this set is refused rather than skipped — an
+#: artifact holding one carries records this build cannot say it understands. Payload types are *not*
+#: closed: the harness's own event and item vocabulary is open and measured (`token_count`,
+#: `thread_settings_applied`, …).
+ORACLE_RECORD_TYPES = (
+    "session_meta", "turn_context", "response_item", "event_msg", "compacted",
+    "token_usage_record", "world_state", "inter_agent_communication_metadata",
+)
+
+#: The content-block types the inherited reader reads text from (`internal/parser/codex.go`'s
+#: `extractCodexTextBlocks`): a block of any other type is skipped, so a message holding only such blocks
+#: is one no read of it sees at all.
+ORACLE_TEXT_BLOCK_TYPES = ("input_text", "output_text", "text")
+
+#: The message roles this route's occurrence vocabulary names: the two its writer writes.
+ORACLE_MESSAGE_ROLES = ("user", "assistant")
+
+#: The two ways a manifest receipt can dispose of one occurrence.
+ORACLE_DISPOSITIONS = ("emitted", "omitted")
+
+#: The occurrence kinds the receipt statements are about — what this route's writer expresses as
+#: evidence. A record of another kind is not an occurrence of this vocabulary rather than a silently
+#: accepted one.
+ORACLE_OCCURRENCE_KINDS = ("message", "tool_call", "tool_result", "compaction_boundary")
+
+#: The `response_item` payload types that carry a call and that carry a call output. Both families Codex
+#: itself writes are named, because an artifact may hold either and a pairing defect is the same defect.
+ORACLE_CALL_ITEMS = ("function_call", "custom_tool_call")
+ORACLE_RESULT_ITEMS = ("function_call_output", "custom_tool_call_output")
+
+#: The `event_msg` payload types that carry one message's text for the harness's own view.
+ORACLE_TURN_EVENTS = ("user_message", "agent_message")
+
+#: One RFC3339 instant, as strict as the format is: `T` (or the lowercase `t`, or the space the format
+#: allows by agreement), a fraction of up to nanosecond precision — Go's own `RFC3339Nano` writes one —
+#: and `Z` or a numeric offset.
+ORACLE_INSTANT = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:\d{2})$")
+
+
+def oracle_instant(value: object) -> tuple[int, int] | None:
+    """One record's `timestamp` as a comparable ``(second since the epoch, nanosecond)`` pair, or None.
+
+    The comparison is on the tuple, never on a float: two records one nanosecond apart must order the way
+    the file does, and a fraction is compared as the digits it holds rather than as the microseconds a
+    host clock happens to keep.
+    """
+    if not isinstance(value, str):
+        return None
+    match = ORACLE_INSTANT.match(value)
+    if match is None:
+        return None
+    year, month, day, hour, minute, second = (int(match.group(index)) for index in range(1, 7))
+    if not (hour <= 23 and minute <= 59 and second <= 60):
+        return None
+    try:
+        base = datetime.datetime(year, month, day, hour, minute, min(second, 59),
+                                 tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None  # no such calendar day
+    epoch = int(base.timestamp()) + (1 if second == 60 else 0)  # a leap second is its second's end
+    zone = match.group(8)
+    if zone not in ("Z", "z"):
+        offset = int(zone[1:3]) * 3600 + int(zone[4:6]) * 60
+        epoch -= offset if zone[0] == "+" else -offset
+    return epoch, int((match.group(7) or "").ljust(9, "0"))
+
+
+class Violation(NamedTuple):
+    """One rule an artifact breaks: the rule's id, the record's 1-based line (0 for a receipt-side or
+    whole-artifact violation) and what was found."""
+
+    rule: str
+    line: int
+    detail: str
+
+
+def oracle_payload(record: dict) -> dict:
+    """A record's payload, or an empty mapping when it is not an object (which `oracle.envelope` names).
+
+    Returning a mapping rather than raising is what keeps one defect to one report: a record whose
+    payload is not an object is an envelope violation, not also a message or call violation about
+    members that were never there.
+    """
+    payload = record.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
+    """One artifact's records: ``(line, record)`` for every non-empty line that is one JSON object, plus
+    the `oracle.jsonl-objects` violations for the lines that are not.
+
+    Blank lines are not records and not violations: a JSONL file's own readers skip them, and a trailing
+    newline is the normal end of one. Everything else must be one object per line — a line that parses as
+    an array, a number or a string is a violation exactly as a line that does not parse is, because the
+    target's own reader reads lines as objects.
+    """
+    records: list[tuple[int, dict]] = []
+    violations: list[Violation] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as broken:
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        f"not JSON ({broken.msg} at column {broken.colno})"))
+            continue
+        except RecursionError:
+            # A validator that raised here would answer about this machine's stack, not about the file:
+            # a line nested past what this reader can parse is a line the oracle cannot read.
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        "not JSON: nested too deeply to read"))
+            continue
+        if not isinstance(value, dict):
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        f"one JSON object per line, found {type(value).__name__}"))
+            continue
+        records.append((number, value))
+    return records, violations
+
+
+def oracle_envelope_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.envelope`: the members every record's own envelope carries."""
+    violations: list[Violation] = []
+    for line, record in records:
+        stamp = record.get("timestamp")
+        if not isinstance(stamp, str) or oracle_instant(stamp) is None:
+            violations.append(Violation("oracle.envelope", line,
+                                        f"timestamp {stamp!r} is not an RFC3339 instant"))
+        kind = record.get("type")
+        if not isinstance(kind, str) or not kind.strip():
+            violations.append(Violation("oracle.envelope", line,
+                                        f"type {kind!r} is not a non-empty string"))
+        if not isinstance(record.get("payload"), dict):
+            violations.append(Violation("oracle.envelope", line,
+                                        f"payload is {type(record.get('payload')).__name__}, not an object"))
+    return violations
+
+
+def oracle_record_type_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.record-type`: the record's own type is one the format defines.
+
+    A record whose `type` is not a non-empty string is `oracle.envelope`'s alone: this rule answers for a
+    type that was stated and is none of the format's.
+    """
+    violations: list[Violation] = []
+    for line, record in records:
+        kind = record.get("type")
+        if isinstance(kind, str) and kind.strip() and kind not in ORACLE_RECORD_TYPES:
+            violations.append(Violation("oracle.record-type", line,
+                                        f"record type {kind!r} is not one the format defines"))
+    return violations
+
+
+def oracle_session_meta_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.session-meta`: the artifact opens with its one metadata record."""
+    violations: list[Violation] = []
+    metas = [line for line, record in records if record.get("type") == "session_meta"]
+    if not records:
+        violations.append(Violation("oracle.session-meta", 0, "the artifact holds no records"))
+    elif not metas or metas[0] != records[0][0]:
+        line, record = records[0]
+        violations.append(Violation("oracle.session-meta", line,
+                                    f"the first record is {record.get('type')!r}, not 'session_meta'"))
+    if len(metas) > 1:
+        violations.append(Violation("oracle.session-meta", metas[1],
+                                    f"the artifact carries {len(metas)} session_meta records; a rollout "
+                                    f"carries one"))
+    return violations
+
+
+def oracle_session_meta_members_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.session-meta-members`: the members the target's own reader needs from that record."""
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "session_meta":
+            continue
+        payload = oracle_payload(record)
+        for member in ("id", "originator", "cli_version"):
+            value = payload.get(member)
+            if not isinstance(value, str) or not value.strip():
+                violations.append(Violation("oracle.session-meta-members", line,
+                                            f"session_meta.{member} is {value!r}, not a non-empty string"))
+    return violations
+
+
+def oracle_clock_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.clock`: the written instants run one way.
+
+    A record whose instant does not parse is `oracle.envelope`'s alone and is skipped here rather than
+    compared; the comparison is against the last record whose instant did parse, so one malformed stamp
+    does not make every later record look out of order.
+    """
+    violations: list[Violation] = []
+    previous: tuple[str, tuple[int, int]] | None = None
+    for line, record in records:
+        stamp = record.get("timestamp")
+        instant = oracle_instant(stamp)
+        if instant is None:
+            continue
+        if previous is not None and instant < previous[1]:
+            violations.append(Violation("oracle.clock", line,
+                                        f"timestamp {stamp} precedes {previous[0]} on the record "
+                                        f"before it"))
+        else:
+            previous = (str(stamp), instant)
+    return violations
+
+
+def oracle_message_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.message`: a message record is one a read of the artifact can see."""
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = oracle_payload(record)
+        if payload.get("type") != "message":
+            continue
+        role = payload.get("role")
+        if not isinstance(role, str) or not role.strip():
+            violations.append(Violation("oracle.message", line,
+                                        f"role {role!r} is not a non-empty string"))
+        content = payload.get("content")
+        if not isinstance(content, list) or not content:
+            violations.append(Violation("oracle.message", line,
+                                        f"content is {content!r}, not a non-empty list"))
+            continue
+        texts: list[str] = []
+        for index, block in enumerate(content):
+            if not isinstance(block, dict):
+                violations.append(Violation("oracle.message", line,
+                                            f"content[{index}] is not an object"))
+                continue
+            if block.get("type") not in ORACLE_TEXT_BLOCK_TYPES:
+                violations.append(Violation("oracle.message", line,
+                                            f"content[{index}].type {block.get('type')!r} is not one "
+                                            f"the reader reads text from"))
+            text = block.get("text")
+            if not isinstance(text, str):
+                violations.append(Violation("oracle.message", line,
+                                            f"content[{index}].text is {type(text).__name__}, not a "
+                                            f"string"))
+            else:
+                texts.append(text)
+        if texts and not any(text.strip() for text in texts):
+            violations.append(Violation("oracle.message", line,
+                                        "every content block's text is blank, so no read of this record "
+                                        "sees a message"))
+    return violations
+
+
+def oracle_event_message_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.event-message`: the turn events the harness's own view of a turn is built from."""
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "event_msg":
+            continue
+        payload = oracle_payload(record)
+        if payload.get("type") not in ORACLE_TURN_EVENTS:
+            continue
+        message = payload.get("message")
+        if not isinstance(message, str) or not message.strip():
+            violations.append(Violation("oracle.event-message", line,
+                                        f"{payload.get('type')} message {message!r} is not a non-empty "
+                                        f"string"))
+    return violations
+
+
+def oracle_call_pairing_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.call-pairing`: call identity is stated once and every output belongs to a call.
+
+    The other direction — a call whose recorded result the conversion did not write — is deliberately not
+    a structural rule (see the section header): the writer retires such calls by design, so only a plan
+    can say whether a result ever existed, and `oracle.plan-pairs` answers for that.
+    """
+    violations: list[Violation] = []
+    calls: dict[str, int] = {}
+    for line, record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = oracle_payload(record)
+        if payload.get("type") not in ORACLE_CALL_ITEMS:
+            continue
+        call_id = payload.get("call_id")
+        if not isinstance(call_id, str) or not call_id.strip():
+            violations.append(Violation("oracle.call-pairing", line,
+                                        f"call_id {call_id!r} is not a non-empty string"))
+            continue
+        if call_id in calls:
+            violations.append(Violation("oracle.call-pairing", line,
+                                        f"call_id {call_id!r} is already carried by the call on line "
+                                        f"{calls[call_id]}"))
+            continue
+        calls[call_id] = line
+    for line, record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = oracle_payload(record)
+        if payload.get("type") not in ORACLE_RESULT_ITEMS:
+            continue
+        call_id = payload.get("call_id")
+        if not isinstance(call_id, str) or call_id not in calls:
+            violations.append(Violation("oracle.call-pairing", line,
+                                        f"call output names call_id {call_id!r}, which no call in the "
+                                        f"artifact carries"))
+    return violations
+
+
+def oracle_message_text(payload: dict) -> str:
+    """One message's own text, joined the way the inherited reader joins it (`extractCodexContent`).
+
+    The identity a receipt and an artifact are matched on is this text, so it is derived by the reader's
+    own rule — the text of every block whose type that reader reads, in the record's own order — rather
+    than by a rule this oracle invented.
+    """
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return ""
+    return "\n".join(
+        block["text"] for block in blocks
+        if isinstance(block, dict) and block.get("type") in ORACLE_TEXT_BLOCK_TYPES
+        and isinstance(block.get("text"), str)
+    )
+
+
+def oracle_occurrences(records: list[tuple[int, dict]]) -> list[tuple[tuple, int]]:
+    """The artifact's own occurrences: ``((kind, identity…), line)`` for each one it holds.
+
+    The vocabulary is this route's four evidence kinds — a message in one of the writer's two roles, a
+    tool call, a tool result and a compaction boundary. Identity is the occurrence's own: role and text
+    for a message, `call_id` for a call and for a result, the summary's text for a boundary. Multiplicity
+    is part of the record: two identical messages are two occurrences, and the receipt is counted the
+    same way.
+    """
+    occurrences: list[tuple[tuple, int]] = []
+    for line, record in records:
+        kind = record.get("type")
+        payload = oracle_payload(record)
+        if kind == "response_item":
+            item = payload.get("type")
+            if item == "message" and payload.get("role") in ORACLE_MESSAGE_ROLES:
+                occurrences.append((("message", payload.get("role"), oracle_message_text(payload)), line))
+            elif item in ORACLE_CALL_ITEMS and isinstance(payload.get("call_id"), str):
+                occurrences.append((("tool_call", payload["call_id"]), line))
+            elif item in ORACLE_RESULT_ITEMS and isinstance(payload.get("call_id"), str):
+                occurrences.append((("tool_result", payload["call_id"]), line))
+        elif kind == "compacted" and isinstance(payload.get("message"), str):
+            occurrences.append((("compaction_boundary", payload["message"]), line))
+    return occurrences
+
+
+def oracle_occurrence_text(key: tuple) -> str:
+    """One occurrence identity, in the words a report names it by."""
+    if key[0] == "message":
+        return f"message {key[1]} {key[2]!r}"
+    return f"{key[0].replace('_', ' ')} {key[1]!r}"
+
+
+def oracle_plan(receipt: object) -> tuple[list[tuple[tuple, str]], list[Violation]]:
+    """One manifest receipt as its plan: ``(identity, disposition)`` per entry, and its own violations.
+
+    The receipt is the plan's own statement — which occurrence travels and which does not — and an entry
+    whose kind, identity or disposition cannot be read is a violation rather than an entry: a plan this
+    oracle cannot read is reported and left uncompared (see `validate_artifact`), because comparing half
+    of a plan with an artifact proves nothing about either half.
+    """
+    violations: list[Violation] = []
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("occurrences"), list):
+        return [], [Violation("oracle.receipt", 0,
+                              "the receipt is not an object carrying an `occurrences` list")]
+    plan: list[tuple[tuple, str]] = []
+    for index, entry in enumerate(receipt["occurrences"]):
+        where = f"occurrences[{index}]"
+        if not isinstance(entry, dict):
+            violations.append(Violation("oracle.receipt", 0, f"{where} is not an object"))
+            continue
+        kind, disposition = entry.get("kind"), entry.get("disposition")
+        if disposition not in ORACLE_DISPOSITIONS:
+            violations.append(Violation("oracle.receipt", 0,
+                                        f"{where}.disposition {disposition!r} is not one of "
+                                        f"{', '.join(ORACLE_DISPOSITIONS)}"))
+            continue
+        if kind not in ORACLE_OCCURRENCE_KINDS:
+            violations.append(Violation("oracle.receipt", 0,
+                                        f"{where}.kind {kind!r} is not one of "
+                                        f"{', '.join(ORACLE_OCCURRENCE_KINDS)}"))
+            continue
+        identity = oracle_entry_identity(entry, where, violations)
+        if identity is not None:
+            plan.append((identity, disposition))
+    return plan, violations
+
+
+def oracle_entry_identity(entry: dict, where: str, violations: list[Violation]) -> tuple | None:
+    """One receipt entry's own identity, appended to `violations` and answered as None when unreadable."""
+    kind = entry["kind"]
+    if kind == "message":
+        role, text = entry.get("role"), entry.get("text")
+        if role not in ORACLE_MESSAGE_ROLES:
+            violations.append(Violation("oracle.receipt", 0,
+                                        f"{where}.role {role!r} is not one of "
+                                        f"{', '.join(ORACLE_MESSAGE_ROLES)}"))
+            return None
+        if not isinstance(text, str):
+            violations.append(Violation("oracle.receipt", 0, f"{where}.text {text!r} is not a string"))
+            return None
+        return ("message", role, text)
+    if kind == "compaction_boundary":
+        text = entry.get("text")
+        if not isinstance(text, str):
+            violations.append(Violation("oracle.receipt", 0, f"{where}.text {text!r} is not a string"))
+            return None
+        return ("compaction_boundary", text)
+    call_id = entry.get("call_id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        violations.append(Violation("oracle.receipt", 0,
+                                    f"{where}.call_id {call_id!r} is not a non-empty string"))
+        return None
+    return (kind, call_id)
+
+
+def oracle_plan_violations(plan: list[tuple[tuple, str]],
+                           occurrences: list[tuple[tuple, int]]) -> list[Violation]:
+    """`oracle.plan-emitted`, `oracle.plan-accounted` and `oracle.plan-pairs`: the plan against the artifact.
+
+    The two accounting rules are one comparison read from both ends — how many occurrences of one
+    identity the plan marks emitted against how many the artifact holds — so a shortfall is one rule and a
+    surplus (an occurrence the plan marks omitted, or names nowhere) is the other. The pair rule is the
+    plan's own statement, because only a plan can say whether a recorded result ever existed.
+    """
+    violations: list[Violation] = []
+    present = collections.Counter(key for key, _ in occurrences)
+    lines: dict[tuple, int] = {}
+    for key, line in occurrences:
+        lines.setdefault(key, line)
+    emitted = collections.Counter(key for key, disposition in plan if disposition == "emitted")
+    omitted = collections.Counter(key for key, disposition in plan if disposition == "omitted")
+    for key in sorted(set(present) | set(emitted), key=oracle_occurrence_text):
+        held, marked = present.get(key, 0), emitted.get(key, 0)
+        if held < marked:
+            violations.append(Violation("oracle.plan-emitted", 0,
+                                        f"{oracle_occurrence_text(key)}: the receipt marks {marked} "
+                                        f"emitted, the artifact holds {held}"))
+        elif held > marked:
+            why = (f"the receipt marks {omitted.get(key, 0)} omitted"
+                   if omitted.get(key, 0) else "the receipt names no occurrence with this identity")
+            violations.append(Violation("oracle.plan-accounted", lines.get(key, 0),
+                                        f"{oracle_occurrence_text(key)}: the artifact holds {held}, the "
+                                        f"receipt marks {marked} emitted ({why})"))
+    dispositions: dict[str, set[str]] = collections.defaultdict(set)
+    calls: set[str] = set()
+    for key, disposition in plan:
+        if key[0] == "tool_call":
+            calls.add(key[1])
+        if key[0] in ("tool_call", "tool_result"):
+            dispositions[key[1]].add(disposition)
+    for call_id in sorted(calls):
+        if len(dispositions[call_id]) > 1:
+            violations.append(Violation("oracle.plan-pairs", 0,
+                                        f"call {call_id!r}: the receipt gives the call and its recorded "
+                                        f"result different dispositions — a call and its recorded result "
+                                        f"travel together"))
+    return violations
+
+
+def validate_artifact(text: str, receipt: object | None = None) -> list[Violation]:
+    """Every rule this oracle states, over one artifact and — where a receipt is handed in — its plan.
+
+    The artifact is this `text` and nothing else: no path, no source session, no selection and no
+    harness, which is what lets a **reduced** artifact be validated with the source absent from the
+    process. A receipt is compared only when every one of its entries could be read; an unreadable one is
+    reported under `oracle.receipt` alone, because a plan nobody can read says nothing about an artifact.
+    """
+    records, violations = oracle_records(text)
+    violations += oracle_envelope_violations(records)
+    violations += oracle_record_type_violations(records)
+    violations += oracle_session_meta_violations(records)
+    violations += oracle_session_meta_members_violations(records)
+    violations += oracle_clock_violations(records)
+    violations += oracle_message_violations(records)
+    violations += oracle_event_message_violations(records)
+    violations += oracle_call_pairing_violations(records)
+    if receipt is not None:
+        plan, receipt_violations = oracle_plan(receipt)
+        violations += receipt_violations
+        if not receipt_violations:
+            violations += oracle_plan_violations(plan, oracle_occurrences(records))
+    return sorted(violations, key=lambda violation: (violation.line, violation.rule, violation.detail))
+
+
+def oracle_report(artifact: Path, receipt: Path | None, as_json: bool) -> int:
+    """The oracle's own command: one artifact, at most one receipt, a verdict and an exit code.
+
+    It reads the artifact's bytes and, when one is named, the receipt's — nothing else, ever. An input
+    it cannot read at all ends as `oracle: INCOMPLETE` (exit 2), never as a pass: nothing was validated.
+    The verdict line is the last one printed, `oracle: PASS` or `oracle: FAIL — <n> violation(s)`, and
+    each violation is one line above it (`--json` adds the machine-readable document instead of them).
+    """
+    try:
+        text = artifact.read_bytes().decode("utf-8", errors="replace")
+    except OSError as failure:
+        print(f"oracle: INCOMPLETE — the artifact {artifact} cannot be read: {failure}", file=sys.stderr)
+        return 2
+    document: object | None = None
+    if receipt is not None:
+        try:
+            document = json.loads(receipt.read_bytes().decode("utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError) as failure:
+            print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}", file=sys.stderr)
+            return 2
+    violations = validate_artifact(text, receipt=document)
+    records, _ = oracle_records(text)
+    occurrences = oracle_occurrences(records)
+    if as_json:
+        print(json.dumps({
+            "artifact": str(artifact),
+            "receipt": str(receipt) if receipt is not None else None,
+            "records": len(records),
+            "occurrences": len(occurrences),
+            "violations": [{"rule": rule, "line": line, "detail": detail}
+                           for rule, line, detail in violations],
+            "verdict": "PASS" if not violations else "FAIL",
+        }, indent=2))
+    else:
+        for rule, line, detail in violations:
+            print(f"oracle: {rule}" + (f" line {line}" if line else "") + f" — {detail}")
+    print(f"oracle: {'PASS' if not violations else 'FAIL'} — {len(records)} record(s), "
+          f"{len(occurrences)} occurrence(s)"
+          + (f", {len(violations)} violation(s)" if violations else ""))
+    return 0 if not violations else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -763,7 +1388,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", help="model the throw-away Codex config should name")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory and say where it is")
     parser.add_argument("--json", action="store_true", help="also print a machine-readable summary")
+    parser.add_argument("--validate", type=Path, metavar="ARTIFACT",
+                        help="validate a Codex session artifact against the frozen well-formedness "
+                             "oracle (offline: no harness, no source session) and exit")
+    parser.add_argument("--receipt", type=Path, metavar="DOCUMENT",
+                        help="the artifact's manifest receipt, with --validate: the occurrences a "
+                             "conversion planned, compared with the artifact")
     args = parser.parse_args(argv)
+
+    if args.receipt is not None and args.validate is None:
+        parser.error("--receipt names the manifest receipt of the artifact --validate is given")
+    if args.validate is not None:
+        return oracle_report(args.validate, args.receipt, args.json)
 
     repo = args.repo.resolve()
     fixture_root = repo / FIXTURE_ROOT

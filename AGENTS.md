@@ -274,6 +274,17 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   or the ordinary rounds pass six. A trip is an **abstraction-boundary failure** to report and re-decompose,
   never a budget to raise: the increment that motivated the rule ran 19 rounds with zero clean and grew its
   diff 191 KB → 1.47 MB.
+- **The native oracle is frozen for the rest of goal 0009 (oracle lock, goal 0009a, 2026-11-21).**
+  `scripts/codex-native-check.py`'s artifact oracle — its `ORACLE_RULES`, `validate_artifact`, the
+  `--validate` mode and their committed fixtures under `scripts/tests/testdata/codex-oracle/` — is
+  **read-only** while increments 0009b–0009d are built, and so is the mutation table that turns each rule
+  red. The reason is mechanical: that checker is the verifier those increments are judged by, so a fix
+  round that moves it *alongside* production code moves both sides of "the implementation satisfies the
+  oracle" at once and buys a reviewer round instead of a convergence — the co-mutation both cross-family
+  consults named as goal 0009's root cause. The conductor's oracle-lock signal blocks the series on that
+  shape; a later lane that needs a rule changed must stop and report it as an abstraction-boundary failure,
+  not iterate. Added by the goal-0009a increment, which changed no Go file; `docs/harness.md` states the
+  oracle's own surface.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 

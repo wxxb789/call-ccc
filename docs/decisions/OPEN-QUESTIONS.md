@@ -2924,3 +2924,30 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   `docs/plans/0009-selective-context.md` replaces the parenthesis with the chosen enumeration; nothing
   downstream changes.
 - **Settled by:** an owner sentence naming the four routes/increments.
+
+## Q-0009a-01 — The citations ledger of an increment that changes no Go file
+
+- **Status:** open (default taken: the manifest ships, and each of its rows names one oracle rule and the
+  existing Go test that pins the same claim about this tree's own bytes).
+- **Question:** `docs/conventions.md` holds a citations row to be one gate-runnable **Go** test, and the
+  same file says a goal with no Go-test-dischargeable obligation ships **no** citations file rather than an
+  empty one; goal 0009a's Bounds make it a no-Go-change increment, while its Acceptance surface names
+  `docs/evidence/0009a-citations.tsv` and the decomposition lane wrote the manifest as carrying "discrete
+  decisions". May such an increment ship a manifest whose rows cite **existing** Go tests (the ones that
+  already pin the behaviour each rule restates), or must it ship none?
+- **Options:** (a) ship no file, and record the reason (the conventions' own rule, read literally);
+  (b) ship rows citing the existing Go tests that ground each rule, with the manifest's header stating
+  exactly what a row claims and what it does not; (c) add a Go test to hold the rows — refused here, it is
+  a Go change.
+- **Default taken:** (b). The nine structural rules restate facts about the writer's own bytes that named
+  Go tests already pin (`TestCodexRolloutRecordShape`, `TestCodexRolloutStampsRecordsInOneOrderedRun`,
+  `TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage`,
+  `TestCodexRolloutDoesNotReportOmittedResultsAsCarried`), so the rows are re-derived by the gate; the four
+  receipt rules and the oracle's own firing are named in the header as deliberately not covered, with the
+  python cases that re-derive them. No row claims a Go test runs the oracle.
+- **Reversal:** delete `docs/evidence/0009a-citations.tsv` and move its header's "deliberately not covered"
+  list into `docs/evidence/0009a-native-oracle.md` §6; the goal's acceptance surface then reads as prose
+  plus the `selftest` cases, with no machine-checked half.
+- **Settled by:** an owner sentence on whether a no-Go-change increment may use row form (b) — the answer
+  decides how 0009b–0009d's own manifests are written, and whether a fourth options-list item (a
+  header-only manifest) is ever legitimate.
