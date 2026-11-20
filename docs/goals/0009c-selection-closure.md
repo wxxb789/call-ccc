@@ -1,37 +1,49 @@
-# Plan — 0009c — Selection and closure, pure and offline
+# 0009c — Selection and closure, pure and offline
 
-Contract: [`docs/goals/0009c-selection-closure.md`](../goals/0009c-selection-closure.md).
-Rationale and the full decomposition: [`docs/plans/0009-decomposition.md`](0009-decomposition.md).
-Governing design: [`docs/core-design/README.md`](../core-design/README.md).
+**Status:** Ready 2026-11-21 (owner fork A2: goal 0009 decomposed into four ordered increments — the
+native oracle frozen first, so the verifier can never again be co-mutated with the implementation it judges).
+**Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md); the
+decomposition's rationale, the two cross-family consults it came from, and the per-increment proof obligations
+are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md).
 
-Written before implementation. The umbrella goal file [`docs/goals/0009-selective-context.md`](../goals/0009-selective-context.md)
-still carries the increment's `Done when` clauses D1–D7 and the seam's carried-disposition set (D6); this
-increment proves the subset named in its own contract, and nothing here re-opens a settled decision (the
-reference route, the refusal surface, the ID-less deferral).
+**Prerequisite:** [0009b](0009b-source-binding.md).
 
-## Order and dependency
+## Intended advance
 
-This is increment **c of 4** of the goal-0009 decomposition. It is dispatched only after its
-prerequisite is accepted; the four are strictly ordered because each one removes a class of defect from every
-diff that follows it.
+The selector, its refusal surface, and **closure by construction**: selection resolves every
+obligation **before any writer sees the stream**, so a post-selection stream cannot contain an orphan
+call/output half, an empty container or an illegal adjacency. The closed unit's obligation names **both
+occurrences** — *this call* and *this result* — because "this record produced history" cannot prove "this pair
+survived".
 
-## What this increment must not touch
+## Bounds
+
+Zero target writers, zero native checks. The selector stays a pure function: no I/O, no clock, no
+globals, no planner.
+
+## Done when
+
+- **D1 — Ordinal selection and the three refusals** (malformed, outside the ordinal space, selects
+  nothing) hold exactly as the umbrella contract states, each with a mutation that turns it red.
+- **D2 — Closure by construction:** the carried decision is a **typed per-occurrence triple** (what the read
+  established / what the selection requires / what the target plans to emit or refuse), and the closure
+  obligation names both occurrences.
+- **D3 — Closure is proved by property, not by example:** generative checks over **small event graphs** assert
+  no orphan call or output, no empty container, no illegal adjacency, and exact conservation of source item
+  dispositions — a class of claims the citation ledger cannot carry (goal 0010's Q10 boundary).
+- **D4 — `strict` is a second decision, not a repair:** the same valid selection is refused by name before
+  anything is installed.
+
+## Non-scope
 
 Every target writer; both native checks; the CLI surface beyond the refusals.
 
-## Evidence
+## Acceptance surface
 
-`docs/evidence/0009c-citations.tsv` — discrete decisions plus the property-check run. The manifest carries **discrete decisions plus this increment's native-load check** — not a
-∀-shaped claim proved by example (owner Q1 = C, 2026-11-20).
+`docs/evidence/0009c-citations.tsv` — discrete decisions plus the property-check run.
 
-## Stage order and the convergence rule
+## Stop and report
 
-`implement → gate → simplify → apply → gate → review → fix → gate → commit → push → PR → CI → machine review
-→ merge`. The conductor blocks on a convergence signal (executable-surface churn, a rising P0/P1 count
-conjoined with executable churn, or the oracle lock — a round that moves a gate/checker script alongside
-production code) and on the absolute review budget; a trip is an **abstraction-boundary failure to report**,
-never a budget to raise.
-
-## Where the implementation departed from this plan
-
-None yet.
+If the conductor's convergence signal fires, or a source read cannot establish a region a caller named,
+report the gap — do not invent a recovered region or a raised bound. Stop on missing user-only authority or
+irreversible changes; otherwise use reversible defaults and end with evidence paired to every clause above.
