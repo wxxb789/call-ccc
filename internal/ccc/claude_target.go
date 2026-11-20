@@ -922,6 +922,22 @@ func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result Tool
 	resultIDInferred := false
 	answered := callOccurrence{}
 	switch {
+	case b.selectionReduced && !resultStatesAnOutcome(result.Status):
+		// The read records a call's progress as events of the call's own beside its outcome
+		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
+		// chunk. This format's tool_result block carries text and no outcome status, so a written block
+		// reads back as the call's *answer* -- the inherited reader takes a tool_result for the call's
+		// outcome -- and the file would claim a completion the source had not recorded when it wrote
+		// those words. A document a selection produced omits the event and names it here (the same
+		// disposition OpenCode's plan takes, where the harness's tool states hold no progress); a run
+		// without a selection keeps writing it, which is the answer it has always had (goal 0009's D4;
+		// round 10's finding 5).
+		//
+		// The classification runs before the owner inference (round 18's third finding): a progress event
+		// is omitted whatever its call, so an id-less one whose owner the inference cannot name -- two
+		// calls are eligible -- is counted as the progress event it is, not as a result no call answers.
+		b.lossNonterminal++
+		return claudeContentBlock{}, false
 	case b.selectionReduced && paired != nil:
 		// The pairing names the occurrence this result answers -- the read's own answer for a recorded
 		// result, or the call a derived summary came from -- and the id the file holds for it is the one
@@ -973,19 +989,6 @@ func (b *claudeTranscriptBuilder) toolResult(paired *callOccurrence, result Tool
 		// The default path keeps the ledger's own answer: the result clears its id from the file-wide
 		// set, whether or not the text below gives it a block (goal 0009's D4).
 		delete(b.pendingCalls, callID)
-	}
-	if b.selectionReduced && !resultStatesAnOutcome(result.Status) {
-		// The read records a call's progress as events of the call's own beside its outcome
-		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
-		// chunk. This format's tool_result block carries text and no outcome status, so a written block
-		// reads back as the call's *answer* -- the inherited reader takes a tool_result for the call's
-		// outcome -- and the file would claim a completion the source had not recorded when it wrote
-		// those words. A document a selection produced omits the event and names it here (the same
-		// disposition OpenCode's plan takes, where the harness's tool states hold no progress); a run
-		// without a selection keeps writing it, which is the answer it has always had (goal 0009's D4;
-		// round 10's finding 5).
-		b.lossNonterminal++
-		return claudeContentBlock{}, false
 	}
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks

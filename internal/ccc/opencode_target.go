@@ -988,23 +988,26 @@ func (c *openCodeConverter) soleOutstandingPlannedCall() (*openCodeCall, bool) {
 
 // soleInferablePlannedCall answers the one call occurrence this plan carries that a result the read
 // recorded no id for may be written for, and whether there is exactly one *unanswered* occurrence at
-// all. Unanswered means no outcome the document states: an entry whose planned result would not be
-// written -- text the output field cannot carry, a status the tool states cannot spell
-// (openCodeOutcomeWritable) -- has no answer on the written path, exactly as the family's writers read
-// it, so it makes the result ambiguous and nothing is inferred (the result is omitted and counted,
-// unpaired_tool_results). The call the result may be written *for* has to hold no planned outcome the
-// part can state -- a result the part refuses is no outcome there, so such a call is what the result may
-// be written for: the part is owed the outcome the document can state, the walk yields the refused slot
-// to the inferred result and counts the refused event (displacingOpenCodeOutcome, which is the same rule
-// the slot's own reservation reads) -- while a call whose planned result is writable is answered and
-// never takes one. A call whose only recorded outcome is its writable summary counts as answered too
-// (plannedOutcomeWritable): the summary pass will write that outcome for it, so a later id-less result
-// may not take the slot the summary is owed and leave the recorded outcome unwritten.
+// all. Unanswered means no outcome the document states *where the id-less result stands*: an entry whose
+// planned result would not be written -- text the output field cannot carry, a status the tool states
+// cannot spell (openCodeOutcomeWritable) -- has no answer on the written path, exactly as the family's
+// writers read it, so it makes the result ambiguous and nothing is inferred (the result is omitted and
+// counted, unpaired_tool_results). The call the result may be written *for* has to hold no planned
+// outcome the part can state -- a result the part refuses is no outcome there, so such a call is what
+// the result may be written for: the part is owed the outcome the document can state, the walk yields
+// the refused slot to the inferred result and counts the refused event (displacingOpenCodeOutcome,
+// which is the same rule the slot's own reservation reads) -- while a call whose planned result is
+// writable is answered and never takes one. A call whose only recorded outcome is its writable summary
+// counts as answered too (plannedOutcomeWritable) *unless its recorded outcome's record still stands
+// ahead of the walk* (plannedOutcomeStandsAhead): the summary pass writes no summary once the walk
+// stores that recorded result, so the call is not answered where the id-less result stands -- it counts
+// among the unanswered occurrences, and the inference may not bind the result to another call (round
+// 18's second finding).
 func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
 	unanswered := 0
 	found := (*openCodeCall)(nil)
 	for occurrence, entry := range c.plannedCalls {
-		if c.plannedOutcomeWritable(entry) {
+		if c.plannedOutcomeWritable(entry) && !c.plannedOutcomeStandsAhead(occurrence, entry) {
 			continue
 		}
 		unanswered++
@@ -1021,6 +1024,20 @@ func (c *openCodeConverter) soleInferablePlannedCall() (*openCodeCall, bool) {
 		return nil, false
 	}
 	return found, true
+}
+
+// plannedOutcomeStandsAhead answers whether the outcome this plan states for one call still stands ahead
+// of the walk's own position: the call holds no result yet, and its slot is reserved by a recorded
+// result the walk has not reached (reserveResultSlots). Where it does, the call is not answered where an
+// id-less result stands -- the slot the summary pass might have filled is the recorded result's, the
+// walk fills it when it reaches that result, and the summary the call may also carry is never written
+// (the summary pass skips a call that holds a result) -- so the call counts among the unanswered
+// occurrences and makes the id-less result ambiguous. The review's own second finding measured the
+// shape: a call whose summary was writable *and* whose recorded writable outcome stood after the
+// id-less result was skipped by the inference's own answer, which bound the result to another call
+// although the document stated no outcome for either call at that point.
+func (c *openCodeConverter) plannedOutcomeStandsAhead(occurrence callOccurrence, entry *openCodeCall) bool {
+	return entry.Result == nil && c.reservedSlots[occurrence]
 }
 
 // openCodeOutcomeWritable answers whether the part this call would write states an outcome the harness's
@@ -1059,7 +1076,9 @@ func openCodeResultWritable(result ToolResult) bool {
 // The id-less inference asks this, not openCodeOutcomeWritable: a call whose only recorded outcome is
 // its writable ResultContent summary is answered on the written path, so it neither makes a later
 // id-less result ambiguous nor may have its summary replaced by one the source never recorded beside
-// it, while a call whose recorded event the part refuses is not answered by that summary. The default
+// it, while a call whose recorded event the part refuses is not answered by that summary. Where the
+// call's recorded outcome still stands ahead of the walk, the call is not answered at the id-less
+// result's own position at all (plannedOutcomeStandsAhead). The default
 // path does not ask this question: its ledger's id-keyed answer is what a run without a selection has
 // always had, with the walk's own marking beside it (goal 0009's D4).
 func (c *openCodeConverter) plannedOutcomeWritable(entry *openCodeCall) bool {

@@ -3585,3 +3585,277 @@ test and gate-step change in the tree and the throw-away probe removed (the deta
 lives outside this checkout); two further runs, taken after this section's edits were folded in,
 printed the same steps, counts and verdict (`selftest Ran 444 tests in 8.501s` and `8.507s`), so the tree
 this record describes is the tree the gate passed three times.)
+### The nineteenth review round's findings (`ae5f07f` + working tree), fixed and re-measured
+
+The review of `9242e49..ae5f07f` found seven items (two P1, five P2), all fixed. The round follows the
+review's systematic close-out: every rule the touched surface claims is proved by **one executed
+mutation** -- the rule's line reverted, the case that claims to pin it run, the failure recorded, the
+line restored -- and the tree after the restores is the one the gate below measured
+(`grep -rn 'false &&\|&& false\|true ||' internal/ccc/*.go` is empty).
+
+1. **The off-line-result guard answers only on a document a selection produced (P1, D4), measured and
+   gated.** The finding's scenario -- the round-12 Pi fixture copy with the second sibling result's
+   output whitespace-only, the writer omitting it -- was measured on the pre-0009 tree and on the head:
+   both write the same walk, the same parent relation (the reply hangs off the *first* result's entry,
+   the written result the file's own relation names) and the same two projected relations
+   (`whitespace_only_tool_results` 1, `unresolved_source_parents` 2), so the refusal the finding
+   predicted does not reproduce on that shape, and it cannot on any unreduced one: the reconstruction's
+   own tool-result step places a result on its line whenever an on-line record names that result's
+   carrier, so a result it leaves off is not the entry such a record's carrier answers. The measurement
+   that settles it is narrow rather than shape-specific: a temporary stderr print in
+   `resultEntryLeavesTheLine` over the whole `internal/ccc` suite printed `GUARD-FIRED` twice, both
+   `reduced=true`, both from `TestContinueRefusesAWindowChainingAnOnLineRecordToAnOffLineResult` (the
+   suite's only case that reaches the refusal). The guard is now gated on `reduced` all the same, so the
+   flag -- not a coincidence of the reconstruction -- is what states the scoping goal 0009's D4 requires
+   (AGENTS.md now states it as the rule), and both halves are pinned:
+   `TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead`, a tree-level case whose two arms
+   differ only in `reduced` (`M1` fails its unreduced arm), and
+   `TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath`, the omitted-later-result case added to the
+   D4 comparison, whose expectations are the pre-0009 tree's own measured answers (below). The
+   committed case is the D4 pin's committed half; §4's retained probe revision is *not* extended with the
+   shape, because its line counts are the single source every earlier round's section quotes, and a
+   committed gate-run case pins at least as much as a throw-away document would.
+2. **The OpenCode ambiguity count keeps a reserved call unanswered until its recorded outcome is reached
+   (P1), fixed.** `soleInferablePlannedCall` skipped a call whose *summary* answered it even when the
+   call's recorded writable outcome stood after the id-less result: the walk fills the slot with that
+   record and the summary pass then skips the call over, so the summary is never written and the call was
+   not answered where the id-less result stood -- the inference bound the result to another call
+   although neither call stated an outcome there. The positional answer is its own question
+   (`plannedOutcomeStandsAhead`: no held result and a slot reserved by a recorded result the walk has not
+   reached), and the summary-only control in
+   `TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall` -- which explicitly required the old
+   binding -- now requires omission; `M2` fails its four assertions, and the pre-existing arms (the
+   summary-only call, the whitespace summary, the ambiguity and blank-outcome arms of
+   `TestSelectionReservesARecordedResultsSlotFromAnIdLessInference`) stay green.
+3. **A progress event is classified before any owner is inferred (P2), fixed.** The reduced Codex,
+   Claude and Pi/OMP writers resolved a result's owner (the recorded pairing, then the outstanding-set
+   inference) before asking whether the event was progress, so an id-less progress event whose owner the
+   inference could not name -- two eligible id-less occurrences -- was counted `unpaired_tool_results`
+   instead of `nonterminal_tool_events`. The classification is now the first arm of each writer's result
+   switch (the later check's shape is unchanged for every case that reached it), and
+   `TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress`'s two-id-less-call case asserts both
+   counts on all five routes; `M3a`/`M3b`/`M3c` fail it per writer (`M3c` prints the failure for both Pi
+   and OMP, which share the writer).
+4. **The Codex fold's row-attribution rule has its own case (P2), fixed.** The object-arguments arm was
+   relabelled to what it now is -- the unkeyed-envelope case, whose record the unit walk keeps as an
+   unkeyed unit, so the fold is refused by the unkeyed-unit condition -- and a new arm appends a
+   `function_call` whose `arguments` member is the empty object this build can key while its `input`
+   member holds the text the inherited reader reads: every unit under the id is keyed and distinct, and a
+   row states a key no unit states. The case asserts the difference names the *row's* own arguments by
+   size and digest; `M4` (the row-attribution loop removed) fails it with the difference naming the
+   unit's empty argument object instead, while the unkeyed-envelope arm stays green.
+5. **The D1 boundary oracle reads native wire values (P2), fixed.** The Pi/OMP, Codex and OpenCode
+   extractors recognised compaction records through the writers' own constants (the Claude arm was fixed
+   in round 17); they now spell the wire values (`"compaction"`, `"compacted"`, `"compaction"`) as
+   literals, so renaming a writer's definition can no longer rename the oracle with it. Renaming each
+   writer's definition fails the D1 case: `M5a` (Pi/OMP), `M5b` (Codex), `M5c` (OpenCode).
+6. **The S6 retained-parent assertion has a window where the two answers differ (P2), fixed.** On the
+   fixture's own shape the branch record follows ordinal 0 immediately, so the entry written before it
+   and its nearest retained ancestor are the same entry and the case could not assert the relation. The
+   case now also drives a fixture copy with an off-line assistant record inserted directly after ordinal
+   0, so the window carries it ahead of the branch record: the branch record's nearest retained ancestor
+   is ordinal 0's entry while the entry written before it is the inserted record's. The arm asserts the
+   branch entry's written parent (and the leaf's), and that both off-line records stay off the walk;
+   `M6` (the retained answer taken only for on-line records, a one-line mutation that changes the
+   branch's place alone) fails exactly that assertion, and the wider mutation -- the general retained
+   answer replaced by the fallback place -- fails the case through the revival refusal for the leaf.
+7. **The S7-slot-writability row cites the case that enforces the filled-slot obligation (P2), fixed.**
+   `docs/evidence/0009-citations.tsv`'s row now names
+   `TestSelectionReservesARecordedResultsSlotFromAnIdLessInference`, whose blank-event-after arm is the
+   filled-slot arrival itself (`whitespace_only_tool_results` 1, `repeated_tool_results` 0); the row's
+   previous citation (`TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`) puts the
+   unwritable event first in both its selected cases and never reaches the filled-slot arrival. Two rows
+   are new in the same file: `S6-guard-scope` (this round's first finding's rule, above) and
+   `D4-omitted-later-result` (the committed D4 pin of finding 1); three rows are rewritten
+   (`S7-summary-outcome` to the positional rule, `S2-fold-attribution` to the row-attribution case, and
+   `S7-slot-writability` to its test), so the manifest stays at the rules this increment's tests
+   discharge, and the header carries the stage's note.
+
+#### The measurements the round's fixes rest on
+
+The pre-0009 answer for the state the D4 pin asserts, measured by a throw-away copy of the committed
+case's shape (the round-12 fixture copy with the whitespace-only second sibling result) in a worktree of
+the pre-0009 revision -- the expectations `TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath`
+asserts are this run's own:
+
+```console
+$ git worktree add --detach /tmp/ccc-base 9242e49b2d38aa8474f530c46e26fc3ee3b7a226
+$ cp <the throw-away case> /tmp/ccc-base/internal/ccc/zz_base_repro_test.go
+$ cd /tmp/ccc-base
+$ go test ./internal/ccc/ -run TestZZBaseWhitespaceSibling -v
+    zz_base_repro_test.go:57: source file walk: ["Where is the retry cap configured?" "I will look for the
+    retry configuration." "internal/retry/config.go:41: maxBackoffSeconds = 30" "It is set in
+    internal/retry/config.go." "The cap is 30 seconds of backoff between attempts."]
+    zz_base_repro_test.go:69: unflagged walk: [the same five texts]
+    zz_base_repro_test.go:77: entry id=348586fc parent=9cc53682 text="I will look for the retry configuration."
+    zz_base_repro_test.go:77: entry id=1adff729 parent=348586fc text="internal/retry/config.go:41: maxBackoffSeconds = 30"
+    zz_base_repro_test.go:77: entry id=78a82f44 parent=1adff729 text="It is set in internal/retry/config.go."
+    zz_base_repro_test.go:81: loss whitespace_only_tool_results = 1 (omitted)
+    zz_base_repro_test.go:81: loss unresolved_source_parents = 2 (carried-with-caveat)
+exit=0
+```
+
+The reply's entry (`78a82f44`) hangs off the first result's entry (`1adff729`) with the second result
+omitted, and the run counts the two projected relations; the head's committed case asserts the same
+written relation, the same walk and the same counts, and the head tree's run of it prints `ok` (below).
+
+The guard's reachability, measured by instrumenting the refusal with a stderr print and running the
+whole `internal/ccc` suite (the instrumentation was removed before the gate; the printed lines are the
+run's own):
+
+```console
+$ CCC_GUARD_DEBUG=1 go test ./internal/ccc/ -count=1 -v 2>&1 | grep -B2 'GUARD-FIRED'
+--- PASS: TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities (0.02s)
+=== RUN   TestContinueRefusesAWindowChainingAnOnLineRecordToAnOffLineResult
+GUARD-FIRED entry=a4ba0b8f record=2 reduced=true
+GUARD-FIRED entry=d5df50d1-42a4-4e51-81e2-a0bc1eb71f7b record=2 reduced=true
+$ CCC_GUARD_DEBUG=1 go test ./internal/ccc/ -count=1 2>&1 | grep -c 'GUARD-FIRED'
+2
+```
+
+#### The round's mutations, each one executed
+
+One line (or one block) changed per rule, the cited test run immediately, the failure recorded, the line
+restored. The line numbers are the working tree's.
+
+| # | rule | file | the mutation | command | observed failure |
+|---|---|---|---|---|---|
+| M1 | this round's first finding (the guard's reduced-only scoping, D4) | `internal/ccc/route_shared.go` | `if !t.reduced \|\| t.inactiveAt(t.record) {` → `if t.inactiveAt(t.record) {` | `go test -tags fts5 -count=1 -run '^TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead$\|^TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath$' ./internal/ccc/` | `--- FAIL: TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead` — `pi_target_test.go:850: an unreduced document: the reply's place = "call-entry", counted=false; want "result-entry", counted=true: the off-line-result guard answers only where a selection produced the document`; the committed D4 case prints nothing under the mutation, because an unreduced read cannot reach the refusal at all — the tree-level arm is what pins the flag |
+| M2 | this round's second finding (the reserved call's positional answer) | `internal/ccc/opencode_target.go` | `return entry.Result == nil && c.reservedSlots[occurrence]` → `return false` | `go test -tags fts5 -count=1 -run '^TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall$' ./internal/ccc/` | `selection_test.go:2024: the selected document holds the id-less result although the first call's recorded outcome stands after it and the summary is never written …`; `:2033: outcome-event generated_call_ids = 1, want 0`; `:2036: outcome-event unpaired_tool_results = 0, want the one id-less result no single unanswered call answers`; `:2040: outcome-event unpaired_tool_calls = 0, want the second call counted` |
+| M3a | this round's third finding (the progress classification before the owner inference, Codex) | `internal/ccc/codex_target.go` | the new first switch arm disabled (`false && b.selectionReduced && !resultStatesAnOutcome(result.Status)`) | `go test -tags fts5 -count=1 -run '^TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress$' ./internal/ccc/` | `selection_test.go:5799: codex: nonterminal_tool_events = 0, want the one id-less progress event counted as what it is`; `:5804: codex: unpaired_tool_results = 1, want 0` |
+| M3b | the same rule, Claude | `internal/ccc/claude_target.go` | the same arm disabled | same case as `M3a` | `selection_test.go:5799: claude: nonterminal_tool_events = 0, …`; `:5804: claude: unpaired_tool_results = 1, want 0` |
+| M3c | the same rule, the Pi family | `internal/ccc/pi_target.go` | the same arm disabled | same case as `M3a` | `selection_test.go:5799: pi: nonterminal_tool_events = 0, …`; `:5804: pi: unpaired_tool_results = 1, want 0`; and the same two lines for `omp`, whose writer this is |
+| M4 | this round's fourth finding (the fold's row-attribution condition) | `internal/ccc/codex_install.go` | the `!attributed` loop of `codexFoldableRows` removed | `go test -tags fts5 -count=1 -run '^TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute$' ./internal/ccc/` | `codex_install_test.go:508: row attribution: differences = ["tool call 1 differs (written call call_02Example… to apply_patch (128 bytes, sha256 …), read back call call_02Example… to Bash (0 bytes, sha256 e3b0c442…))" "tool call 2 is in the file but was not written: call … to apply_patch (128 bytes, …)"], want the unmatched row's own arguments named as the target's reader read them (48 bytes, sha256 7d37817f…)` — the fold substituted the unit's empty argument object for the row's arguments |
+| M5a | this round's fifth finding (the D1 boundary oracle's native wire values, Pi/OMP) | `internal/ccc/pi_target.go` | `piEntryCompaction   = "compaction"` → `= "compaction_r18"` | `go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/` | `selection_test.go:938: pi: unhandled entry type "compaction_r18"` |
+| M5b | the same rule, Codex | `internal/ccc/codex_target.go` | `codexRecordCompacted    = "compacted"` → `= "compacted_r18"` | same case as `M5a` | `selection_test.go:940: codex: selecting "6" wrote the evidence` — `got: []` (the renamed record reads as no boundary, so the boundary-alone arm's `compaction <summary>` token is missing) |
+| M5c | the same rule, OpenCode | `internal/ccc/opencode_target.go` | `openCodeMessageCompaction = "compaction"` → `= "compaction_r18"` | same case as `M5a` | `selection_test.go:940: opencode: selecting "6" wrote the evidence` — `got: []` |
+| M6 | this round's sixth finding (the retained-ancestor answer for an off-line record) | `internal/ccc/route_shared.go` | the general retained-ancestor consultation taken only for on-line records (`ok && !t.inactiveAt(t.record)`) | `go test -tags fts5 -count=1 -run '^TestSelectionKeepsASparseWindowOnTheReadsLine$' ./internal/ccc/` | `selection_test.go:1461: the branch record's entry hangs off "5f541a2f", want ordinal 0's entry "93de866e": the branch's nearest retained ancestor is the root, and the inserted record the window carries before it is not its place (the fallback's own answer would be "5f541a2f")` |
+| M6-wide | the same rule, the whole answer | `internal/ccc/route_shared.go` | the general retained-ancestor consultation replaced by the fallback place (`return t.fallbackPlace(), true`) | same case as `M6` | the case fails through the revival refusal the fallback reaches: `pi: converting a window whose recorded ancestry the selection answers: … ErrUnrepresentableLeaf: 5566cc77 (ordinal 5), a record on the line the read's last record answers, would be chained to the entry of 0011aa22 (ordinal 3), which that line leaves off it …`, and the same for `omp` and `claude`; the arm the finding is about never runs under this mutation, which is why the one-line `M6` is the assertion's own pin |
+
+The round's second finding also demanded the control's own change, and `M2` measures it: the control's
+four assertions are the flipped expectations, and the mutation restores the old answer and fails all
+four.
+
+```console
+$ # M1: the reduced-document gate removed (this round's first finding)
+$ go test -tags fts5 -count=1 -run '^TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead$|^TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath$' ./internal/ccc/
+--- FAIL: TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead (0.00s)
+    pi_target_test.go:850: an unreduced document: the reply's place = "call-entry", counted=false; want
+    "result-entry", counted=true: the off-line-result guard answers only where a selection produced the
+    document
+FAIL
+exit=1
+$ # M2: the positional answer removed (this round's second finding)
+$ go test -tags fts5 -count=1 -run '^TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall$' ./internal/ccc/
+--- FAIL: TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall (0.00s)
+    selection_test.go:2024: the selected document holds the id-less result although the first call's
+    recorded outcome stands after it and the summary is never written: neither call stated an outcome
+    where the result stood, so the inference had no single call to name
+    selection_test.go:2033: outcome-event generated_call_ids = 1, want 0: the inference named no call
+    selection_test.go:2036: outcome-event unpaired_tool_results = 0, want the one id-less result no
+    single unanswered call answers
+    selection_test.go:2040: outcome-event unpaired_tool_calls = 0, want the second call counted: the
+    first is answered by its recorded event, and the id-less result was omitted
+exit=1
+$ # M3a: the Codex progress classification returned to the inference's order (this round's third finding)
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress$' ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5799: codex: nonterminal_tool_events = 0, want the one id-less progress event
+    counted as what it is: the format carries an outcome or nothing, so the event is omitted as progress
+    whether or not an owner could be inferred
+    selection_test.go:5804: codex: unpaired_tool_results = 1, want 0: the id-less progress event is no
+    result no call answers -- it is counted as the progress event it is
+exit=1
+$ # M3b: the same mutation in the Claude writer
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress$' ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5799: claude: nonterminal_tool_events = 0, want the one id-less progress event …
+    selection_test.go:5804: claude: unpaired_tool_results = 1, want 0 …
+exit=1
+$ # M3c: the same mutation in the Pi family's shared writer
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress$' ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5799: pi: nonterminal_tool_events = 0, want the one id-less progress event …
+    selection_test.go:5804: pi: unpaired_tool_results = 1, want 0 …
+    selection_test.go:5799: omp: nonterminal_tool_events = 0, …
+    selection_test.go:5804: omp: unpaired_tool_results = 1, want 0 …
+exit=1
+$ # M4: the fold's row-attribution condition removed (this round's fourth finding)
+$ go test -tags fts5 -count=1 -run '^TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute$' ./internal/ccc/
+--- FAIL: TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute (0.71s)
+    codex_install_test.go:508: row attribution: differences = ["tool call 1 differs (written call
+    call_02Example000000000000000000 to apply_patch (128 bytes, sha256 552563bd…)…), read back call
+    call_02Example000000000000000000 to Bash (0 bytes, sha256 e3b0c442…))" "tool call 2 is in the file
+    but was not written: call call_02Example000000000000000000 to apply_patch (128 bytes, sha256 552563bd…)"],
+    want the unmatched row's own arguments named as the target's reader read them (48 bytes, sha256
+    7d37817fbe8f9c46c1150344ee958606c4eed79102eca626f70a4239ad267f2a): every unit under the id is keyed
+    and distinct, and the fold may take them only where every row states one of their keys -- taking the
+    units would compare the empty argument object the unit walk read instead of the input member the
+    reader read
+exit=1
+$ # M5a: the Pi family's boundary definition renamed (this round's fifth finding)
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    selection_test.go:938: pi: unhandled entry type "compaction_r18"
+exit=1
+$ # M5b: the Codex boundary definition renamed
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    selection_test.go:940: codex: selecting "6" wrote the evidence
+exit=1
+$ # M5c: the OpenCode boundary definition renamed
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    selection_test.go:940: opencode: selecting "6" wrote the evidence
+exit=1
+$ # M6: the retained answer taken only for on-line records (this round's sixth finding)
+$ go test -tags fts5 -count=1 -run '^TestSelectionKeepsASparseWindowOnTheReadsLine$' ./internal/ccc/
+--- FAIL: TestSelectionKeepsASparseWindowOnTheReadsLine (0.00s)
+    selection_test.go:1461: the branch record's entry hangs off "5f541a2f", want ordinal 0's entry
+    "93de866e": the branch's nearest retained ancestor is the root, and the inserted record the window
+    carries before it is not its place (the fallback's own answer would be "5f541a2f")
+exit=1
+```
+
+(The transcript is the mutation runs' own output, laid out to one screen: `…` elides a line's tail
+inside a message, and the generated identities (entry ids, session ids, uuids) differ per run because
+each mutation run re-materializes the fixtures -- the failure and the assertion are the run's own. The
+`M4` failure's digests and the `M6` failure's entry ids are the run's; the second-order mutations listed
+in the table above (the wider `M6-wide` and the two arms' own lines) are recorded in the table, and the
+tree after every restore is the revision the gate below measured.)
+
+The round's verification: 473 → **475** top-level `Test…` functions in the two packages' own test
+files (`^(internal|cmd)/ccc/[^/]*_test\.go$` on `ae5f07f` and on the working tree -- the new
+`TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead` and
+`TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath`; every other addition lives inside an existing
+function, and the per-file set comparison against `HEAD` names those two additions and no removal);
+`0009-citations.tsv` grown 69 → **71** rows (`S6-guard-scope` and `D4-omitted-later-result` added;
+`S7-summary-outcome`, `S2-fold-attribution` and `S7-slot-writability` rewritten to what their cases now
+assert) with the stage's header note, and `AGENTS.md` states the guard's reduced-only scoping. The D4
+probe was re-run as the round's own before/after: `docs/evidence/0009-d4-probe.txt` copied in as a
+throw-away `zz_d4_probe_test.go` into a detached worktree of `ae5f07f` (`/tmp/ccc-d4-r18head`) and into
+this tree, both outputs **1312** lines, each tree's two runs byte-identical and the shared diff silent
+(`cmp`), so this round's edits are selection-gated and §4's retained numbers stand as their single
+source. The probe's own controls printed as before (`PROBE-CONTROL minted-identity-change
+moves-digest=false`). The gate below is this round's own run.
+
+```console
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: <checkout> (redacted: this checkout's own root)
+gate: go=<go toolchain> (redacted) targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 444 tests in 8.620s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5728 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 71 row(s) verified
+  PASS     secrets  no leaks found in 197 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
+(The transcript is the round's own run, taken with every code, test and gate-step change in the tree and
+the throw-away probe removed (the detached D4-probe worktree lives outside this checkout); a further run,
+taken after this section's edits were folded in, printed the same steps, counts and verdict (`selftest
+Ran 444 tests in 8.442s`), so the tree this record describes is the tree the gate passed twice.)

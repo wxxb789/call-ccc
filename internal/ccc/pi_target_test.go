@@ -803,6 +803,57 @@ func TestSourceTreeEndRecordKeepsThePlaceAndDropsTheWalk(t *testing.T) {
 	}
 }
 
+// TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead pins the scoping the off-line-result
+// guard states on the tree's own API (round 18's first finding). The place a written tool result stands
+// for is refused where the result's entry stands for a record the read's line leaves off it and the
+// record being walked is one the line holds -- but only on a document a selection produced: the guard
+// answers `reduced` before it consults the registration, because goal 0009's D4 keeps the writers'
+// long-standing answer for a read nobody selected from (the place is taken and counted, which is what
+// the D4 probe's before/after comparison measured). An unreduced read cannot reach the refusal in
+// practice -- the reconstruction's own tool-result step places a result on its line whenever an on-line
+// record names that result's carrier -- so the flag is what makes the scoping this function's contract
+// rather than an inference about the line's computation. A gate that is only true by coincidence is what
+// the repository treats as unpinned: removing the flag survived the whole suite green before this case.
+func TestSourceTreeTakesTheOffLineToolResultPlaceOnAnUnreducedRead(t *testing.T) {
+	for _, arm := range []struct {
+		name    string
+		reduced bool
+		want    string
+		counted bool
+	}{
+		// The read nobody selected from: the tool-result place is taken and counted, the answer the
+		// writers had before selections existed.
+		{"an unreduced document", false, "result-entry", true},
+		// A selection produced the document: the place is refused, and the record is chained to the
+		// written entry of the record it named instead -- hanging it under the off-line result's entry
+		// would put that result's branch on the walk a resumed session makes.
+		{"a reduced document", true, "call-entry", false},
+	} {
+		tree := newSourceTree(Conversation{Source: SourceIdentity{Provider: "pi"}})
+		tree.reduced = arm.reduced
+		tree.startRecord("call", "")
+		tree.wrote("call-entry")
+		tree.startRecord("result", "call")
+		tree.markToolResult("call")
+		tree.wrote("result-entry")
+		tree.endRecord()
+		// The result's record is one the read's line leaves off it: its entry is registered under the
+		// record's own position.
+		tree.offLineEntry["result-entry"] = 1
+		tree.startRecord("reply", "call")
+		entry, counted := tree.parentPlace("reply", "call")
+		got := ""
+		if entry != nil {
+			got = *entry
+		}
+		if got != arm.want || counted != arm.counted {
+			t.Errorf("%s: the reply's place = %q, counted=%v; want %q, counted=%v: the off-line-result "+
+				"guard answers only where a selection produced the document", arm.name, got, counted,
+				arm.want, arm.counted)
+		}
+	}
+}
+
 // TestPiSessionChainsPastAnOmittedRecordWithNoResolvedPlace pins the other answer the parent resolution
 // gives, which no conversion shape exercised before this pass: an omitted record whose own walk resolved
 // *nothing* -- its recorded parent is a record the read answers later, after nothing had been written for

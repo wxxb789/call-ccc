@@ -384,16 +384,14 @@ func TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute(t *testing.T) {
 			"records and the document one", sameRoundTrip.differences)
 	}
 
-	// The keyed-only case (round 17's fourth finding): every record the unit walk *reads* under the id is
-	// the writer's own keyed `function_call`, and the read-back still holds a row whose key no unit
-	// states. The extra record is a `function_call` whose `arguments` member is a JSON object where this
-	// build's written records state a string: the unit walk's own reading cannot unmarshal the line, so
-	// it states no unit for the record, while the inherited reader reads it as a call row all the same --
-	// the row stands for a call the file's units do not account for, and the fold may not discard it by
-	// taking the keyed units (which would leave the extra invocation unreported although the file states
-	// it). The two `custom_tool_call` arms above reach the unkeyed-unit refusal first; this arm is the
-	// one that reaches the unmatched-row refusal, so a mutation removing that condition is observable
-	// here alone.
+	// The unkeyed-envelope case (round 17's fourth finding, relabelled in round 18's fourth finding): the
+	// extra record is a `function_call` whose `arguments` member is a JSON object where this build's
+	// written records state a string. The current unit walk keeps the record's id and states an *unkeyed*
+	// unit for it (codexInstalledCallUnits) -- this build cannot restate the call key the inherited
+	// reader derives from the object form -- so the fold refuses the id at the unkeyed-unit condition
+	// before the row-attribution condition can run. The arm is kept as what it now is: the unkeyed
+	// envelope must leave the id's rows standing, and the extra invocation must be reported. The
+	// row-attribution condition has its own arm below.
 	objectArguments := codexInstalledLine(t, codexRecordResponseItem, map[string]any{
 		"type":      codexItemFunctionCall,
 		"call_id":   callID,
@@ -411,15 +409,14 @@ func TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute(t *testing.T) {
 			objectReported = true
 		}
 		if strings.Contains(difference, extraCommand) {
-			t.Errorf("keyed-only: difference = %q, want the extra invocation named without its text",
-				difference)
+			t.Errorf("unkeyed envelope: difference = %q, want the extra invocation named without its "+
+				"text", difference)
 		}
 	}
 	if !objectReported {
-		t.Errorf("keyed-only: differences = %q, want the call the file's own `function_call` record "+
-			"states although the read-back's row for it states a key no unit states: every unit under "+
-			"the id is keyed, and the fold may take them only where every row states one of their keys",
-			objectRoundTrip.differences)
+		t.Errorf("unkeyed envelope: differences = %q, want the call the file's own `function_call` "+
+			"record states although the read-back's row for it states a key no unit states: an unkeyed "+
+			"unit under the id leaves every row standing", objectRoundTrip.differences)
 	}
 
 	// The same-key object-form arm (round 17's first finding): a second `function_call` whose id, name
@@ -472,6 +469,47 @@ func TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute(t *testing.T) {
 		t.Errorf("same-key object form: differences = %q, want the output the read-back attached to the "+
 			"duplicate occurrence reported: the document wrote it for the call item it states",
 			sameKeyRoundTrip.differences)
+	}
+
+	// The row-attribution arm (round 18's fourth finding): every record the unit walk reads under the id
+	// is keyed and the units state *distinct* keys, and the read-back still holds a row whose key no unit
+	// states. The extra record states both an `arguments` member this build can key (the empty object,
+	// which the comparison normalizes to no input) and an `input` member this build does not restate --
+	// the inherited reader reads the `arguments` member as no input and falls through to `input`
+	// (extractCodexInputJSON), so the row the reader reads for the record is keyed by the input text while
+	// the unit under the id states the empty arguments. The fold may take the id's units only where every
+	// row states one of their keys; taking them here would compare the invocation the *units* read (an
+	// empty argument object) instead of the one the target's own reader reads (the input member), and
+	// the difference must name the row's own arguments by size and digest, not the unit's.
+	rowArguments := `{"command":"` + extraCommand + `"}`
+	unmatchedRow := codexInstalledLine(t, codexRecordResponseItem, map[string]any{
+		"type":      codexItemFunctionCall,
+		"call_id":   callID,
+		"name":      "Bash",
+		"arguments": "{}",
+		"input":     json.RawMessage(rowArguments),
+	})
+	tamperedRow := []byte(strings.TrimRight(string(installed), "\n") + "\n" + unmatchedRow)
+	rowRollout := CodexRollout{Directory: rollout.Directory, FileName: rollout.FileName, Data: tamperedRow}
+	rowRoundTrip := compareCodexRoundTrip(rollout,
+		Conversation{Messages: codexReadBackMessages(t, rowRollout)}, tamperedRow)
+	wantRowDescription := describeText(rowArguments)
+	rowNamed := false
+	for _, difference := range rowRoundTrip.differences {
+		if strings.Contains(difference, categoryToolCall) && strings.Contains(difference, wantRowDescription) {
+			rowNamed = true
+		}
+		if strings.Contains(difference, extraCommand) {
+			t.Errorf("row attribution: difference = %q, want the extra invocation named without its "+
+				"text", difference)
+		}
+	}
+	if !rowNamed {
+		t.Errorf("row attribution: differences = %q, want the unmatched row's own arguments named as "+
+			"the target's reader read them (%s): every unit under the id is keyed and distinct, and the "+
+			"fold may take them only where every row states one of their keys -- taking the units would "+
+			"compare the empty argument object the unit walk read instead of the input member the "+
+			"reader read", rowRoundTrip.differences, wantRowDescription)
 	}
 }
 

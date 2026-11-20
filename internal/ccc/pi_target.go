@@ -1326,6 +1326,22 @@ func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolRe
 	toolName := ""
 	answered := callOccurrence{}
 	switch {
+	case b.selectionReduced && !resultStatesAnOutcome(result.Status):
+		// The read records a call's progress as events of the call's own beside its outcome
+		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
+		// chunk. This family's toolResult message carries the text and an `isError` flag and no outcome
+		// status, so a written message reads back as the call's *answer* -- the family's reader takes a
+		// toolResult for the call's outcome -- and the file would claim a completion the source had not
+		// recorded when it wrote those words. A document a selection produced omits the event and names
+		// it here (the same disposition OpenCode's plan takes, where the harness's tool states hold no
+		// progress); a run without a selection keeps writing it, which is the answer it has always had
+		// (goal 0009's D4; round 10's finding 5).
+		//
+		// The classification runs before the owner inference (round 18's third finding): a progress event
+		// is omitted whatever its call, so an id-less one whose owner the inference cannot name -- two
+		// calls are eligible -- is counted as the progress event it is, not as a result no call answers.
+		b.lossNonterminal++
+		return false
 	case b.selectionReduced && paired != nil:
 		// The pairing names the occurrence this result answers -- the read's own answer for a recorded
 		// result, or the call a derived summary came from -- and the id and name the file holds for it
@@ -1384,19 +1400,6 @@ func (b *piSessionBuilder) writeToolResult(paired *callOccurrence, result ToolRe
 		// set, whatever its status (goal 0009's D4 -- a run without a selection keeps the answer its
 		// writer had).
 		delete(b.pendingCalls, callID)
-	}
-	if b.selectionReduced && !resultStatesAnOutcome(result.Status) {
-		// The read records a call's progress as events of the call's own beside its outcome
-		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
-		// chunk. This family's toolResult message carries the text and an `isError` flag and no outcome
-		// status, so a written message reads back as the call's *answer* -- the family's reader takes a
-		// toolResult for the call's outcome -- and the file would claim a completion the source had not
-		// recorded when it wrote those words. A document a selection produced omits the event and names
-		// it here (the same disposition OpenCode's plan takes, where the harness's tool states hold no
-		// progress); a run without a selection keeps writing it, which is the answer it has always had
-		// (goal 0009's D4; round 10's finding 5).
-		b.lossNonterminal++
-		return false
 	}
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks

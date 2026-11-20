@@ -516,7 +516,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   settle which of the two the record named — and the step is not taken where the result's entry stands for
   a record the document's own line leaves off while the record being written is one that line holds: the
   line then already answers the record's place, and following the result would put the branch the line left
-  back on the walk a resumed session makes. The step is taken only where the read may project, because it
+  back on the walk a resumed session makes. That refusal answers only on a document a selection produced:
+  a run without a selection keeps the writers' long-standing answer for a read nobody selected from — the
+  place is taken and counted, which is what goal 0009's D4 probe measured — and an unreduced read cannot
+  reach the refusal in practice, so the flag, not a coincidence of the reconstruction, is what states the
+  scoping. The step is taken only where the read may project, because it
   exists to undo a projection: an exact answer — a Claude transcript's `parentUuid` — names the record it
   means, and a result standing beside a record the read chains to the same message is that record's
   sibling, not its place. A record the target leaves out keeps the place its own walk resolved — the

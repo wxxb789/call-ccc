@@ -1035,10 +1035,14 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 			switch line.Type {
 			case "session", "title", "model_change":
 				continue // the family's own envelopes: the session header, OMP's title slot, its model binding
-			case piEntryCompaction:
+			case "compaction":
 				// The boundary entry the writer publishes for a compaction, carrying the summary the
 				// source kept in place of the history before it: evidence of the conversation's shape,
-				// not an envelope, so a written boundary is compared like any other record.
+				// not an envelope, so a written boundary is compared like any other record. The native
+				// wire value itself, not the writer's shared constant: the family's own loader acts on
+				// this entry type, and an oracle built from the constant a writer emits from would
+				// rename itself with it, so a changed entry type would pass the comparison (round 18's
+				// fifth finding; the Claude arm above states the rule).
 				evidence = append(evidence, "compaction "+line.Summary)
 				continue
 			case "message":
@@ -1089,12 +1093,15 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 		}
 	case TargetCodex:
 		for _, line := range decodeRollout(t, data) {
-			if line.Type == codexRecordCompacted {
+			if line.Type == "compacted" {
 				// The boundary record the writer publishes for a compaction: the summary the source kept
 				// in place of the history before it. It is evidence of the conversation's shape -- the
 				// target's own loader truncates its model-visible history at it -- so reading it as one
 				// of the target's envelopes would let a boundary written for a record the selection left
-				// out leave every expectation unchanged (round 16's third finding).
+				// out leave every expectation unchanged (round 16's third finding). The native wire value
+				// itself, not the writer's shared constant: the harness's own loader acts on this record
+				// type, and an oracle built from the constant a writer emits from would rename itself with
+				// it (round 18's fifth finding; the Claude arm above states the rule).
 				var payload codexCompactedPayload
 				if err := json.Unmarshal(line.Payload, &payload); err != nil {
 					t.Fatalf("%s: decoding a compacted record: %v", target, err)
@@ -1142,10 +1149,13 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 			t.Fatalf("%s: decoding the import document: %v", target, err)
 		}
 		for _, message := range document.Messages {
-			if message.Type == openCodeMessageCompaction {
+			if message.Type == "compaction" {
 				// The boundary message the writer publishes for a compaction: the summary the source kept
 				// in place of the history before it. The member is written even when the summary is
-				// empty, so the boundary travels as evidence of its own kind.
+				// empty, so the boundary travels as evidence of its own kind. The native wire value
+				// itself, not the writer's shared constant: the harness's importer acts on this message
+				// type, and an oracle built from the constant a writer emits from would rename itself
+				// with it (round 18's fifth finding; the Claude arm above states the rule).
 				summary := ""
 				if message.Summary != nil {
 					summary = *message.Summary
@@ -1382,6 +1392,98 @@ func TestSelectionKeepsASparseWindowOnTheReadsLine(t *testing.T) {
 		}
 		if _, err := route.Convert(selected, selectionProbeOptions()); err != nil {
 			t.Errorf("%s: converting the sparse window 0,5: %v", target, err)
+		}
+	}
+
+	// The branch record's retained parent, where the two candidate answers differ (round 18's sixth
+	// finding). On the fixture's own shape the branch record immediately follows ordinal 0, so falling
+	// back to the entry written before it would put it under the same entry its nearest retained ancestor
+	// names: the two answers cannot be told apart there, and the arm above cannot assert the relation.
+	// The copy inserts one assistant record -- a sibling of the tower reply, off the file's own leaf path
+	// -- directly after ordinal 0, so the window carries it ahead of the branch record: the branch
+	// record's nearest retained ancestor is ordinal 0's entry (its chain runs through the excluded
+	// compaction and reply), while the entry written before it is the inserted record's. The written
+	// parent relation is what tells the two answers apart, and the off-line records must stay off the
+	// walk the target's loader makes.
+	const detourText = "A detour the conversation did not continue from."
+	const detour = `{"id":"dd001122","message":{"api":"openai-completions","content":[{"text":"A detour the conversation did not continue from.","type":"text"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"stop","timestamp":1794938000000},"parentId":"aa11bb22","timestamp":"2026-05-04T09:13:00.000Z","type":"message"}`
+	detourCfg, detourRef, _ := piSourceCopyWithInsertion(t, piHistoryFixtureRef.ID, `"id":"aa11bb22"`, detour)
+	detourRead, err := NewSourceReader(detourCfg).Read(context.Background(), detourRef)
+	if err != nil {
+		t.Fatalf("reading the fixture copy: %v", err)
+	}
+	if len(detourRead.Messages) != 7 {
+		t.Fatalf("the copy's read holds %d record(s), want the fixture's six and the inserted one",
+			len(detourRead.Messages))
+	}
+	copyTextAt := func(ordinal int) string {
+		t.Helper()
+		for _, message := range detourRead.Messages {
+			if message.Ordinal == ordinal {
+				return message.Content
+			}
+		}
+		t.Fatalf("the copy's read holds no ordinal %d", ordinal)
+		return ""
+	}
+	detourSelected, _, err := Select(detourRead, "0,1,4,6", false)
+	if err != nil {
+		t.Fatalf("selecting 0,1,4,6: %v", err)
+	}
+	detourSession, err := piRoute.Convert(detourSelected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("%s: converting the copy's window: %v", TargetPi, err)
+	}
+	detourLines := decodePiSession(t, detourSession.Data)
+	detourTexts := piEntryTexts(t, detourLines)
+	entryOf := map[string]string{}
+	for _, line := range detourLines {
+		if text := detourTexts[line.ID]; text != "" {
+			entryOf[text] = line.ID
+		}
+	}
+	parentOf := func(text string) string {
+		for _, line := range detourLines {
+			if detourTexts[line.ID] == text && line.ParentID != nil {
+				return *line.ParentID
+			}
+		}
+		return ""
+	}
+	rootText := copyTextAt(0)
+	branchText := copyTextAt(4)
+	leafCopyText := copyTextAt(6)
+	if entryOf[detourText] == "" {
+		t.Fatalf("the copy's written document holds no entry for the inserted record, which the window " +
+			"carries: the arm cannot tell the two parent answers apart without it")
+	}
+	if got := parentOf(branchText); got != entryOf[rootText] {
+		t.Errorf("the branch record's entry hangs off %q, want ordinal 0's entry %q: the branch's nearest "+
+			"retained ancestor is the root, and the inserted record the window carries before it is not "+
+			"its place (the fallback's own answer would be %q)", got, entryOf[rootText], entryOf[detourText])
+	}
+	if got := parentOf(leafCopyText); got != entryOf[rootText] {
+		t.Errorf("the leaf's entry hangs off %q, want ordinal 0's entry %q", got, entryOf[rootText])
+	}
+	detourOnPath := piWalkIDs(t, detourLines)
+	if len(detourOnPath) != 2 {
+		t.Errorf("the walk from the file's last entry covers %d entry(ies), want the copy's two on-line "+
+			"records (the chain is %v)", len(detourOnPath), detourOnPath)
+	}
+	detourJoined := ""
+	for id := range detourOnPath {
+		detourJoined += detourTexts[id] + "\n"
+	}
+	for _, want := range []string{rootText, leafCopyText} {
+		if !strings.Contains(detourJoined, want) {
+			t.Errorf("the walk from the file's last entry does not hold %q; it holds:\n%s", want,
+				detourJoined)
+		}
+	}
+	for _, unwanted := range []string{detourText, branchText} {
+		if strings.Contains(detourJoined, unwanted) {
+			t.Errorf("the walk from the file's last entry holds %q, a record the read's line leaves off "+
+				"it (the chain is %v)", unwanted, detourOnPath)
 		}
 	}
 }
@@ -1901,10 +2003,14 @@ func TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall(t *testing.T) {
 		t.Errorf("refused-event generated_call_ids = %d, want 0: nothing was inferred", got)
 	}
 
-	// The control holds the marking to what it claims: an event that states a written outcome is not a
-	// marking (the walk writes it, displacing nothing), so the first call *is* answered on the written
-	// path -- by its recorded outcome rather than by the summary -- and the id-less result's owner is
-	// the second call, so the inference fires.
+	// The control holds the arrival rule to where the recorded outcome *stands* (round 18's second
+	// finding): the first call's own recorded event is writable, but it stands *after* the id-less
+	// result, and the summary the call also carries is never written -- the walk fills the slot with the
+	// recorded event and the summary pass skips a call that holds a result. So where the id-less result
+	// stands the document states no outcome for either call: the first call is unanswered exactly as the
+	// second is (its reservation counts among the unanswered occurrences, plannedOutcomeStandsAhead),
+	// the inference has no single call to name, and the id-less result is omitted rather than bound to
+	// the second call. The event is written as the first call's outcome.
 	outcomeWindow, _, err := Select(withLaterEvent(ToolResult{ToolUseID: "toolu_a",
 		ContentRaw: "the recorded outcome", ContentSize: len("the recorded outcome")}), "0-", false)
 	if err != nil {
@@ -1914,19 +2020,25 @@ func TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("converting the outcome-event window: %v", err)
 	}
-	if !strings.Contains(string(answered.Data), lateText) {
-		t.Errorf("the selected document does not hold the id-less result: the first call's recorded " +
-			"outcome answers it on the written path, so the result belongs to the second call")
+	if strings.Contains(string(answered.Data), lateText) {
+		t.Errorf("the selected document holds the id-less result although the first call's recorded " +
+			"outcome stands after it and the summary is never written: neither call stated an outcome " +
+			"where the result stood, so the inference had no single call to name")
 	}
-	if got := lossCount(t, answered.Losses, "generated_call_ids").Count; got != 1 {
-		t.Errorf("outcome-event generated_call_ids = %d, want the one inferred result", got)
+	if !strings.Contains(string(answered.Data), "the recorded outcome") {
+		t.Errorf("the selected document does not hold the first call's recorded outcome: the walk stores " +
+			"it in the call's slot, which is what leaves the summary unwritten")
 	}
-	if got := lossCount(t, answered.Losses, "unpaired_tool_results").Count; got != 0 {
-		t.Errorf("outcome-event unpaired_tool_results = %d, want 0", got)
+	if got := lossCount(t, answered.Losses, "generated_call_ids").Count; got != 0 {
+		t.Errorf("outcome-event generated_call_ids = %d, want 0: the inference named no call", got)
 	}
-	if got := lossCount(t, answered.Losses, "unpaired_tool_calls").Count; got != 0 {
-		t.Errorf("outcome-event unpaired_tool_calls = %d, want 0: both calls have outcomes the document "+
-			"states", got)
+	if got := lossCount(t, answered.Losses, "unpaired_tool_results").Count; got != 1 {
+		t.Errorf("outcome-event unpaired_tool_results = %d, want the one id-less result no single "+
+			"unanswered call answers", got)
+	}
+	if got := lossCount(t, answered.Losses, "unpaired_tool_calls").Count; got != 1 {
+		t.Errorf("outcome-event unpaired_tool_calls = %d, want the second call counted: the first is "+
+			"answered by its recorded event, and the id-less result was omitted", got)
 	}
 }
 
@@ -5677,6 +5789,20 @@ func TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress(t *testing.
 				"id-less progress event on the same record suppressed it through an id equality the "+
 				"source never recorded (%v)", target,
 				selectionCallAndResultLines(t, target, targetConverted.Data))
+		}
+		// The event's own count is the progress classification, not the inference's: no single call is
+		// eligible (two id-less occurrences stand on the record), and a progress event is omitted
+		// whatever its call, so it is classified before any owner is resolved (round 18's third
+		// finding). Counting it unpaired_tool_results would report the omitted progress as a result no
+		// call answers.
+		if got := lossCount(t, targetConverted.Losses, "nonterminal_tool_events").Count; got != 1 {
+			t.Errorf("%s: nonterminal_tool_events = %d, want the one id-less progress event counted as "+
+				"what it is: the format carries an outcome or nothing, so the event is omitted as "+
+				"progress whether or not an owner could be inferred", target, got)
+		}
+		if got := lossCount(t, targetConverted.Losses, "unpaired_tool_results").Count; got != 0 {
+			t.Errorf("%s: unpaired_tool_results = %d, want 0: the id-less progress event is no result "+
+				"no call answers -- it is counted as the progress event it is", target, got)
 		}
 	}
 	// A run without a selection keeps the message-local rule this writer has always had (goal 0009's D4):

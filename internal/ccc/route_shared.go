@@ -668,15 +668,18 @@ func (t *sourceTree) fileParentRecorded() bool {
 // difference the source's own file settles, carried on a reduced document per position).
 //
 // A record the line itself leaves off keeps the recorded relation: its branch is recorded history the
-// writer reproduces, and hanging it under the result its own file ran through is that history. An
-// unreduced read (a run without a selection, whose line is the reconstruction's) is untouched in
-// practice: the reconstruction's own tool-result step is what places a result on its line whenever an
-// on-line record names that result's carrier, so a result it leaves off is never the entry an on-line
-// record's carrier answers -- the condition below cannot hold there. Goal 0009's D4 is what the whole
-// branch exists under, and the writers' answers for a read nobody selected from are what the D4 probe
-// measured.
+// writer reproduces, and hanging it under the result its own file ran through is that history. The
+// guard answers only on a document a selection produced (t.reduced): goal 0009's D4 keeps the writers'
+// long-standing answer for a read nobody selected from, where the relation was resolved from the
+// reconstruction's own line -- the D4 probe's before/after comparison is what measured that answer, and
+// the flag is what makes the scoping this function's contract rather than an inference about the
+// reconstruction. An unreduced read cannot reach the refusal in practice either: the reconstruction's
+// own tool-result step places a result on its line whenever an on-line record names that result's
+// carrier, so a result it leaves off is not the entry such a record's carrier answers -- but the flag
+// states the rule the callers take, so a future change to the line's own computation cannot silently
+// change the default path's bytes.
 func (t *sourceTree) resultEntryLeavesTheLine(entry string) bool {
-	if t.inactiveAt(t.record) {
+	if !t.reduced || t.inactiveAt(t.record) {
 		return false
 	}
 	_, off := t.offLineEntry[entry]

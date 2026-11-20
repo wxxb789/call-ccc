@@ -2444,6 +2444,81 @@ func TestContinueKeepsTheFilesOwnResultOnASelectedWalk(t *testing.T) {
 	}
 }
 
+// TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath pins round 18's first finding's shape in the
+// D4 comparison. The round-12 fixture copy is bent once: the second sibling result's output is
+// whitespace-only, so the inherited reader still returns the record (the read is a function of the
+// file's bytes, not of what the target can write) while the writer omits it
+// (whitespace_only_tool_results) and the reply is chained to the *written* result the file's own
+// relation names -- the first result's entry. That is the answer the base revision gave for this shape
+// (measured on a pre-0009 worktree: the same written parent relation and the same two projected
+// relations), and the off-line-result guard must not change it: no selection ran, and the guard's
+// refusal is scoped to a document a selection produced. The written-file walk is asserted too, since
+// the omission is what makes the reconstruction's own answer (the later result) unavailable: with the
+// record unwritten, the reconstruction's nearest result before the reply is the first result, and the
+// reply's entry must follow it rather than fall back to the call.
+func TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath(t *testing.T) {
+	const (
+		firstResultText  = "internal/retry/config.go:41: maxBackoffSeconds = 30"
+		replyText        = "It is set in internal/retry/config.go."
+		firstResultEntry = "c7d8e9fa"
+	)
+	const secondResult = `{"id":"f00dbeef","message":{"content":[{"text":"   ","type":"text"}],"isError":false,"role":"toolResult","timestamp":1794938106500,"toolCallId":"call_01Example000000000000000000","toolName":"grep"},"parentId":"b3c4d5e6","timestamp":"2026-05-04T09:15:06.500Z","type":"message"}`
+	cfg, ref, sourcePath := piSourceCopyWithInsertion(t, piFixtureRef.ID, `"id":"`+firstResultEntry+`"`, secondResult)
+	sourceBytes, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading the source copy: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, sourceBytes)
+	if !slices.Contains(sourceWalk, firstResultText) {
+		t.Fatalf("the source file's own walk = %q, want the first result on it: the fixture copy does "+
+			"not hold the shape under test", sourceWalk)
+	}
+	unflagged, err := Continue(context.Background(), ContinueOptions{
+		Ref: ref, Target: TargetPi, Config: cfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("pi: unflagged: %v", err)
+	}
+	unflaggedBytes, err := os.ReadFile(unflagged.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the unflagged session: %v", err)
+	}
+	if got := transcriptWalkTexts(t, unflaggedBytes); !slices.Equal(got, sourceWalk) {
+		t.Errorf("pi: the unflagged session's model-visible history = %q, want the source file's own %q: "+
+			"the omitted later result is not the reply's place, and the first result the file records "+
+			"between the call and the reply stays on the walk", got, sourceWalk)
+	}
+	lines := decodePiSession(t, unflaggedBytes)
+	texts := piEntryTexts(t, lines)
+	entryOf := map[string]string{}
+	for _, line := range lines {
+		if text := texts[line.ID]; text != "" {
+			entryOf[text] = line.ID
+		}
+	}
+	replyParent := ""
+	for _, line := range lines {
+		if texts[line.ID] == replyText && line.ParentID != nil {
+			replyParent = *line.ParentID
+		}
+	}
+	if want := entryOf[firstResultText]; replyParent != want {
+		t.Errorf("pi: the reply's entry hangs off %q, want the first result's entry %q: the written result "+
+			"the file's own relation names is the record the reply stands under, and the projection's "+
+			"later result is not in the file", replyParent, want)
+	}
+	if got := lossCount(t, unflagged.Conversion.Losses, "whitespace_only_tool_results").Count; got != 1 {
+		t.Errorf("pi: whitespace_only_tool_results = %d, want the one omitted later result: the writer "+
+			"cannot state a text the reader would read back as no text", got)
+	}
+	if got := lossCount(t, unflagged.Conversion.Losses, "unresolved_source_parents").Count; got != 2 {
+		t.Errorf("pi: unflagged unresolved_source_parents = %d, want the two projected relations a run "+
+			"without a selection has always counted for this shape (the omitted result's own place and "+
+			"the reply's)", got)
+	}
+}
+
 // TestContinueKeepsTheFilesOwnResultAcrossAMetadataEntry pins the fifteenth round's first finding. The
 // round-12 fixture copy is extended with a `model_change` entry Pi wrote between the first result and the
 // reply: the reply's own `parentId` names the metadata entry, the metadata entry names the first result,

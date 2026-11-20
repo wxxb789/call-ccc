@@ -974,6 +974,21 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 	resultIDInferred := false
 	answered := callOccurrence{}
 	switch {
+	case b.selectionReduced && !resultStatesAnOutcome(result.Status):
+		// The read records a call's progress as events of the call's own beside its outcome
+		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
+		// chunk. This format's output carries text and no outcome status, so a written event would read
+		// back as the call's *answer* -- the check's own reader takes an output for the call's outcome --
+		// and the file would claim a completion the source had not recorded when it wrote those words. A
+		// document a selection produced omits the event and names it here (the same disposition OpenCode's
+		// plan takes, where the harness refuses any state but completed/error); a run without a selection
+		// keeps writing it, which is the answer it has always had (goal 0009's D4; round 10's finding 5).
+		//
+		// The classification runs before the owner inference (round 18's third finding): a progress event
+		// is omitted whatever its call, so an id-less one whose owner the inference cannot name -- two
+		// calls are eligible -- is counted as the progress event it is, not as a result no call answers.
+		b.lossNonterminal++
+		return
 	case b.selectionReduced && paired != nil:
 		// The pairing names the occurrence this result answers -- the read's own answer for a recorded
 		// result, or the call a derived summary came from -- and the id the file holds for it is the one
@@ -1027,18 +1042,6 @@ func (b *codexRolloutBuilder) toolResult(paired *callOccurrence, result ToolResu
 		// set, whatever its status (goal 0009's D4 -- a run without a selection keeps the answer its
 		// writer had).
 		delete(b.pendingCalls, callID)
-	}
-	if b.selectionReduced && !resultStatesAnOutcome(result.Status) {
-		// The read records a call's progress as events of the call's own beside its outcome
-		// (internal/parser/termination.go's rule): a Codex subagent's `running` notification, a streamed
-		// chunk. This format's output carries text and no outcome status, so a written event would read
-		// back as the call's *answer* -- the check's own reader takes an output for the call's outcome --
-		// and the file would claim a completion the source had not recorded when it wrote those words. A
-		// document a selection produced omits the event and names it here (the same disposition OpenCode's
-		// plan takes, where the harness refuses any state but completed/error); a run without a selection
-		// keeps writing it, which is the answer it has always had (goal 0009's D4; round 10's finding 5).
-		b.lossNonterminal++
-		return
 	}
 	text, blocks := resultText(result)
 	b.lossResultBlocks += blocks
