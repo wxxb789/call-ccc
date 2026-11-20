@@ -1,37 +1,44 @@
-# Plan — 0009d — Codex lowering and native acceptance
+# 0009d — Codex lowering and native acceptance
 
-Contract: [`docs/goals/0009d-codex-lowering.md`](../goals/0009d-codex-lowering.md).
-Rationale and the full decomposition: [`docs/plans/0009-decomposition.md`](0009-decomposition.md).
-Governing design: [`docs/core-design/README.md`](../core-design/README.md).
+**Status:** Ready 2026-11-21 (owner fork A2: goal 0009 decomposed into four ordered increments — the
+native oracle frozen first, so the verifier can never again be co-mutated with the implementation it judges).
+**Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md); the
+decomposition's rationale, the two cross-family consults it came from, and the per-increment proof obligations
+are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md).
 
-Written before implementation. The umbrella goal file [`docs/goals/0009-selective-context.md`](../goals/0009-selective-context.md)
-still carries the increment's `Done when` clauses D1–D7 and the seam's carried-disposition set (D6); this
-increment proves the subset named in its own contract, and nothing here re-opens a settled decision (the
-reference route, the refusal surface, the ID-less deferral).
+**Prerequisite:** [0009c](0009c-selection-closure.md).
 
-## Order and dependency
+## Intended advance
 
-This is increment **d of 4** of the goal-0009 decomposition. It is dispatched only after its
-prerequisite is accepted; the four are strictly ordered because each one removes a class of defect from every
-diff that follows it.
+`codex_target.go` lowers each closed unit **locally** — a stateless homomorphism from closed units
+to Codex-native records — and Codex itself opens the intended artifact with the expected selected history.
 
-## What this increment must not touch
+## Bounds
+
+Zero edits to the selection/closure rules and **zero edits to the frozen oracle** (0009a). The
+unflagged baseline stays a separate regression obligation; the flags are exposed only at this increment.
+
+## Done when
+
+- **D1 — Every required occurrence has a truthful native representation, or the conversion refuses
+  before installation** — no third outcome.
+- **D2 — Offline read-back proves the artifact matches the planned dispositions** (the plan being the carried
+  triple), and the **frozen** oracle validates the installed artifact.
+- **D3 — Codex's own loader shows the expected history** for the selected fixture, and the excluded record's
+  marker is absent — the two-tier native claim, with the selected arm re-runnable.
+- **D4 — The pair gate and the report behaviour are proved end to end**, and the report's per-record
+  disposition table accounts for **every** selected record.
+
+## Non-scope
 
 The other three target routes; any edit to `scripts/codex-native-check.py`.
 
-## Evidence
+## Acceptance surface
 
-`docs/evidence/0009d-citations.tsv` — discrete decisions plus the Codex native-load check. The manifest carries **discrete decisions plus this increment's native-load check** — not a
-∀-shaped claim proved by example (owner Q1 = C, 2026-11-20).
+`docs/evidence/0009d-citations.tsv` — discrete decisions plus the Codex native-load check.
 
-## Stage order and the convergence rule
+## Stop and report
 
-`implement → gate → simplify → apply → gate → review → fix → gate → commit → push → PR → CI → machine review
-→ merge`. The conductor blocks on a convergence signal (executable-surface churn, a rising P0/P1 count
-conjoined with executable churn, or the oracle lock — a round that moves a gate/checker script alongside
-production code) and on the absolute review budget; a trip is an **abstraction-boundary failure to report**,
-never a budget to raise.
-
-## Where the implementation departed from this plan
-
-None yet.
+If the conductor's convergence signal fires, or a source read cannot establish a region a caller named,
+report the gap — do not invent a recovered region or a raised bound. Stop on missing user-only authority or
+irreversible changes; otherwise use reversible defaults and end with evidence paired to every clause above.

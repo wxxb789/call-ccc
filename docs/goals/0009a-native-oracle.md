@@ -1,37 +1,47 @@
-# Plan — 0009a — Freeze the native oracle
+# 0009a — Freeze the native oracle
 
-Contract: [`docs/goals/0009a-native-oracle.md`](../goals/0009a-native-oracle.md).
-Rationale and the full decomposition: [`docs/plans/0009-decomposition.md`](0009-decomposition.md).
-Governing design: [`docs/core-design/README.md`](../core-design/README.md).
+**Status:** Ready 2026-11-21 (owner fork A2: goal 0009 decomposed into four ordered increments — the
+native oracle frozen first, so the verifier can never again be co-mutated with the implementation it judges).
+**Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md); the
+decomposition's rationale, the two cross-family consults it came from, and the per-increment proof obligations
+are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md).
 
-Written before implementation. The umbrella goal file [`docs/goals/0009-selective-context.md`](../goals/0009-selective-context.md)
-still carries the increment's `Done when` clauses D1–D7 and the seam's carried-disposition set (D6); this
-increment proves the subset named in its own contract, and nothing here re-opens a settled decision (the
-reference route, the refusal surface, the ID-less deferral).
+**Prerequisite:** [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
 
-## Order and dependency
+## Intended advance
 
-This is increment **a of 4** of the goal-0009 decomposition. It is dispatched only after its
-prerequisite is accepted; the four are strictly ordered because each one removes a class of defect from every
-diff that follows it.
+`scripts/codex-native-check.py`'s Codex well-formedness rules become a **standalone, frozen
+specification**: it validates Codex session artifacts — including reduced/selective ones — against
+hand-constructed positive and negative fixtures, with **no Go changes at all** in this increment. Once merged,
+the file is **read-only for the rest of goal 0009**; the conductor's oracle-lock signal enforces that.
 
-## What this increment must not touch
+## Bounds
+
+No Go change; nothing outside `scripts/codex-native-check.py`, its tests and synthetic Codex
+fixtures; the existing unflagged Codex acceptance keeps reporting the same verdict.
+
+## Done when
+
+- **D1 — Every oracle rule has its own negative fixture.** Each well-formedness rule is stated over
+  **synthetic Codex JSONL fixtures**, with a mutation that removes the rule and turns its fixture red.
+- **D2 — The oracle needs no knowledge of the source or the selection.** Its input is the **artifact** (plus,
+  at most, an explicit manifest receipt); it never re-derives Claude Code structure or selection semantics
+  from a transcript. A reduced artifact is validated with the source absent from the process.
+- **D3 — The existing acceptance path is unchanged.** The check on the unflagged Codex acceptance still
+  produces the same verdict, and this increment's report says so with the verbatim output.
+- **D4 — The freeze is stated where a later lane reads it**, and the reason is mechanical, not moral: a round
+  that moves this checker together with production code blocks the series (oracle lock).
+
+## Non-scope
 
 Any Go change; the manifest receipt's *producer* (0009c/0009d); the other four target routes.
 
-## Evidence
+## Acceptance surface
 
-`docs/evidence/0009a-citations.tsv` — discrete decisions plus the Codex native-load check. The manifest carries **discrete decisions plus this increment's native-load check** — not a
-∀-shaped claim proved by example (owner Q1 = C, 2026-11-20).
+`docs/evidence/0009a-citations.tsv` — discrete decisions plus the Codex native-load check.
 
-## Stage order and the convergence rule
+## Stop and report
 
-`implement → gate → simplify → apply → gate → review → fix → gate → commit → push → PR → CI → machine review
-→ merge`. The conductor blocks on a convergence signal (executable-surface churn, a rising P0/P1 count
-conjoined with executable churn, or the oracle lock — a round that moves a gate/checker script alongside
-production code) and on the absolute review budget; a trip is an **abstraction-boundary failure to report**,
-never a budget to raise.
-
-## Where the implementation departed from this plan
-
-None yet.
+If the conductor's convergence signal fires, or a source read cannot establish a region a caller named,
+report the gap — do not invent a recovered region or a raised bound. Stop on missing user-only authority or
+irreversible changes; otherwise use reversible defaults and end with evidence paired to every clause above.
