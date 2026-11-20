@@ -36,12 +36,12 @@ acceptance runs) is untouched, so its verdict is the regression clause's own evi
 - `--validate <artifact> [--receipt <document>] [--json]` — the CLI half: prints `oracle: PASS` /
   `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — <reason>`, exit 0/1/2.
 
-**Rules (13), and why each is sound.** Each is measured on Codex `0.170.0`'s own 25 host sessions *and* on
+**Rules (14), and why each is sound.** Each is measured on Codex `0.170.0`'s own 25 host sessions *and* on
 artifacts this build's writer produces (the record-type set, first-record-is-session_meta, exactly one
 session_meta, non-empty `id`/`originator`/`cli_version`, non-decreasing envelope instants, every message's
-blocks typed as the carried reader's own text channel, every `user_message`/`agent_message` event carrying a
-non-empty string, no duplicate call id and no output naming an absent call). Structural rules are stated over
-the artifact alone; three are stated over the artifact **and** an explicit receipt:
+blocks typed as the carried reader's own text channel, every `user_message`/`agent_message` event carrying
+a non-empty string, no duplicate call id and no output naming an absent call). Structural rules are stated
+over the artifact alone; four are stated over the artifact **and** an explicit receipt:
 
 | id | states |
 | --- | --- |
@@ -54,9 +54,10 @@ the artifact alone; three are stated over the artifact **and** an explicit recei
 | `oracle.message` | a `response_item` message: non-empty `role`; a non-empty `content` whose blocks are typed `input_text`/`output_text`/`text` with string `text`, at least one non-blank |
 | `oracle.event-message` | a `user_message`/`agent_message` event carries a non-empty string `message` |
 | `oracle.call-pairing` | call ids are non-empty and unique; every call output names a call the artifact carries |
-| `oracle.receipt` | the receipt is an object whose `occurrences` are well-formed entries (`kind`, the identity its kind needs, `disposition` ∈ `emitted`/`omitted`) |
-| `oracle.plan-emitted` | every occurrence the receipt marks emitted is present in the artifact, as many times as it is marked |
-| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, and an occurrence it names nowhere, are equally refused |
+| `oracle.receipt` | the receipt is an object whose `occurrences` are well-formed entries (`kind`, the identity its kind needs — a result's is its call id **and its recorded text** — `disposition` ∈ `emitted`/`omitted`) |
+| `oracle.plan-emitted` | every occurrence the receipt marks emitted is present in the artifact, as many times as it is marked — a dialogue message in both of the artifact's channels (the model-visible `response_item` and the turn-view `event_msg`) |
+| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, and an occurrence it names nowhere, are equally refused, in both dialogue channels |
+| `oracle.plan-order` | the emitted occurrences stand in the artifact in the receipt's own order — a compaction boundary moved past later turns compacts a different history with every count unchanged |
 | `oracle.plan-pairs` | a call and its recorded result carry the same disposition |
 
 **Edge-case semantics the contract fixes.**
@@ -97,8 +98,11 @@ increment's evidence record.
   break.
 - *The receipt's schema is frozen here, minimal*: per-occurrence kind + identity + disposition, no source
   semantics, no per-record fates (0009c's triple carries those; the oracle only compares plan and artifact).
-  This is the increment's most speculative surface and is deliberately the smallest one that can catch "the
-  wrong result was omitted".
+  A result's identity is its call **and its recorded text**, so one output substituted for another under the
+  same call id is caught; a dialogue message is read against both of the artifact's channels and the
+  receipt's own order. This is the increment's most speculative surface and is deliberately the smallest one
+  that can catch "the wrong result was omitted" — the review fix round (r1) is what moved it from its first
+  to this shape.
 - *The oracle is not wired into the native path in this increment*: D3 makes the acceptance path's verdict a
   regression clause, and 0009d consumes the oracle from its own lowering checks.
 
@@ -112,7 +116,7 @@ existing check's); the writer's own adoption of the rules (0009d).
 ∀-shaped claim proved by example (owner Q1 = C, 2026-11-20).
 
 The record (`docs/evidence/0009a-native-oracle.md`) carries, with verbatim output and exit codes: the
-measurements the rules rest on (§0); the oracle's positive fixtures and the mutation run over all 13 rules
+measurements the rules rest on (§0); the oracle's positive fixtures and the mutation run over all 14 rules
 (§1–§2); D2's reduced-artifact validation with the source absent (§2, the reduced-fixture run); the
 unflagged Codex acceptance run taken **before and after** this increment (§3); and `--validate` runs over a
 real converted artifact (§5).
@@ -140,10 +144,12 @@ never a budget to raise.
 
 One departure from the design above: the shape line's
 `validate_artifact(text: str, receipt: dict | None = None, name: str = "artifact")` shipped as
-`validate_artifact(text: str, receipt: object | None = None) -> list[Violation]` — `name` is not there,
-and `receipt` is typed `object | None`, deliberately broader than a parsed mapping so a receipt that
+`validate_artifact(text: str, receipt: object = <no receipt sentinel>) -> list[Violation]` — `name` is
+not there, and `receipt` is typed `object`, deliberately broader than a parsed mapping so a receipt that
 cannot be read is *reported* (`oracle.receipt`, `oracle_report`'s INCOMPLETE arm) rather than refused by
-the signature. The oracle is otherwise the section and the mode as written, the native path is
+the signature, and its default is the **absence** of a receipt: a supplied document that is not a plan —
+a file reading `null` among them — is that same rule's finding rather than read as an absent receipt.
+The oracle is otherwise the section and the mode as written, the native path is
 untouched, and the fixtures are the committed synthetic files. Three details settled while measuring, in
 the open because each one is a rule that was deliberately **not** stated (the increment's whole point is
 stating what holds, not what would be nice to hold):
@@ -151,7 +157,7 @@ stating what holds, not what would be nice to hold):
 - *No rule requires an output's text to be non-blank or a string, and none requires a record to stand
   inside a turn.* Codex 0.170.0's own 25 host sessions hold twelve blank call outputs, one list-valued
   `custom_tool_call_output.output`, and 73 `response_item` messages before the first `turn_context`
-  (57 developer, 27 user, 1 assistant); a rule written from this writer's habits would refuse the
+  (45 developer, 27 user, 1 assistant); a rule written from this writer's habits would refuse the
   format's own files (evidence record §0).
 - *No rule requires every call to be answered.* The writer retires a call whose recorded result it does
   not write (`TestCodexRolloutRetiresACallWhenItsResultIsOmitted`), so the artifact alone cannot tell "the
@@ -166,3 +172,13 @@ stating what holds, not what would be nice to hold):
   nothing the plan left out — is what this increment states **offline** over an explicit receipt, because
   A2-1 may not touch Go and the `--select` CLI only arrives with 0009d. The native arm itself stays
   PR #16's, to be rebuilt in 0009d against this frozen oracle.
+
+**The review fix round moved the oracle while the increment was still under review** (the freeze binds the
+rest of goal 0009, not this increment's own fix stage). The r1 findings and their fixes are enumerated in
+the stage report; the shape the freeze now holds is the one above: a result's identity includes its
+recorded text (a same-id output substitution is refused), a dialogue message is read against both of the
+artifact's channels (`oracle.plan-emitted`/`oracle.plan-accounted`), `oracle.plan-order` refuses a moved
+compaction boundary whose counts are unchanged, `oracle.envelope` refuses the leap second `60` instead of
+remapping it, `oracle.jsonl-objects` reads the artifact's own bytes (LF split, no non-JSON constants, no
+replacement-decoded text) and default diagnostics name occurrences without echoing their text. The
+evidence record's §1–§7 carry the re-run outputs for that state.

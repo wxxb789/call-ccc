@@ -20,13 +20,16 @@
 # Deliberately not covered, with the reason (form-based: a row is one Go test in a package
 # scripts/gate-targets.txt covers, so a rule whose gate re-derivation is a python case the required
 # `selftest` step runs, or a native harness run, cannot hold one):
-#   oracle.receipt, oracle.plan-emitted, oracle.plan-accounted, oracle.plan-pairs — the manifest-receipt
-#         half. No Go test grounds it, because nothing in this tree produces a receipt yet: the receipt's
-#         producer is goal 0009c/0009d (this goal's Non-scope), and the rules are stated over the
-#         synthetic receipts committed with the fixtures. Their re-derivation is the same `selftest`
-#         case's mutation table (two mutations for `oracle.receipt`, two for `oracle.plan-accounted`, one
-#         each for the others), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2)
-#         and `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total).
+#   oracle.receipt, oracle.plan-emitted, oracle.plan-accounted, oracle.plan-order, oracle.plan-pairs —
+#         the manifest-receipt half. No Go test grounds it, because nothing in this tree produces a
+#         receipt yet: the receipt's producer is goal 0009c/0009d (this goal's Non-scope), and the rules
+#         are stated over the synthetic receipts committed with the fixtures. Their re-derivation is the
+#         same `selftest` case's mutation table (three mutations for `oracle.receipt`, two for
+#         `oracle.plan-emitted`, three for `oracle.plan-accounted`, one each for `oracle.plan-order` and
+#         `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
+#         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total) and
+#         `test_a_result_substituted_under_one_call_id_is_refused` (a result's identity is its call and
+#         its recorded text).
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`); no native-or-Go half exists for it.
 #   D1 — every rule has its own negative fixture: the `selftest` case named above.

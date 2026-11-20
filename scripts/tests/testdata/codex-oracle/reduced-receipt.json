@@ -3,7 +3,7 @@
     {"kind": "message", "role": "user", "text": "Which fixture is this?", "disposition": "emitted"},
     {"kind": "message", "role": "assistant", "text": "The synthetic one.", "disposition": "emitted"},
     {"kind": "tool_call", "call_id": "call_oracle_0001", "disposition": "emitted"},
-    {"kind": "tool_result", "call_id": "call_oracle_0001", "disposition": "emitted"},
+    {"kind": "tool_result", "call_id": "call_oracle_0001", "text": "# notes\n", "disposition": "emitted"},
     {"kind": "compaction_boundary", "text": "Summary: the fixture's first half is over.", "disposition": "emitted"},
     {"kind": "message", "role": "user", "text": "And now?", "disposition": "omitted"},
     {"kind": "message", "role": "assistant", "text": "Still the synthetic one.", "disposition": "omitted"}
