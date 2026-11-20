@@ -377,8 +377,10 @@ says so.
   dispositions: `emitted` / `omitted` over messages, tool calls, results and compaction boundaries, with a
   tool call's name and recorded input and a tool result's recorded text part of their identities, a
   dialogue message read against both of the artifact's dialogue channels, the emitted order read against
-  the receipt's own in both channels, and every `compacted` record an occurrence whether or not it carries
-  a summary). It
+  the receipt's own in both channels, every `compacted` record an occurrence whether or not it carries
+  a summary, a boundary carrying a native `replacement_history` refused where a receipt is compared,
+  every call output required to name a call written before it, and a receipt that declares no
+  occurrences refused before any comparison). It
   needs no harness, no source transcript and no selection semantics: its input is the artifact's text, so
   a reduced (selective) artifact is validated with the source absent from the process. Its verdict line is
   the last one printed — `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — …` —

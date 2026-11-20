@@ -46,17 +46,17 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
 | id | states |
 | --- | --- |
 | `oracle.jsonl-objects` | every non-empty line is exactly one JSON object |
-| `oracle.envelope` | every record holds a parseable `timestamp`, a non-empty `type`, an object `payload` |
+| `oracle.envelope` | every record holds a parseable `timestamp` — one whole, ASCII RFC3339 instant — a non-empty `type`, an object `payload` |
 | `oracle.record-type` | `type` is one the format defines (the measured set; **payload** types stay open) |
 | `oracle.session-meta` | the artifact's first record is its only `session_meta` |
 | `oracle.session-meta-members` | its payload's `id`, `originator`, `cli_version` are non-empty strings |
 | `oracle.clock` | envelope instants never decrease |
 | `oracle.message` | a `response_item` message: non-empty `role`; a non-empty `content` whose blocks are typed `input_text`/`output_text`/`text` with string `text`, at least one non-blank |
 | `oracle.event-message` | a `user_message`/`agent_message` event carries a non-empty string `message` |
-| `oracle.call-pairing` | call ids are non-empty and unique; every call output names a call the artifact carries |
-| `oracle.receipt` | the receipt is an object whose `occurrences` are well-formed entries (`kind`, the identity its kind needs — a result's is its call id **and its recorded text** — `disposition` ∈ `emitted`/`omitted`) |
+| `oracle.call-pairing` | call ids are non-empty and unique; every call output names a call the artifact carries **before it** — an output written first attaches to nothing in the carried reader |
+| `oracle.receipt` | the receipt is an object whose `occurrences` are well-formed entries (`kind`, the identity its kind needs — a result's is its call id **and its recorded text**, a call's its call id, name and recorded input, the receipt's `arguments` member naming whichever of the artifact's `arguments`/`input` members held it — `disposition` ∈ `emitted`/`omitted`); a receipt that declares no occurrences is refused rather than compared |
 | `oracle.plan-emitted` | every occurrence the receipt marks emitted is present in the artifact, as many times as it is marked — a dialogue message in both of the artifact's channels (the model-visible `response_item` and the turn-view `event_msg`) |
-| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, and an occurrence it names nowhere, are equally refused, in both dialogue channels |
+| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, an occurrence it names nowhere, and a compaction boundary's `replacement_history` (dialogue this route's writer never emits) are equally refused, in both dialogue channels |
 | `oracle.plan-order` | the emitted occurrences stand in the artifact in the receipt's own order — a compaction boundary moved past later turns compacts a different history with every count unchanged |
 | `oracle.plan-pairs` | a call and its recorded result carry the same disposition |
 
@@ -68,8 +68,15 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   over the records that contain them.
 - *Multiplicity is identity-counted.* Two identical prompts are two occurrences; the plan's marks are counted,
   so `emitted` and `omitted` entries of one identity never silently cancel.
-- *A receipt that declares nothing cannot pass* — it accounts for no occurrence, so `oracle.plan-accounted`
-  refuses the artifact (the same fail-closed rule the citations manifest carries).
+- *A receipt that declares nothing cannot pass* — an empty `occurrences` list is refused as a receipt
+  **before** any comparison (both accounting rules would otherwise pass vacuously on a metadata-only
+  artifact), the same fail-closed rule the citations manifest carries.
+- *An output written before its call is refused* — the carried reader attaches such an event to nothing
+  (`internal/parser/codex_collecting_sink.go`), and this route's writer never emits one there, so
+  ownership is checked in record order rather than against the artifact's whole set of ids.
+- *A boundary's `replacement_history` is refused where a plan is compared* — the native `compacted`
+  record can hold the messages it replaced there (`internal/parser/codex_fidelity_test.go`), the
+  receipt's boundary identity is its summary alone, and this route's writer emits only the summary.
 - *Unknown payload types are accepted* (Codex's own event and item vocabulary is open and measured);
   unknown **envelope** types are refused, because this build writes five and reads a measured eight.
 - The oracle judges this route's occurrence vocabulary — a message (the writer's own two roles, user and
@@ -119,8 +126,9 @@ existing check's); the writer's own adoption of the rules (0009d).
 The record (`docs/evidence/0009a-native-oracle.md`) carries, with verbatim output and exit codes: the
 measurements the rules rest on (§0); the oracle's positive fixtures and the mutation run over all 14 rules
 (§1–§2); D2's reduced-artifact validation with the source absent (§2, the reduced-fixture run); the
-unflagged Codex acceptance run taken **before and after** this increment (§3); and `--validate` runs over a
-real converted artifact (§5).
+unflagged Codex acceptance run taken **before and after** this increment (§3); `--validate` runs over a
+real converted artifact (§5); and, for the review fix rounds, the gate and citations runs (§6–§7) and the
+r3 round's one executed revert-mutation per fix (§8).
 
 **The manifest's own rows — an ambiguity, decided.** `docs/conventions.md` holds a citations row to be one
 gate-runnable **Go** test, while this increment makes no Go change at all; the goal's acceptance surface names
@@ -175,15 +183,22 @@ stating what holds, not what would be nice to hold):
   PR #16's, to be rebuilt in 0009d against this frozen oracle.
 
 **The review fix rounds moved the oracle while the increment was still under review** (the freeze binds the
-rest of goal 0009, not this increment's own fix stage). The r1 and r2 findings and their fixes are
+rest of goal 0009, not this increment's own fix stage). The r1, r2 and r3 findings and their fixes are
 enumerated in the stage reports; the shape the freeze now holds is the one above: a result's identity
 includes its recorded text and a call's its name and recorded input (a same-id substitution of either is
-refused), a dialogue message is read against both of the artifact's channels
+refused, and the recorded input is read from `arguments` then `input` the way the carried reader reads
+it), a dialogue message is read against both of the artifact's channels
 (`oracle.plan-emitted`/`oracle.plan-accounted`), `oracle.plan-order` refuses a moved
 compaction boundary whose counts are unchanged and a turn-view dialogue order that is not the receipt's,
-every `compacted` record is a boundary occurrence (an empty summary included), the oracle's blank test is
+every `compacted` record is a boundary occurrence (an empty summary included) and a boundary carrying a
+native `replacement_history` is refused where a plan is compared, an output written before its call is
+refused (call ownership is checked in record order), a receipt that declares no occurrences is refused
+before any comparison, the oracle's blank test is
 the writer's own (`strings.TrimSpace`, not Python's wider `str.strip`), `oracle.envelope` refuses the leap
-second `60` instead of remapping it, `oracle.jsonl-objects` reads the artifact's own bytes (LF split, no
+second `60` and any stamp that is not one whole ASCII RFC3339 instant — a trailing line feed and a
+non-ASCII decimal digit among them — instead of remapping or half-matching it, `oracle.jsonl-objects`
+reads the artifact's own bytes (LF split, no
 non-JSON constants, no replacement-decoded text), an unreadable-by-nesting receipt is `INCOMPLETE` rather
-than a traceback, and default diagnostics name occurrences and refused values by type without echoing
-their text. The evidence record's §1–§7 carry the re-run outputs for that state.
+than a traceback, and default diagnostics name occurrences and refused values by type and by digest
+without echoing their text. The evidence record's §1–§8 carry the re-run outputs for that state, with one
+executed revert-mutation per r3 fix (§8).

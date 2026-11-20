@@ -24,14 +24,21 @@
 #         the manifest-receipt half. No Go test grounds it, because nothing in this tree produces a
 #         receipt yet: the receipt's producer is goal 0009c/0009d (this goal's Non-scope), and the rules
 #         are stated over the synthetic receipts committed with the fixtures. Their re-derivation is the
-#         same `selftest` case's mutation table (three mutations for `oracle.receipt`, two for
-#         `oracle.plan-emitted`, four for `oracle.plan-accounted`, two for `oracle.plan-order` and
+#         same `selftest` case's mutation table (four mutations for `oracle.receipt`, two for
+#         `oracle.plan-emitted`, five for `oracle.plan-accounted`, two for `oracle.plan-order` and
 #         one for `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
-#         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total),
+#         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
+#         refused before comparison, a metadata-only artifact included),
 #         `test_a_result_substituted_under_one_call_id_is_refused` (a result's identity is its call and
-#         its recorded text) and `test_a_call_substituted_under_one_call_id_is_refused` (a call's
-#         identity is its call id, name and recorded input) — the two substitution cases, beside the
-#         mutation table's own pinned refusals.
+#         its recorded text), `test_a_call_substituted_under_one_call_id_is_refused` (a call's
+#         identity is its call id, name and recorded input) and
+#         `test_a_custom_calls_recorded_input_is_part_of_its_identity` (a `custom_tool_call`'s recorded
+#         input lives in `input`, and the receipt's `arguments` member names it there) — the two
+#         substitution cases and the custom family's input, beside the mutation table's own pinned
+#         refusals. `test_a_boundarys_replacement_history_is_refused_with_a_plan` and
+#         `test_a_malformed_member_is_named_without_echoing_its_text` pin two more refusals the mutation
+#         table also holds (a boundary's `replacement_history` refused where a plan is compared; a
+#         string `call_id` named by digest and never echoed).
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`); no native-or-Go half exists for it.
 #   D1 — every rule has its own negative fixture: the `selftest` case named above.

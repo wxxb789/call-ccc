@@ -38,6 +38,22 @@ ever assigning it. Every quoted run below was taken again on the fixed tree: §1
 mutation counts, §1's and §2's `--validate` runs, §3's unflagged native check, §5's converted-artifact
 probe (whose commands now derive the path from the conversion report) and §7's gate.
 
+**The review fix round (r3).** The oracle's third review found seven defects, and its own close-out
+instruction was applied rather than a per-finding patch: every rule the touched surface claims was
+re-verified by one executed revert-mutation (§8). The findings: a compaction record's native
+`replacement_history` held dialogue the receipt could not account for (the omitted prompt could survive
+inside the boundary); a `custom_tool_call`'s recorded input lives in `input`, but the identity read only
+`arguments`, so an empty receipt member certified any input and the actual input mismatched; call
+ownership was checked against the artifact's whole set of ids, so an output written before its call
+passed; the instant matcher took Python's `$` (a trailing line feed passed) and `\d` (a Unicode decimal
+digit passed where no RFC3339 reader parses it); an empty receipt passed against a metadata-only
+artifact, contrary to the plan's "a receipt that declares nothing cannot pass"; the unmatched-output
+diagnostic echoed a string `call_id` verbatim; and §3's replay was not portable as written (the tar
+destination was never created and the after command hard-coded the author's checkout). Every quoted run
+below was taken again on the r3 tree, §3's replay now stands on a recipe that creates its scratch
+directory and derives the checkout, and §8 records the six revert-mutations — one per fix — with the
+failure each one produced.
+
 ## 0. What was measured before anything was written
 
 The rules are statements about the Codex rollout format, so they were measured first on the format's own
@@ -152,7 +168,7 @@ What each answer fixed, and why the rule is the one that got stated:
 | every message's content blocks are `input_text`/`output_text`, the two types the carried reader reads text from (`internal/parser/codex.go`'s `extractCodexTextBlocks`) | `oracle.message` |
 | no `user_message`/`agent_message` event holds a blank or non-string `message` | `oracle.event-message` |
 | no record's instant precedes the record before it (over 4 075 records) | `oracle.clock` |
-| every call id is answered exactly once, none repeats, no output names an absent call | `oracle.call-pairing` |
+| every call id is answered exactly once, none repeats, no output names an absent call | `oracle.call-pairing` — the order arm (an output before its call) is measured by §5's sweep over the same 25 files |
 | **12 blank outputs exist** on Codex's own files, and a `custom_tool_call_output`'s `output` is a list 122 times | the rules that were **not** stated: no rule requires an output to be non-blank or a string — a rule written from this build's writer's habits instead of from the format's own files would have refused the format's own files |
 | 73 `response_item` messages stand *before* the first `turn_context` across the 25 files (45 developer, 27 user, 1 assistant; plus 3 `additional_tools`) | no rule requires a record to stand inside a turn — measured, so not stated |
 
@@ -165,17 +181,17 @@ and the oracle lock, §4 below). Fourteen rules, each one sentence, each a state
 | rule | states |
 | --- | --- |
 | `oracle.jsonl-objects` | every non-empty line of the artifact is exactly one JSON object |
-| `oracle.envelope` | every record carries a parseable `timestamp`, a non-empty `type` and an object `payload` |
+| `oracle.envelope` | every record carries a parseable `timestamp` — one whole, ASCII RFC3339 instant (a trailing line feed or a non-ASCII digit is refused) — a non-empty `type` and an object `payload` |
 | `oracle.record-type` | every record's `type` is one the rollout format defines — the five this route's writer emits and the further ones Codex 0.170.0 writes; payload types stay open |
 | `oracle.session-meta` | the artifact's first record is its `session_meta`, and the artifact carries exactly one |
 | `oracle.session-meta-members` | that record's `id`, `originator` and `cli_version` are non-empty strings |
 | `oracle.clock` | the envelope instants never decrease: no written record is stamped before the record written before it |
 | `oracle.message` | a `response_item` message's `role` is a non-empty string and its `content` is a non-empty list of blocks typed as text the carried reader reads (`input_text`, `output_text`, `text`), at least one of them non-blank |
 | `oracle.event-message` | a `user_message`/`agent_message` event carries a non-empty string `message` — the record the harness's own view of the turn is built from |
-| `oracle.call-pairing` | every call's `call_id` is a non-empty string no other call of the artifact carries, and every call output names a call the artifact carries |
-| `oracle.receipt` | a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's occurrence vocabulary, the identity that kind needs — a tool call's `call_id`, `name` and `arguments`, a tool result's `call_id` and recorded text — and a `disposition` of `emitted` or `omitted`; an unreadable receipt is reported and not compared with the artifact |
+| `oracle.call-pairing` | every call's `call_id` is a non-empty string no other call of the artifact carries, and every call output names a call the artifact carries **before it** — an output written first attaches to nothing in the carried reader |
+| `oracle.receipt` | a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's occurrence vocabulary, the identity that kind needs — a tool call's `call_id`, `name` and recorded input (read from the artifact's `arguments` then `input`, the way the carried reader reads it), a tool result's `call_id` and recorded text — and a `disposition` of `emitted` or `omitted`; a receipt that declares no occurrences is refused rather than compared, and an unreadable receipt is reported and not compared with the artifact |
 | `oracle.plan-emitted` | every occurrence the receipt marks `emitted` is in the artifact as many times as it is marked — a dialogue message in both of the target's channels for it: the model-visible `response_item` and the turn-view `event_msg` |
-| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks `omitted` and one it names nowhere are both refused — the plan is total, in both of the target's dialogue channels |
+| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks `omitted`, one it names nowhere, and a compaction boundary's `replacement_history` (dialogue this route's writer never emits) are equally refused — the plan is total, in both of the target's dialogue channels |
 | `oracle.plan-order` | the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past later turns, or two prompts in each other's turns, compacts a different history even though every count is unchanged |
 | `oracle.plan-pairs` | a call and its recorded result carry one disposition: a `call_id` whose call and result the receipt splits is the pair the closure rule forbids |
 
@@ -192,14 +208,18 @@ turn *its* rule red and no other, with the rule table and the mutation table ass
 
 ```
 $ cd scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle -v
+test_a_boundarys_replacement_history_is_refused_with_a_plan (test_codex_native_check.CodexArtifactOracle.test_a_boundarys_replacement_history_is_refused_with_a_plan)
+The omitted prompt written into a boundary's `replacement_history` is refused in receipt mode. ... ok
 test_a_call_substituted_under_one_call_id_is_refused (test_codex_native_check.CodexArtifactOracle.test_a_call_substituted_under_one_call_id_is_refused)
 Two invocations under one call id are distinguishable, and name and input are the identity. ... ok
 test_a_compacted_record_without_a_summary_is_counted (test_codex_native_check.CodexArtifactOracle.test_a_compacted_record_without_a_summary_is_counted)
 Every `compacted` record is a boundary occurrence, with or without a summary. ... ok
+test_a_custom_calls_recorded_input_is_part_of_its_identity (test_codex_native_check.CodexArtifactOracle.test_a_custom_calls_recorded_input_is_part_of_its_identity)
+A `custom_tool_call`'s recorded input — the member Codex's own files write it in — is the ... ok
 test_a_malformed_member_is_named_without_echoing_its_text (test_codex_native_check.CodexArtifactOracle.test_a_malformed_member_is_named_without_echoing_its_text)
-Default diagnostics name a malformed value by its type, never by its contents. ... ok
+Default diagnostics name a malformed value by its place and kind, never by its contents. ... ok
 test_a_receipt_that_declares_nothing_cannot_pass (test_codex_native_check.CodexArtifactOracle.test_a_receipt_that_declares_nothing_cannot_pass)
-A plan that accounts for no occurrence, and one that cannot be read, both refuse the artifact. ... ok
+A plan that declares no occurrences, and one that cannot be read, both refuse the artifact. ... ok
 test_a_reduced_artifact_is_validated_from_the_artifact_alone (test_codex_native_check.CodexArtifactOracle.test_a_reduced_artifact_is_validated_from_the_artifact_alone)
 A reduced artifact and its plan are validated with nothing but the two documents in hand. ... ok
 test_a_result_substituted_under_one_call_id_is_refused (test_codex_native_check.CodexArtifactOracle.test_a_result_substituted_under_one_call_id_is_refused)
@@ -222,22 +242,21 @@ test_the_validate_mode_reports_a_verdict (test_codex_native_check.CodexArtifactO
 `--validate` answers for one artifact (and its plan): PASS, FAIL and INCOMPLETE, with the ... ok
 
 ----------------------------------------------------------------------
-Ran 14 tests in 0.055s
+Ran 16 tests in 0.065s
 
 OK
 ```
 
-The quote is the r2 review-fix round's re-run, over the tree whose class holds fourteen cases: the ten
-carried from the increment and the two earlier fix rounds (among them the numeric offset's sign,
-`test_the_instant_reader_dates_an_offset_by_its_sign`, and occurrence multiplicity,
-`test_occurrence_identity_is_counted_not_deduplicated` — the two that pin what the mutation table cannot
-see; r1's `test_a_result_substituted_under_one_call_id_is_refused` and
-`test_the_oracle_reads_the_artifacts_own_bytes`), and this round's four:
-`test_a_call_substituted_under_one_call_id_is_refused` (a call's identity is its call id, name and
-recorded input), `test_a_compacted_record_without_a_summary_is_counted` (every `compacted` record is a
-boundary occurrence), `test_the_oracles_blank_test_is_the_writers` (U+001C is dialogue in both channels)
-and `test_a_malformed_member_is_named_without_echoing_its_text` (default diagnostics name a value's type
-and never echo it).
+The quote is the r3 review-fix round's re-run, over the tree whose class holds sixteen cases: the
+fourteen of the r2 state (the ten carried from the increment and the earlier fix rounds — among them the
+numeric offset's sign, `test_the_instant_reader_dates_an_offset_by_its_sign`, and occurrence
+multiplicity, `test_occurrence_identity_is_counted_not_deduplicated`, the two that pin what the mutation
+table cannot see; r1's result-substitution and own-bytes cases; r2's call-substitution, empty-boundary,
+blank-test and no-echo cases) and this round's two:
+`test_a_custom_calls_recorded_input_is_part_of_its_identity` (a `custom_tool_call`'s recorded input is
+read from `input`, and the receipt's `arguments` member names it there) and
+`test_a_boundarys_replacement_history_is_refused_with_a_plan` (the omitted prompt written into a
+boundary's native `replacement_history` is refused where a plan is compared).
 
 The r2 round's own cases were also run against the r1 checker from a throw-away copy (`git show
 87d3018:scripts/codex-native-check.py` into `/tmp/probe-r1/scripts/`, with this round's test module and
@@ -249,10 +268,14 @@ found `timestamp {'prompt': 'SECRET-PROMPT-ALPHA'}` in the printed report, the n
 `RecursionError` instead of exit 2, and the mutation-table case found the two new mutations turning
 nothing red.
 
-The mutations number 34 for the 14 rules: `oracle.jsonl-objects` and `oracle.envelope` carry four each;
-`oracle.plan-accounted` four; `oracle.session-meta`, `oracle.message` and `oracle.receipt` three each;
-`oracle.session-meta-members`, `oracle.call-pairing`, `oracle.plan-emitted`, `oracle.event-message` and
-`oracle.plan-order` two each; and `oracle.record-type`, `oracle.clock` and `oracle.plan-pairs` one each.
+The mutations number 39 for the 14 rules: `oracle.envelope` carries six; `oracle.plan-accounted` five;
+`oracle.jsonl-objects` and `oracle.receipt` four each; `oracle.session-meta`, `oracle.message` and
+`oracle.call-pairing` three each; `oracle.session-meta-members`, `oracle.plan-emitted`,
+`oracle.event-message` and `oracle.plan-order` two each; and `oracle.record-type`, `oracle.clock` and
+`oracle.plan-pairs` one each. The r3 round added five of them — the trailing line feed and the
+non-ASCII digit under `oracle.envelope`, the output written before its call under `oracle.call-pairing`,
+the receipt that declares no occurrences under `oracle.receipt`, and the boundary carrying the omitted
+dialogue under `oracle.plan-accounted` — and §8 shows each one surviving its fix's absence.
 Two of them, run
 through the shipped command rather than in-process, show what the report reads like — the first a
 structural rule, the second the plan/pair rule that is the reason the receipt exists at all (a call
@@ -298,7 +321,7 @@ $ echo $?
 ```
 $ python3 scripts/codex-native-check.py --validate /tmp/ccc-0009a-evidence/pair-split.jsonl \
       --receipt /tmp/ccc-0009a-evidence/pair-split-receipt.json
-oracle: oracle.plan-pairs — call 'call_oracle_0001': the receipt gives the call and its recorded result different dispositions — a call and its recorded result travel together
+oracle: oracle.plan-pairs — call sha256:a28e32f073a7: the receipt gives the call and its recorded result different dispositions — a call and its recorded result travel together
 oracle: FAIL — 16 record(s), 6 occurrence(s), 1 violation(s)
 $ echo $?
 1
@@ -387,29 +410,34 @@ $ echo $?
 ## 3. D3 — the unflagged Codex acceptance, before and after
 
 The native checks are untouched: the oracle is a separate section and `--validate` returns before the
-native path's first line. That is measured, not asserted — the shipped check was run twice at the end of
-this increment, once against a pristine extraction of the base revision pinned by **sha** (`git archive
+native path's first line. That is measured, not asserted — the shipped check was run twice on the r3
+tree, once against a pristine extraction of the base revision pinned by **sha** (`git archive
 21d43fe1a3c81bb59504bfaae23c8c618edf7ae2`, the commit this increment started from; named by its sha
 because `git archive HEAD` extracts whatever head the caller is on — after the increment that is the
-reviewed head, not the baseline), and once in this tree, both
-times with no prompt flag (no model turn, `--resume-prompt` unset). The two runs' check lines are
-identical in name and state (28 lines each: 26 `PASS` + 2 `SKIP`; the session ids and digests differ, as
-fresh identities always do), and both exit 0:
+reviewed head, not the baseline), and once in this tree, both times with no prompt flag (no model turn,
+`--resume-prompt` unset). The block below is the whole recipe: it creates its scratch directory first and
+derives the checkout from the shell's own working directory (`repo=$PWD`, run from the repository root),
+so a fresh checkout can follow it as written (review round r3's finding: the earlier block extracted into
+a directory it never created and named the author's checkout for the after run). The two runs' check
+lines are identical in name and state (28 lines each: 26 `PASS` + 2 `SKIP`; the session ids and digests
+differ, as fresh identities always do), and both exit 0:
 
 ```
-$ git archive 21d43fe1a3c81bb59504bfaae23c8c618edf7ae2 | tar -x -C /tmp/ccc-0009a-evidence/before-tree
-$ cd /tmp/ccc-0009a-evidence/before-tree && python3 scripts/codex-native-check.py \
-      --repo /tmp/ccc-0009a-evidence/before-tree > /tmp/ccc-0009a-evidence/native-check-before.txt ; echo $?
+$ repo=$PWD                                     # the checkout this record was taken in (its root)
+$ scratch=/tmp/ccc-0009a-evidence/d3
+$ mkdir -p "$scratch/before-tree"
+$ git -C "$repo" archive 21d43fe1a3c81bb59504bfaae23c8c618edf7ae2 | tar -x -C "$scratch/before-tree"
+$ (cd "$scratch/before-tree" && python3 scripts/codex-native-check.py \
+      --repo "$scratch/before-tree" > "$scratch/native-check-before.txt" 2>&1); echo $?
 0
-$ cd /home/azureuser/repos/call-ccc && python3 scripts/codex-native-check.py \
-      > /tmp/ccc-0009a-evidence/native-check-after.txt ; echo $?
+$ python3 scripts/codex-native-check.py > "$scratch/native-check-after.txt" 2>&1; echo $?
 0
-$ tail -1 /tmp/ccc-0009a-evidence/native-check-before.txt
+$ tail -1 "$scratch/native-check-before.txt"
 26 check(s) passed, 0 failed, 2 skipped
-$ tail -1 /tmp/ccc-0009a-evidence/native-check-after.txt
+$ tail -1 "$scratch/native-check-after.txt"
 26 check(s) passed, 0 failed, 2 skipped
-$ diff <(grep -oE '^(PASS|FAIL|SKIP): [^—]*' /tmp/ccc-0009a-evidence/native-check-before.txt) \
-       <(grep -oE '^(PASS|FAIL|SKIP): [^—]*' /tmp/ccc-0009a-evidence/native-check-after.txt) && echo identical
+$ diff <(grep -oE '^(PASS|FAIL|SKIP): [^—]*' "$scratch/native-check-before.txt") \
+       <(grep -oE '^(PASS|FAIL|SKIP): [^—]*' "$scratch/native-check-after.txt") && echo identical
 identical
 ```
 
@@ -425,12 +453,12 @@ PASS: no pre-existing session in the target home changed — 0 pre-existing sess
 26 check(s) passed, 0 failed, 2 skipped
 ```
 
-The r1 and r2 review fix rounds changed the oracle section, its tests and its fixtures, and no Go file
-(the increment's Bounds; `git status --short | grep '\.go$'` prints nothing): the same unflagged command
-was run once more over each fixed tree (most recently r2's), and each run's 28 check lines' names and
-states are identical to the before-run's and to the increment's earlier after-runs, with the same closing
-count (`26 check(s) passed, 0 failed, 2 skipped`) and exit 0 — so D3's claim holds for the increment's
-final bytes.
+The r1, r2 and r3 review fix rounds changed the oracle section, its tests and its fixtures, and no Go
+file (the increment's Bounds; `git status --short | grep '\.go$'` prints nothing): the same unflagged
+command was run once more over each fixed tree (most recently r3's, with the portable recipe above), and
+each run's 28 check lines' names and states are identical to the before-run's and to the increment's
+earlier after-runs, with the same closing count (`26 check(s) passed, 0 failed, 2 skipped`) and exit 0 —
+so D3's claim holds for the increment's final bytes.
 
 ## 4. D4 — the freeze, stated where a later lane reads it
 
@@ -491,7 +519,10 @@ the appended record is an `event_msg`, not an occurrence of the receipt's vocabu
 handed in here.)
 
 Second, the other direction of soundness: the oracle accepts every artifact the format's own writer
-produced on this host, not only the ones this build writes.
+produced on this host, not only the ones this build writes. The sweep is also the output-before-call
+rule's own measurement against those files (r3): every native session stands each output after its call
+under the rule (25 green), so no file the format's own writer produced on this host writes an output
+first.
 
 ```
 $ green=0; red=0; for artifact in $(find "$HOME/.codex/sessions" -name '*.jsonl'); do \
@@ -537,7 +568,7 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 456 tests in 9.183s (rc=0)
+  PASS     selftest Ran 458 tests in 8.964s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes ver…
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 9 row(s) verified
   PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -546,20 +577,122 @@ $ echo $?
 0
 ```
 
-The `selftest` step's 456 tests are the whole `scripts/tests/` suite with this increment's oracle cases in
-it (§1) — fourteen in the class after the r2 fix round: the ten carried from the increment and the two
-earlier fix rounds, plus this round's four (a same-id call substitution refused through both accounting
-rules, a `compacted` record without a summary counted and required of the plan, U+001C dialogue preserved
-in both channels, and a malformed member named without echoing its text) — and the `citations` step's 9
-rows are §6's manifest. The `gofmt`, `build`, `vet` and `test` steps answer about an unchanged
-Go tree: this increment's diff holds no Go file (`git status --short | grep '\.go$'` prints nothing).
+The `selftest` step's 458 tests are the whole `scripts/tests/` suite with this increment's oracle cases in
+it (§1) — sixteen in the class after the r3 fix round: the fourteen of the r2 state, plus this round's two
+(a `custom_tool_call`'s recorded input read from `input` and matched through the receipt's `arguments`
+member, and a boundary's native `replacement_history` refused where a plan is compared) — and the
+`citations` step's 9 rows are §6's manifest. The `gofmt`, `build`, `vet` and `test` steps answer about an
+unchanged Go tree: this increment's diff holds no Go file (`git status --short | grep '\.go$'` prints
+nothing).
 
 The gate (and the citations run above) was re-run after this round's last edit to the oracle, its tests,
 the fixtures and this record's prose, so the transcript above is a run over the tree this record's other
-quotes were taken on; the `selftest` timing differs between runs (the r1 transcript's 8.871s and this
-round's 9.183s), which is why the transcript is one run's own line rather than a rounded one.
+quotes were taken on; the `selftest` timing differs between runs (the r1 transcript's 8.871s, r2's 9.183s
+and this round's 8.964s), which is why the transcript is one run's own line rather than a rounded one.
 
-## 8. What this record does not claim
+## 8. The round-3 revert-mutations
+
+The r3 close-out instruction was to leave each touched rule with an executed mutation rather than a
+static argument, so each of the six fixes was reverted in a throw-away copy of the shipped checker
+(`/tmp/r3-mutation/<fix>/scripts/`, this suite's module, `native_check_common.py` and the fixtures beside
+it) and the case that claims the rule was run against the reverted tree: the fix's own pin must fail
+there, and each block below quotes the reverted snippet and the failure the run printed. The traceback
+frames between the failing test's line and the assertion are elided with `...` in those quotes — the
+assertion line and the run's closing count are the run's own. Five of the six
+are also pinned in the mutation table itself (§1: the envelope's two new mutations, the pairing mutation,
+the receipt mutation and the plan-accounted mutation), and those five studies show the table's case
+failing on the mutation the fix made red-able; the sixth (the digest naming) is pinned by the no-echo
+case alone.
+
+**`oracle.envelope` — one whole ASCII instant.** The matcher reverted to
+`r"^(\d{4})-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$"` (`$` and `\d`), and
+both new envelope mutations turn nothing red:
+
+```
+$ cd /tmp/r3-mutation/instant/scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle
+...
+AssertionError: Items in the second set but not the first:
+'oracle.envelope' : 'an instant written with a non-ASCII digit' on session.jsonl turned [] red instead of only oracle.envelope: []
+----------------------------------------------------------------------
+Ran 16 tests in 0.064s
+
+FAILED (failures=2)
+```
+
+(The other failure is the same case over `'an instant with a trailing line feed'`.)
+
+**`oracle.call-pairing` — ownership in record order.** The result branch reverted to checking a set
+preloaded from every call in the artifact, and the output-first mutation turns nothing red:
+
+```
+$ cd /tmp/r3-mutation/pairing/scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle
+...
+AssertionError: Items in the second set but not the first:
+'oracle.call-pairing' : 'an output written before its call' on session.jsonl turned [] red instead of only oracle.call-pairing: []
+----------------------------------------------------------------------
+Ran 16 tests in 0.065s
+
+FAILED (failures=1)
+```
+
+**`oracle.receipt` — a receipt that declares nothing.** The empty-`occurrences` refusal removed, and the
+case shows both arms: the metadata-only artifact passes vacuously and the session fixture draws
+`plan-accounted` instead of the receipt refusal:
+
+```
+$ cd /tmp/r3-mutation/empty-receipt/scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle
+...
+AssertionError: Lists differ: [] != ['oracle.receipt']
+...
+'oracle.receipt' : 'a receipt that declares no occurrences' on session.jsonl turned ['oracle.plan-accounted'] red instead of only oracle.receipt: ...
+----------------------------------------------------------------------
+Ran 16 tests in 0.066s
+
+FAILED (failures=3)
+```
+
+**`oracle.plan-accounted` — a boundary's `replacement_history`.** The comparison-time refusal removed,
+and both the mutation and the dedicated case fail (nothing red where the dialogue stands in the member):
+
+```
+$ cd /tmp/r3-mutation/boundary-history/scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle
+...
+AssertionError: Items in the second set but not the first:
+'oracle.plan-accounted' : 'a boundary carrying the dialogue the plan omits' on reduced.jsonl turned [] red instead of only oracle.plan-accounted: []
+----------------------------------------------------------------------
+Ran 16 tests in 0.064s
+
+FAILED (failures=2)
+```
+
+**`oracle.receipt` / `oracle_call_arguments` — a custom call's recorded input.** The identity reader
+reverted to `arguments` alone, and the custom-call case fails on the occurrence identity itself — the
+input-only call is counted with an empty invocation:
+
+```
+$ cd /tmp/r3-mutation/custom-input/scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle
+...
+AssertionError: ('tool_call', 'call_oracle_0001', 'apply_patch', '*** Begin Patch\n*** End Patch') not found in [..., ('tool_call', 'call_oracle_0001', 'apply_patch', ''), ...] : the custom call is not counted by its recorded input
+----------------------------------------------------------------------
+Ran 16 tests in 0.063s
+
+FAILED (failures=1)
+```
+
+**The digest naming — default diagnostics echo no string `call_id`.** The five digest sites reverted to
+`{call_id!r}`/`{key[1]!r}`, and the no-echo case prints the marker it planted:
+
+```
+$ cd /tmp/r3-mutation/digest/scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle.test_a_malformed_member_is_named_without_echoing_its_text
+...
+AssertionError: 'call output names call_id sha256:a2f5c40261d1' not found in "oracle: ... call output names call_id 'call SECRET-PROMPT-ALPHA', which no call written before it carries\noracle: oracle.plan-accounted line 9 — tool result 'call SECRET-PROMPT-ALPHA' (8 character(s)): ..."
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+FAILED (failures=1)
+```
+
+## 9. What this record does not claim
 
 - **No native claim about the fixtures.** Codex never opened the synthetic fixtures or the reduced
   artifact: the oracle is the offline half, and the native half of this route stays where it was
