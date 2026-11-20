@@ -236,9 +236,11 @@ obligation ships no citations file, rather than an empty one.
   text, whitespace-only text, a status word the tool states cannot spell — is counted exactly as the
   writer counts the same result and yields the slot to a later recorded outcome the part can state, while a
   run without a selection keeps the first recorded outcome in it, and both completion members follow the
-  result the slot carries) — and only a progress event that records
-  the call's own id marks the call as one whose recorded events stand in for its archive summary on a
-  document a selection produced, so an
+  result the slot carries) — and only a recorded event that the part cannot state, and that records the
+  call's own id, marks the call as one whose recorded events stand in for its archive summary on a
+  document a selection produced — the marking is resolved from the read's own pairing *before* the walk,
+  so a call whose event stands after the id-less result is unanswered exactly as one whose event stands
+  before it and a terminal result the part refuses marks as a progress event does — so an
   id-less event — a link only that writer's inference makes — does not suppress the summary the read stored
   on the call there, while a run without a selection keeps the writer's own marking (the id the event
   recorded, or the sole call still awaiting a result) and with it the base revision's answer, in which an
@@ -272,7 +274,11 @@ obligation ships no citations file, rather than an empty one.
   nearest ancestor its `parentId` chain names that the read holds a record for, stepping through entries
   the read does not carry that the harness's own loader keeps out of the context (a `model_change` between
   a result and the reply included, so the reply hangs off the result the file recorded) — which a tree
-  target hangs the entry off — so the read's lossy tool-result step
+  target hangs the entry off, and where the file named a parent the window left out that retained answer is
+  read *before* the read's projected parent (the projected parent would chain the record past a result the
+  file ran through — a result the window carries — and leave it off the walk a resumed session makes),
+  while a file that answered nothing for the record keeps the places it always had — so the read's lossy
+  tool-result step
   cannot put a result the file left beside the conversation back on the resumed walk (and a call whose file
   holds two results keeps the result the file recorded between the call and the record that follows it,
   rather than the projection's most recent one), and the relation the file answered is not counted as an

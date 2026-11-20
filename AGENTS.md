@@ -389,7 +389,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   the read holds no recorded result event of the call — on a reduced document the read's own pairing
   answers that question, wherever the event's record sits (a result the call's own record carries
   included), so a summary beside a later progress event is that event's view and the writers refuse it,
-  leaving the call undischarged — so that shape is not counted; whether a
+  leaving the call undischarged — and the OpenCode plan's own marking is resolved from that same pairing
+  before its walk, so a call whose event stands after an id-less result is unanswered exactly as one whose
+  event stands before it, a terminal result the part refuses marking as a progress event does — so that
+  shape is not counted; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
   losses (`unpaired_tool_calls` on OpenCode). **The line is the read's own**: which records the source's relations place on the
   line its loader walks is a property of the read, and a selection neither moves a record onto that line nor
@@ -423,7 +426,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   own parent the window left out is hung off its nearest retained ancestor (the relation walked
   through the excluded records — the source file's own relation where the file answered for the record the
   walk is at, the read's own relation with the tool-result step the writers take where the read may
-  project one for every other record — and where the answer crossed that step the relation is counted
+  project one for every other record — read *before* the record's projected parent where the file named a
+  parent the window does not carry, because the projection would chain the record past a result the file
+  ran through and leave that carried result off the walk a resumed session makes, while a file that
+  answered nothing for the record keeps the places it always had — and where the answer crossed that step
+  the relation is counted
   (`unresolved_source_parents`), as the
   writers count the projection they resolve themselves, and a reduced document's count is the read's own
   relation answers, so a parent the caller merely excluded is not one the read could not place — and the

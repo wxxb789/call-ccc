@@ -391,6 +391,15 @@ type openCodeConverter struct {
 	// id-less result stands *before* its recorded result (soleInferablePlannedCall): the document's own
 	// records are going to answer it, so the id-less event has no call it could mean.
 	reservedSlots map[callOccurrence]bool
+	// plannedUnwrittenEvents names the planned call occurrences whose read-wide pairing holds a recorded
+	// event the document will not state as a written outcome: a progress event, or a result whose text or
+	// status the part refuses (openCodeResultWritable). It is the walk's own marking of `recordedEvents`
+	// resolved before the walk from the read's own pairing (reservePlannedEvents), so a call whose event
+	// stands *after* an id-less result is read exactly as one whose event stands before it: the summary
+	// pass refuses the archive's summary as that event's view on either path, and the inference must not
+	// count the call answered by a summary the pass is going to refuse. The map is empty on a run without
+	// a selection, which keeps the walk's long-standing marking (callNamedByResult): goal 0009's D4.
+	plannedUnwrittenEvents map[callOccurrence]bool
 	// usedCallIDs is the namespace a minted id must stay out of: every tool-use id the read recorded
 	// (each call's and each result's, reserved by reserveRecordedCallIDs before the plan mints anything)
 	// plus every id already minted for an id-less call. The pairing map and the pending set are keyed by
@@ -645,6 +654,7 @@ func (c *openCodeConverter) convert() error {
 func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 	c.reserveRecordedCallIDs()
 	c.reserveResultSlots(inactive)
+	c.reservePlannedEvents(inactive)
 	for index, message := range c.conv.Messages {
 		if inactive[index] || message.IsSidechain {
 			continue
@@ -691,7 +701,8 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				}
 			}
 			entry := &openCodeCall{ID: id, Source: call, At: message.Timestamp,
-				generatedID: madeID && !colliding, collidingID: colliding}
+				generatedID: madeID && !colliding, collidingID: colliding,
+				recordedEvents: c.plannedUnwrittenEvents[callOccurrence{message: index, call: planned.index}]}
 			c.plan[index].calls = append(c.plan[index].calls, entry)
 			c.calls[id] = entry
 			c.plannedCalls[callOccurrence{message: index, call: planned.index}] = entry
@@ -709,28 +720,26 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				// was never recorded. It is still marked on the call it names, because the archive's
 				// derived summary of a call is a view of the events the read recorded for it, and the two
 				// documents answer that marking by their own rules (below).
-				if c.conv.selectionReduced() {
-					// A document a selection produced marks the call only where the event records that
-					// call's own id: an id-less event is paired by this writer's own inference
-					// (pairedCallEntry), a link the source never made, and an inferred link may not
-					// suppress the call's own recorded summary evidence -- the summary would then be
-					// read as a view of an event that may belong to another call, the part is left with
-					// no outcome at all and the call is counted unanswered although the read holds one
-					// (round 11's fourth finding).
-					if strings.TrimSpace(result.ToolUseID) != "" {
-						if entry, ok := c.pairedCallEntry(result, place); ok {
-							entry.recordedEvents = true
-						}
+				// The read's own marking of the call -- whether the events the read recorded for it
+				// stand in for its archive summary -- is resolved from the read-wide pairing before
+				// this walk (reservePlannedEvents) for a document a selection produced, because the
+				// summary pass and the id-less inference must answer the same question wherever the
+				// event's record sits in the window: a marking made here, when the walk happens to
+				// reach the event, left a call whose event stands *after* an id-less result looking
+				// answered by its summary although the summary pass then refused that summary and the
+				// call had no written outcome at all (round 16's second finding). The walk's own
+				// marking below is the default path's rule alone.
+				if !c.conv.selectionReduced() {
+					if entry, ok := c.calls[c.callNamedByResult(result)]; ok {
+						// A run without a selection keeps the writer's long-standing rule, which the twelfth
+						// round's second finding measured on the base revision: the call the event names --
+						// the id it recorded, or the sole call still awaiting a result, where the source's
+						// own relation leaves no other call it could mean -- is marked as one whose recorded
+						// events stand in for its archive summary, an id-less event included, and the summary
+						// is not written as an outcome. Scoping the id-only rule to the reduction is what
+						// keeps goal 0009's D4 on the default path's bytes and its whole report.
+						entry.recordedEvents = true
 					}
-				} else if entry, ok := c.calls[c.callNamedByResult(result)]; ok {
-					// A run without a selection keeps the writer's long-standing rule, which the twelfth
-					// round's second finding measured on the base revision: the call the event names --
-					// the id it recorded, or the sole call still awaiting a result, where the source's
-					// own relation leaves no other call it could mean -- is marked as one whose recorded
-					// events stand in for its archive summary, an id-less event included, and the summary
-					// is not written as an outcome. Scoping the id-only rule to the reduction is what
-					// keeps goal 0009's D4 on the default path's bytes and its whole report.
-					entry.recordedEvents = true
 				}
 				c.lossNonterminal++
 				continue
@@ -897,6 +906,54 @@ func (c *openCodeConverter) reserveResultSlots(inactive []bool) {
 	}
 }
 
+// reservePlannedEvents answers, per planned call occurrence, whether the read's own pairing holds a
+// recorded event for it that the document will not state as a written outcome: a progress event, or a
+// result whose text or status the part refuses (openCodeResultWritable). The answer is the walk's own
+// marking of `recordedEvents` read from the read-wide pairing before the walk, so the summary pass and
+// the id-less inference agree about a call whose event the walk has not reached yet: the marking the
+// walk used to make when it happened to reach the event let a call whose event stands after an id-less
+// result look answered by its summary, and the inference then bound the id-less result to another call
+// although the summary pass went on to refuse that summary -- the call had no written outcome at all and
+// the result the source never wrote beside either call was written as one of their outcomes (round 16's
+// second finding).
+//
+// The answer is asked only where the event's record stands on the plan's own line: the walk skips an
+// off-line record, so its event is no evidence the written document states, and the summary the read
+// stored on the call stays the call's outcome evidence there. An event that records no id of its own is
+// no marking either way: an id-less event is paired by the writer's own inference (pairedCallEntry), a
+// link the source never made, and an inferred link may not suppress the call's own recorded summary
+// evidence (round 11's fourth finding) -- the read-wide pairing holds id-bearing results alone, which
+// is that rule's own answer. A run without a selection keeps the walk's long-standing marking
+// (callNamedByResult), which is goal 0009's D4.
+func (c *openCodeConverter) reservePlannedEvents(inactive []bool) {
+	c.plannedUnwrittenEvents = map[callOccurrence]bool{}
+	if !c.conv.selectionReduced() {
+		// A work guard, not a disposition: the map's only readers are the reduced path's own (the
+		// marking the walk sets on a new entry, and the summary pass through it), so building it on a
+		// conversation the read returned would allocate for a question nothing asks.
+		return
+	}
+	for place, call := range c.pairings {
+		message := c.conv.Messages[place.message]
+		if inactive[place.message] || message.IsSidechain || message.IsCompactBoundary {
+			continue
+		}
+		if openCodeResultWritable(message.ToolResults[place.result]) {
+			// An event the part can state as a written outcome is no marking: the walk writes it as the
+			// slot's outcome (displacing an event it refuses), so the document does state an outcome for
+			// the call. A writable event and a refused one for the same call both mark nothing and write
+			// the slot's outcome: the refused event is the one the writer counts and yields.
+			continue
+		}
+		// openCodeResultWritable's refusal is the whole answer about the event, for the reason the
+		// reservation's own comment states: every word resultStatesAnOutcome reads as progress is one
+		// the tool states cannot spell, and a terminal result the part refuses is one the walk stores in
+		// the slot and the summary pass skips the call over -- a recorded event that suppresses the
+		// summary whichever way it stands.
+		c.plannedUnwrittenEvents[call] = true
+	}
+}
+
 // soleOutstandingPlannedCall answers the one call occurrence this plan carries that no carried result
 // has answered yet, and whether there is exactly one. A reduced document's id-less *progress* event asks
 // this question rather than the ledger's id-keyed one: the plan carries the records the read's line
@@ -978,12 +1035,17 @@ func openCodeResultWritable(result ToolResult) bool {
 // plannedOutcomeWritable answers whether the document this plan will write holds an outcome for one
 // planned call, read the way the summary pass below will: a planned result that is writable
 // (openCodeOutcomeWritable), or -- for a call that still holds none -- the writable summary the summary
-// pass will install (no result, no recorded events, derivedResultSummary). The id-less inference asks
-// this, not openCodeOutcomeWritable: a call whose only recorded outcome is its writable ResultContent
-// summary is answered on the written path, so it neither makes a later id-less result ambiguous nor may
-// have its summary replaced by one the source never recorded beside it. The default path does not ask
-// this question: its ledger's id-keyed answer is what a run without a selection has always had (goal
-// 0009's D4).
+// pass will install (no result, no recorded events, derivedResultSummary). The marking it reads is the
+// read-wide one resolved before the walk (reservePlannedEvents, through recordedEvents on the entry), so
+// a call whose event stands after the id-less result is answered exactly as one whose event stands
+// before it, and a terminal event the part refuses marks the call as a progress event does: the summary
+// pass will skip the summary on either path and the written document states no outcome for the call.
+// The id-less inference asks this, not openCodeOutcomeWritable: a call whose only recorded outcome is
+// its writable ResultContent summary is answered on the written path, so it neither makes a later
+// id-less result ambiguous nor may have its summary replaced by one the source never recorded beside
+// it, while a call whose recorded event the part refuses is not answered by that summary. The default
+// path does not ask this question: its ledger's id-keyed answer is what a run without a selection has
+// always had, with the walk's own marking beside it (goal 0009's D4).
 func (c *openCodeConverter) plannedOutcomeWritable(entry *openCodeCall) bool {
 	if openCodeOutcomeWritable(entry) {
 		return true

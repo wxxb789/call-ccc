@@ -30,7 +30,10 @@ const (
 	selectionQuestion = "Start the long build"
 	selectionAnswer   = "The cap is maxBackoffSeconds = 30"
 	selectionSummary  = "Summary: the build succeeded"
-	selectionFollowup = "And the cap?"
+	// selectionBoundarySummary is the fixture's compaction boundary summary in full: the text its record
+	// carries (selectionSummary is the prefix the case's own assertions scan for).
+	selectionBoundarySummary = "Summary: the build succeeded and the retry configuration is being read."
+	selectionFollowup        = "And the cap?"
 )
 
 // selectionProbeOptions is what the selection cases hand each route's writer: fixed answers, so a written
@@ -424,6 +427,63 @@ func TestSelectionCarriesASystemRecordAndReportsUndischargedCalls(t *testing.T) 
 			}
 		}
 	}
+
+	// The destination-preservation bound with a selection: a *successful* selected install into a target
+	// home that already holds a transcript raises a fresh session of its own and leaves the bytes beside
+	// it exactly as they were -- existing destination history stays unchanged (the goal's Bounds), which
+	// the conversion-only arms above cannot show (they install nothing) and the refusal arms cannot
+	// either (nothing new is published there). The pre-existing transcript stands in the same dated
+	// directory a conversion writes into, so it is the file a writer that replaced by date would touch.
+	home := t.TempDir()
+	existing := filepath.Join(home, codexSessionsSubdir, "2026", "05", "08",
+		"rollout-2026-05-08T07-00-00-00000000-0000-0000-0000-000000000000.jsonl")
+	if err := os.MkdirAll(filepath.Dir(existing), 0o700); err != nil {
+		t.Fatalf("creating the pre-existing transcript's directory: %v", err)
+	}
+	existingBefore := []byte("{\"type\":\"session_meta\",\"payload\":{\"id\":\"the home's own session\"}}\n" +
+		"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"the home's own \"}}\n")
+	if err := os.WriteFile(existing, existingBefore, 0o600); err != nil {
+		t.Fatalf("writing the pre-existing transcript: %v", err)
+	}
+	install, err := Continue(context.Background(), ContinueOptions{
+		Ref: claudeSelectionFixtureRef, Target: TargetCodex, Config: fixtureConfig(t),
+		TargetHome: home, TargetBinary: missingTargetBinary,
+		Selection: "7-8", SelectionSupplied: true,
+	})
+	if err != nil {
+		t.Fatalf("installing the selected window: %v", err)
+	}
+	if install.Installation.State != InstallationStateInstalled || install.TargetSession.Path == "" {
+		t.Fatalf("installation = %+v, want the selected window installed as a session of its own",
+			install.Installation)
+	}
+	if filepath.Dir(install.TargetSession.Path) != filepath.Dir(existing) {
+		t.Errorf("the install published at %s, want a sibling of the pre-existing transcript %s: the "+
+			"dated directory is where a conversion writes", install.TargetSession.Path, existing)
+	}
+	existingAfter, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("the pre-existing destination transcript does not exist after a successful selected "+
+			"install: %v", err)
+	}
+	if !bytes.Equal(existingAfter, existingBefore) {
+		t.Errorf("the pre-existing destination transcript changed across a successful selected install: "+
+			"%q before, %q after: a conversion writes a fresh native identity and replaces nothing",
+			existingBefore, existingAfter)
+	}
+	// The install left the home holding two sessions: the pre-existing transcript and the fresh one.
+	entries, err := os.ReadDir(filepath.Dir(existing))
+	if err != nil {
+		t.Fatalf("reading the dated directory after the install: %v", err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Errorf("the dated directory holds %v, want the pre-existing transcript and the one fresh "+
+			"session the install published", names)
+	}
 }
 
 // TestSelectionEndingOffTheReadsLine pins the leaf/inactive rule under a selection: the line the target's
@@ -803,13 +863,27 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 			},
 		},
 		{
-			// A window that holds one whole pair: both halves travel, the earlier pair stays behind.
+			// A window that holds one whole pair: both halves travel, the earlier pair stays behind --
+			// and the compaction boundary standing between the two pairs (ordinal 6) stays behind with
+			// them: its summary text is asserted absent beside the evidence comparison, which reads the
+			// boundary record as the evidence it is on every route.
 			spec: "7-8",
 			evidence: []string{
 				call(selectionCapCallID, "Bash", capInput),
 				result(selectionCapCallID, selectionCapResult),
 			},
-			absent: []string{selectionBuildCallID, selectionBuildResult, selectionFollowup, selectionAnswer},
+			absent: []string{selectionBuildCallID, selectionBuildResult, selectionFollowup, selectionAnswer,
+				selectionBoundarySummary},
+		},
+		{
+			// The boundary alone: every route writes it as the record that truncates the model-visible
+			// history, carrying the summary -- the one piece of evidence the extractor reads for it.
+			spec: "6",
+			evidence: []string{
+				"compaction " + selectionBoundarySummary,
+			},
+			absent: []string{selectionBuildCallID, selectionBuildResult, selectionReadCallID,
+				selectionCapCallID, selectionFollowup, selectionAnswer},
 		},
 	}
 	for _, testCase := range cases {
@@ -887,9 +961,18 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 			if _, ok := record["message"]; !ok {
 				continue // a record this writer owns: the compaction marker and the like
 			}
+			// The summary record of a compaction boundary is evidence of its own kind: the loader
+			// truncates the model-visible history at the marker beside it, so its text stands for the
+			// boundary rather than for a turn, and a boundary written for a record the selection left
+			// out must not read as ordinary dialogue.
+			compaction, _ := record["isCompactSummary"].(bool)
 			for _, block := range messageBlocks(t, record) {
 				switch blockType(t, block) {
 				case claudeBlockText:
+					if compaction {
+						evidence = append(evidence, "compaction "+block["text"].(string))
+						continue
+					}
 					text(t, block["text"])
 				case claudeBlockToolUse:
 					call(block["id"].(string), block["name"].(string), block["input"])
@@ -906,6 +989,12 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 			switch line.Type {
 			case "session", "title", "model_change":
 				continue // the family's own envelopes: the session header, OMP's title slot, its model binding
+			case piEntryCompaction:
+				// The boundary entry the writer publishes for a compaction, carrying the summary the
+				// source kept in place of the history before it: evidence of the conversation's shape,
+				// not an envelope, so a written boundary is compared like any other record.
+				evidence = append(evidence, "compaction "+line.Summary)
+				continue
 			case "message":
 			default:
 				t.Fatalf("%s: unhandled entry type %q", target, line.Type)
@@ -954,8 +1043,21 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 		}
 	case TargetCodex:
 		for _, line := range decodeRollout(t, data) {
+			if line.Type == codexRecordCompacted {
+				// The boundary record the writer publishes for a compaction: the summary the source kept
+				// in place of the history before it. It is evidence of the conversation's shape -- the
+				// target's own loader truncates its model-visible history at it -- so reading it as one
+				// of the target's envelopes would let a boundary written for a record the selection left
+				// out leave every expectation unchanged (round 16's third finding).
+				var payload codexCompactedPayload
+				if err := json.Unmarshal(line.Payload, &payload); err != nil {
+					t.Fatalf("%s: decoding a compacted record: %v", target, err)
+				}
+				evidence = append(evidence, "compaction "+payload.Message)
+				continue
+			}
 			if line.Type != codexRecordResponseItem {
-				continue // session_meta, turn_context, event_msg and compacted are the target's own
+				continue // session_meta, turn_context, event_msg are the target's own
 			}
 			var payload map[string]any
 			if err := json.Unmarshal(line.Payload, &payload); err != nil {
@@ -985,6 +1087,8 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 	case TargetOpenCode:
 		var document struct {
 			Messages []struct {
+				Type    string           `json:"type"`
+				Summary *string          `json:"summary"`
 				Content []map[string]any `json:"content"`
 			} `json:"messages"`
 		}
@@ -992,6 +1096,17 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 			t.Fatalf("%s: decoding the import document: %v", target, err)
 		}
 		for _, message := range document.Messages {
+			if message.Type == openCodeMessageCompaction {
+				// The boundary message the writer publishes for a compaction: the summary the source kept
+				// in place of the history before it. The member is written even when the summary is
+				// empty, so the boundary travels as evidence of its own kind.
+				summary := ""
+				if message.Summary != nil {
+					summary = *message.Summary
+				}
+				evidence = append(evidence, "compaction "+summary)
+				continue
+			}
 			for _, part := range message.Content {
 				switch blockType(t, part) {
 				case "text":
@@ -1651,6 +1766,121 @@ func TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall(t *testing.T) {
 	}
 	if got := lossCount(t, blankConverted.Losses, "generated_call_ids").Count; got != 1 {
 		t.Errorf("blank-summary generated_call_ids = %d, want the one inferred result", got)
+	}
+
+	// The round-16 second finding's arm: the call's own recorded event stands *after* the id-less
+	// result, with a second call between them. A marking made by the walk has not seen the event when
+	// the inference runs, so the summary looks like the first call's written outcome and the inference
+	// binds the id-less result to the second call -- although the summary pass, reaching the event
+	// afterwards, refuses that summary as the event's view and neither call had an established outcome
+	// when the inference was made. The read-wide marking answers before the walk: the first call is
+	// unanswered, the second has no outcome either, so the result is ambiguous and is omitted and
+	// counted (unpaired_tool_results) with nothing inferred (generated_call_ids 0).
+	const progressText = "still working"
+	withLaterEvent := func(event ToolResult) Conversation {
+		return testConversation(
+			Message{Ordinal: 0, Role: "assistant", Content: "call a", Dialogue: "call a",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_a", Name: "Bash", InputJSON: `{"command":"a"}`,
+					ResultContent: summaryText, ResultContentSize: len(summaryText)}}},
+			Message{Ordinal: 1, Role: "assistant", Content: "call b", Dialogue: "call b",
+				ToolCalls: []ToolCall{{ToolUseID: "toolu_b", Name: "Bash", InputJSON: `{"command":"b"}`}}},
+			Message{Ordinal: 2, Role: "user", Content: "the late result", Dialogue: "the late result",
+				ToolResults: []ToolResult{{ContentRaw: lateText, ContentSize: len(lateText)}}},
+			Message{Ordinal: 3, Role: "user", Content: "the later event", Dialogue: "the later event",
+				ToolResults: []ToolResult{event}},
+		)
+	}
+	pendingWindow, _, err := Select(withLaterEvent(ToolResult{ToolUseID: "toolu_a", Status: "running",
+		ContentRaw: progressText, ContentSize: len(progressText)}), "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the pending-event window: %v", err)
+	}
+	pending, err := route.Convert(pendingWindow, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the pending-event window: %v", err)
+	}
+	if strings.Contains(string(pending.Data), lateText) {
+		t.Errorf("the selected document holds the id-less result although the first call's own recorded "+
+			"event is progress and the second call is unanswered too: the inference read the summary as an "+
+			"outcome the summary pass refuses as that event's view (%v)",
+			selectionCallAndResultLines(t, TargetOpenCode, pending.Data))
+	}
+	if strings.Contains(string(pending.Data), summaryText) {
+		t.Errorf("the selected document holds the call's stored summary: the read's own event for the " +
+			"call is progress, and the summary is that event's view rather than outcome evidence")
+	}
+	if got := lossCount(t, pending.Losses, "unpaired_tool_results").Count; got != 1 {
+		t.Errorf("unpaired_tool_results = %d, want the one id-less result no single unanswered call answers",
+			got)
+	}
+	if got := lossCount(t, pending.Losses, "generated_call_ids").Count; got != 0 {
+		t.Errorf("generated_call_ids = %d, want 0: nothing was inferred", got)
+	}
+	if got := lossCount(t, pending.Losses, "nonterminal_tool_events").Count; got != 1 {
+		t.Errorf("nonterminal_tool_events = %d, want the one progress event counted as what it is", got)
+	}
+	if got := lossCount(t, pending.Losses, "unpaired_tool_calls").Count; got != 2 {
+		t.Errorf("unpaired_tool_calls = %d, want both calls counted: neither has an outcome the document "+
+			"states", got)
+	}
+
+	// A terminal event the part cannot state marks the call exactly as a progress event does: the walk
+	// still stores it in the slot (so the summary pass skips the summary over a Result the part refuses)
+	// and the document states no outcome for the call, so the id-less result is ambiguous between the
+	// two unanswered calls and is omitted rather than inferred onto the second.
+	blankWindow, _, err := Select(withLaterEvent(ToolResult{ToolUseID: "toolu_a",
+		ContentRaw: "   ", ContentSize: 3}), "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the refused-event window: %v", err)
+	}
+	refused, err := route.Convert(blankWindow, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the refused-event window: %v", err)
+	}
+	if strings.Contains(string(refused.Data), lateText) {
+		t.Errorf("the selected document holds the id-less result although the first call's own recorded "+
+			"event is a result the part refuses and the second call is unanswered too: the event "+
+			"suppresses the summary on the written path, so no call states an outcome (%v)",
+			selectionCallAndResultLines(t, TargetOpenCode, refused.Data))
+	}
+	if got := lossCount(t, refused.Losses, "unpaired_tool_results").Count; got != 1 {
+		t.Errorf("refused-event unpaired_tool_results = %d, want the one id-less result no single "+
+			"unanswered call answers", got)
+	}
+	if got := lossCount(t, refused.Losses, "whitespace_only_tool_results").Count; got != 1 {
+		t.Errorf("refused-event whitespace_only_tool_results = %d, want the refused event counted as the "+
+			"writer counts the same result", got)
+	}
+	if got := lossCount(t, refused.Losses, "generated_call_ids").Count; got != 0 {
+		t.Errorf("refused-event generated_call_ids = %d, want 0: nothing was inferred", got)
+	}
+
+	// The control holds the marking to what it claims: an event that states a written outcome is not a
+	// marking (the walk writes it, displacing nothing), so the first call *is* answered on the written
+	// path -- by its recorded outcome rather than by the summary -- and the id-less result's owner is
+	// the second call, so the inference fires.
+	outcomeWindow, _, err := Select(withLaterEvent(ToolResult{ToolUseID: "toolu_a",
+		ContentRaw: "the recorded outcome", ContentSize: len("the recorded outcome")}), "0-", false)
+	if err != nil {
+		t.Fatalf("selecting the outcome-event window: %v", err)
+	}
+	answered, err := route.Convert(outcomeWindow, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the outcome-event window: %v", err)
+	}
+	if !strings.Contains(string(answered.Data), lateText) {
+		t.Errorf("the selected document does not hold the id-less result: the first call's recorded " +
+			"outcome answers it on the written path, so the result belongs to the second call")
+	}
+	if got := lossCount(t, answered.Losses, "generated_call_ids").Count; got != 1 {
+		t.Errorf("outcome-event generated_call_ids = %d, want the one inferred result", got)
+	}
+	if got := lossCount(t, answered.Losses, "unpaired_tool_results").Count; got != 0 {
+		t.Errorf("outcome-event unpaired_tool_results = %d, want 0", got)
+	}
+	if got := lossCount(t, answered.Losses, "unpaired_tool_calls").Count; got != 0 {
+		t.Errorf("outcome-event unpaired_tool_calls = %d, want 0: both calls have outcomes the document "+
+			"states", got)
 	}
 }
 

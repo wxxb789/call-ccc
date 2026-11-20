@@ -2784,6 +2784,132 @@ this section's transcript and this section's own follow-up edits (the `M8` row, 
 references and Q-0009-16) were folded in, printed the same steps and numbers, so the tree this record
 describes is the tree the gate passed twice.)
 
+### The sixteenth review round's findings (`3bd3ade` + working tree), fixed and re-measured
+
+The review of `9242e49..3bd3ade` found five findings — two P1 and three P2 — and all five are fixed; none
+was judged invalid. The review's carried-tree audit found the patch matching the reviewed Git diff, all 37
+changed paths project-owned and every carried blob matching the pin; this round changes no carried file
+either — every path it touches is project-owned, and the gate's `parity` step below is the one that proves
+the carried tree still matches the pin. The round also follows the review's systematic close-out: every rule
+the two fixed surfaces and the three pinned cases claim is proved by one executed mutation (`M1`–`M6`
+below), each mutation's observed failure recorded with the test that catches it.
+
+1. **A sparse Pi selection could strand a retained result off the resumed walk (P1), fixed.** The writer's
+   place resolution read the read's projected parent before the retained file-backed ancestry answer, and
+   the projection resolves whenever the message that made the call is written: a window that selects a
+   call's record and a reply whose file parent is an *excluded* result read the reply as hanging off the
+   call (`resolveVisibleAncestor` resolves a result chain to its visible ancestor), the tool-result place
+   held the later sibling result the file's leaf path leaves off — refused by the round-11 guard — and the
+   projected parent then chained the reply to the call's own entry, leaving the result the file's chain ran
+   through, and the window carries as the call's counterpart, beside the reply instead of under it: present
+   in the file but off the walk a resumed session makes (the review's repro: the appended call B → call A →
+   R1 → R_B → reply file with the sibling beside it, `--select 0,6,10`). `parentPlace` now reads the
+   retained-ancestor answer before the projected parent where the source file named a parent the window
+   does not carry (`fileParentRecorded`), and answers nothing where the file answered nothing, so an
+   unreduced read and every other place are untouched. New case
+   `TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult` pins the repro on both families: the
+   reply's entry hangs off the first result's entry, the first result stands on the resumed walk, the
+   sibling is written as recorded history and omitted by the line target (counted
+   `inactive_branch_records`), `unresolved_source_parents` is 0, and the unflagged run keeps the
+   reconstruction's projection with its own count (4). `parentPlace`'s places list, `fileParentRecorded`
+   and `selectionKeptAncestors`' own comments say the same.
+2. **OpenCode's id-less inference could bind a result across an event the summary pass would refuse (P1),
+   fixed.** The reduced plan marked a call as one whose recorded events stand in for its archive summary
+   when the *walk* reached an id-bearing progress event, so a call whose event stood after an id-less
+   result was still counted answered by its summary: the inference wrote the id-less result for the other
+   call as if it were the only unanswered one, and the walk then marked the first call and the summary
+   pass refused its summary — the document held neither call's established outcome, and the result the
+   source never wrote beside either was written as one of their outcomes. The marking is now resolved
+   before the walk from the read's own pairing (`reservePlannedEvents`), with the same evidence rule the
+   plan and the summary pass read: a progress event, or a terminal result whose text or status the part
+   refuses, marks the call; the marking is asked only where the event's record stands on the plan's own
+   line and only for results that recorded an id of their own (an id-less event is a link only the
+   writer's inference makes, round 11's fourth finding), and an event that states a written outcome marks
+   nothing because the walk writes it as the slot's outcome. The default path keeps the walk's
+   long-standing marking (`callNamedByResult`). `TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall`
+   gains the pending arm (the result is omitted and counted `unpaired_tool_results`, `generated_call_ids`
+   0, the summary is not written, with both calls counted `unpaired_tool_calls`), the refused-terminal arm
+   (the same disposition for a result the part refuses, counted `whitespace_only_tool_results`), and the
+   written-outcome control (the inference fires, `generated_call_ids` 1, no unpaired rows). The field, the
+   method and `plannedOutcomeWritable`'s own comments say the same.
+3. **The D1 exact-record comparison skipped the compaction boundary (P2), fixed.** The evidence extractor
+   ignored every non-`response_item` Codex record — including the `compacted` record the writer publishes
+   for a boundary — so a boundary written for a record the selection left out (the `7-8` window excludes
+   ordinal 6) left the comparison unchanged while adding a boundary to the target history. `selectionEvidence`
+   now reads each route's boundary record as `compaction <summary>` evidence (Codex's `compacted` payload,
+   Claude's `isCompactSummary` record, Pi/OMP's `compaction` entry, OpenCode's compaction message), the
+   `7-8` case asserts the excluded boundary's summary text absent beside the comparison, and a new
+   boundary-alone case (`spec: "6"`) asserts the token on all five routes, so the extractor's own reading is
+   positively pinned. `M5a` (the closure carrying every boundary) shows the comparison rejects the written
+   boundary on every route, and `M5b` (the Codex case disabled) shows the token's absence is caught.
+4. **The projection guard's recorded mutation no longer exercised the cited fixture (P2), fixed.** The
+   round-13 `M6` failure disabled `resultEntryLeavesTheLine` and observed the selected whole read move; on
+   this head that fixture's reply resolves through the file-answer place (`fileParentPlace`) *before* the
+   guard, so the historical mutation proved nothing about the guard. The guard's rule is now pinned by
+   `TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult`, whose fixture reaches the
+   tool-result place with the off-line sibling result: `M2` (the guard returning false) makes the reply
+   chain under the sibling — the failure the round-13 mutation recorded is the failure this case observes —
+   and the previously cited case stays green under the same mutation, which is exactly the review's
+   measurement. The `S6-file-projection` row now cites the case its mutation is measured against and names
+   the file's own chain and the unflagged projection it also asserts.
+5. **The destination-preservation bound had no successful-selected-install evidence (P2), fixed.** The B2
+   case converted without installing, and the recorded successful selected installs used fresh target
+   homes, so nothing measured that a *successful* selected install leaves a home's existing transcript
+   alone. `TestSelectionCarriesASystemRecordAndReportsUndischargedCalls` gains the arm: a pre-existing
+   rollout planted in the same dated directory a conversion writes into (2026/05/08), a selected install
+   (`--select 7-8`, TargetCodex), the installed session as its sibling, and the pre-existing transcript's
+   bytes compared byte for byte afterwards with the dated directory holding both sessions. `M6` (the
+   installer clearing the destination directory) is the recorded negative control: the comparison rejects
+   it — the case fails naming the missing transcript — which is the mutation the arm exists to catch.
+
+#### The round's mutations, each one executed
+
+One line changed per rule, the cited test run immediately, the failure recorded, the line restored (the
+tree after the restores is the one the gate below measured). The line numbers are the working tree's.
+
+| # | rule | file:line | the one line (mutation) | command | observed failure |
+|---|---|---|---|---|---|
+| M1 | this round's first finding (the retained place's precedence) | `internal/ccc/route_shared.go:618` | the `fileParentRecorded`-gated retained place removed (the pre-fix order: the projected parent answers first) | `go test -tags fts5 -count=1 -run '^TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult$' ./internal/ccc/` | `--- FAIL: …` — `continue_pi_test.go:2778: pi: the selected session's model-visible history = ["Where is the retry cap configured?" "A's call is on its way." "The cap is 30 seconds…"], want [… "the result the file's chain runs through" …]`; `:2796: the reply's entry hangs off "85a59cbf", want the first result's entry "90fc256d"`. The round-15 case (`…ExcludedReply`) stays green under the same mutation: its reply's projected parent does not resolve, so it already reached the retained place — the new case is the precedence's own pin |
+| M2 | the projection guard (`resultEntryLeavesTheLine`) | `internal/ccc/route_shared.go:662` | the guard's body replaced by `return false` (the projection taken onto an off-line result) | same case as `M1`, then `…-run '^TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath$'` | same case: `continue_pi_test.go:2778: … "the sibling result the file left beside the walk" …`; `:2804: the sibling result stands on the resumed walk`; `:2808: unresolved_source_parents = 1, want none`. The previously cited case prints `ok` under the mutation — the review's own measurement, so the guard's pin is the new case |
+| M3 | this round's second finding (the read-wide marking before the walk) | `internal/ccc/opencode_target.go:953` | the marking dropped (`c.plannedUnwrittenEvents[call] = true` → `_ = call`) | `go test -tags fts5 -count=1 -run '^TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall$' ./internal/ccc/` | `selection_test.go:1803: the selected document holds the id-less result although the first call's own recorded event is progress … ([call toolu_a … result toolu_a the call's own recorded outcome call toolu_b … result toolu_b the unrelated late output])`; `:1809`, `:1813`, `:1817`, `:1823`; and on the refused-event arm `:1841`, `:1847`, `:1855` |
+| M4 | the refused terminal event marking as progress does | `internal/ccc/opencode_target.go:941` | the writability guard narrowed (`resultStatesAnOutcome(...)` added as a skip before the marking, so only progress events mark) | same case as `M3` | `selection_test.go:1841: the selected document holds the id-less result although the first call's own recorded event is a result the part refuses …`; `:1847: refused-event unpaired_tool_results = 0`; `:1855: refused-event generated_call_ids = 1`; the progress arm stays green, so the two conditions are separately pinned |
+| M5a | the boundary record is evidence on every route | `internal/ccc/selection.go:867` | the closure carries every compaction boundary (`carried[index] = true` for each boundary record, inserted) | `go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/` | `selection_test.go:909: codex: selecting "2" wrote the evidence … "compaction Summary: the build succeeded and the retry configuration is being read."` (and `claude`, `pi`, `omp`, `opencode`, every case); `:926: … wrote a document holding "Summary: the build succeeded", which the selection excluded` |
+| M5b | the Codex comparison reads the `compacted` record | `internal/ccc/selection_test.go:1046` | the `compacted` case disabled (`if line.Type == codexRecordCompacted` → `if false`) | same case as `M5a` | `selection_test.go:909: codex: selecting "6" wrote the evidence\n got: []\nwant: ["compaction Summary: the build succeeded and the retry configuration is being read."]` |
+| M6 | a successful selected install leaves the destination's existing transcript alone | `internal/ccc/route_shared.go:1208` | the installer clears the dated directory before publishing (`os.RemoveAll(directory)` inserted before `os.MkdirAll`) | `go test -tags fts5 -count=1 -run '^TestSelectionCarriesASystemRecordAndReportsUndischargedCalls$' ./internal/ccc/` | `selection_test.go:466: the pre-existing destination transcript does not exist after a successful selected install: open …/sessions/2026/05/08/rollout-2026-05-08T07-00-00-…jsonl: no such file or directory` |
+
+The round's verification: 470 → **471** top-level `Test…` functions in the two packages' own test files
+(`^(internal|cmd)/ccc/[^/]*_test\.go$` on `3bd3ade` and on the working tree — the new
+`TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult`; every other addition lives inside an
+existing function, and the per-file set comparison against `HEAD` names that one addition and no removal or
+rename); `0009-citations.tsv` grown 67 → **68** rows (`S6-file-excluded-result` added; `S6-file-projection`
+rewritten to cite the case its mutation is measured against, `D1`, `B2` and `S7-summary-outcome` rewritten
+to what their cases now assert); `gofmt -l` names nothing. The D4 probe was re-run on this tree: 1312
+lines, byte-identical to the previous round's current-tree run (`after1.txt`, `/tmp/ccc-d4-r13`), so this
+round's edits are selection-gated and the default path's bytes, reports, installs and CLI answers are what
+they were — §4's retained numbers stand as their single source.
+
+```console
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: <checkout> (redacted: this checkout's own root)
+gate: go=<go toolchain> (redacted) targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 444 tests in 8.494s (rc=0)
+  PASS     parity   … | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5728 | …
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 68 row(s) verified
+  PASS     secrets  no leaks found in 197 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
+(`parity`'s detail is elided in this transcript with `…`, as the earlier transcripts do; the numbers this
+round's record quotes are the step's own. The transcript is the round's own run, taken with every code,
+test and gate-step change in the tree and the throw-away probe file removed; a second run, taken after
+this section's transcript and §7's edits were folded in, printed the same steps and numbers (`selftest Ran
+444 tests in 8.4xx s`), so the tree this record describes is the tree the gate passed twice.)
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -2857,7 +2983,9 @@ describes is the tree the gate passed twice.)
   file-backed line clause, the fold's distinct-key requirement to the offline-half sentence, the read's
   own pairing to the summary sentence (the reduced-path question, the default path's message-local
   answer stated beside it), and the counted `compaction_record_tool_results` row to the
-  boundary-evidence sentence.
+  boundary-evidence sentence. The sixteenth fix round added the retained file-backed answer's precedence
+  over the read's projected parent to the ancestry clause and the read-wide marking resolved before the
+  walk to the OpenCode summary clause.
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -2891,7 +3019,9 @@ describes is the tree the gate passed twice.)
   tree does not hold is refused before any tool runs, whether or not other manifests remain) folded in as
   well, and the fifteenth round's (the file chain's step through entries the read does not hold, the
   fold's distinct-key requirement, the summary's read-wide question on a reduced document, and the
-  counted `compaction_record_tool_results` row) folded in beside them.
+  counted `compaction_record_tool_results` row) folded in beside them, and the sixteenth round's (the
+  retained file-backed answer read before the record's projected parent, and the OpenCode marking resolved
+  from the read's own pairing before the walk) folded in as well.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
   measurement behind each (the third round's four in §11.12) and the fourth through eleventh rounds' seven,
   five, six, three, four, five, four and five at its close (the seventh's as item 13, the eighth's as item
@@ -2899,7 +3029,8 @@ describes is the tree the gate passed twice.)
   item 18, with the twelve mutations that pin them in this record's round section), and the thirteenth
   round's four as item 19 with this record's `M1`–`M7` behind them, and the fourteenth round's seven as
   item 20 with this record's `M1`–`M19` behind them, and the fifteenth round's six as item 21 with this
-  record's `M1`–`M8` behind them.
+  record's `M1`–`M8` behind them, and the sixteenth round's five as item 22 with this record's `M1`–`M6`
+  behind them.
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -2973,7 +3104,12 @@ describes is the tree the gate passed twice.)
   reduction's documents only — the default path keeps its immediate-parent answer, its fold and its
   message-local summary guard, and the boundary row stays the reduction's — with the round's probe
   re-run as the measured statement; the reversals are the pre-fix lines the round's `M1`–`M8`
-  record).
+  record); and Q-0009-17 (this round: the retained file-backed answer is read before the read's projected
+  parent where the file named a parent the window does not carry, and the OpenCode plan's marking of a call
+  as one its recorded events stand in for is resolved from the read's own pairing before the walk — both on
+  a document a selection produced, so a run without a selection keeps the reconstruction's projection and
+  the walk's long-standing marking, and the marking's line filter follows the plan's own evidence
+  eligibility — the reversals are the pre-fix lines the round's `M1`–`M5b` record).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the

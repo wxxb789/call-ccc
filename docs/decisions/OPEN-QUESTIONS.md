@@ -3431,3 +3431,35 @@ supersede it with a newer one and say which it supersedes.
   keeps its immediate-parent answer, its fold and its message-local summary guard), and the boundary
   record's row stays the reduction's" and "the file's own chain and the read's own pairing govern the
   default path too, or the boundary record's evidence is counted on every report".
+
+## Q-0009-17 — The retained file-backed answer precedes the projected parent, and the OpenCode marking is resolved before the walk
+
+- **Status:** open (defaults taken: where the source file named a parent the window does not carry, the
+  file's own chain through the excluded record to its nearest retained ancestor is read *before* the read's
+  projected parent — the projection would chain the record past a result the file ran through, and the
+  window carries — while a file that answered nothing for the record keeps the places it always had, so a
+  run without a selection (whose document carries no file answers) keeps the reconstruction and its
+  projection; and on a document a selection produced the OpenCode plan's marking of a call as one its
+  recorded events stand in for — resolved from the read's own pairing *before* the walk — is asked only
+  where the event's record stands on the plan's own line, so an event on a record the plan does not write
+  leaves the archive's summary as the call's outcome evidence there.)
+- **Question:** should the file's own chain and the OpenCode marking govern the path a selection did not
+  produce as well (the file's chain is the source's own and the read's projection is the lossy one; the
+  archive derives the summary from the read's events), and should the marking's line filter follow the four
+  tree writers' read-wide question — which suppresses a summary for an event whose record the conversion
+  does not write — or the plan's own eligibility, which writes no evidence from a record it leaves off?
+- **Default taken:** each answer is scoped to what the finding measured — the review's repros are *selected*
+  conversions (the sparse Pi window, the reduced OpenCode plan) — and a run without a selection keeps its
+  bytes, its counts, its installs and its CLI answers (goal 0009's D4), which this round's probe re-run
+  measures (1312 lines, byte-identical to the previous round's current-tree run). The OpenCode marking's
+  line filter follows the plan's own evidence-eligibility rule (`reserveResultSlots` asks the same
+  question), because the summary is written only where the document states no outcome, and a record the
+  plan does not write states none.
+- **Reversal:** the pre-fix behaviour returns by removing the `fileParentRecorded`-gated retained place
+  from `parentPlace`, by dropping `reservePlannedEvents` and the `plannedUnwrittenEvents` field (the walk's
+  in-walk marking back in the progress branch), by narrowing the marking to progress events, and by
+  disabling the boundary cases in `selectionEvidence`/the D1 case — each reopens the failure its mutation
+  records (`docs/evidence/0009-selective-context.md`, sixteenth round, `M1`–`M5b`).
+- **Settled by:** an operator decision between "the retained file-backed answer and the read-wide marking
+  answer a selection's document only, and the OpenCode marking keeps the plan's line filter" and "the
+  file's own chain governs every read, and the marking follows the four tree writers' unfiltered question".

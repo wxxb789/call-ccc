@@ -933,3 +933,54 @@ measurement that decided it, followed by the review round's own:
       value struct and checked only `Count == 0`, so an omitted object or a zero-count object naming
       ordinals passed; the case now asserts the raw JSON object's presence and its empty regions. Two
       executed mutations (bogus regions behind a zero count; the JSON key renamed) fail it.
+
+22. **The sixteenth review round's five findings.** The review of `9242e49..3bd3ade` found five items (two
+    P1, three P2), all fixed, and this round's own section of the evidence record carries the mutations
+    that pin them (`M1`–`M6`).
+    * **the retained file-backed answer precedes the projected parent** (review 1/5, a P1): the writer's
+      place resolution read the read's projected parent before the retained file-backed ancestry answer,
+      and the projection resolves whenever the message that made the call is written — a window selecting
+      a call's record and a reply whose file parent is an *excluded* result read the reply as hanging off
+      the call, the tool-result place held the later sibling the file's leaf path leaves off (refused by
+      the round-11 guard) and the projected parent chained the reply to the call's own entry, stranding
+      the result the file's chain ran through — and the window carries — off the resumed walk.
+      `parentPlace` now reads the retained-ancestor answer before the projected parent where the source
+      file named a parent the window does not carry (`fileParentRecorded`), and a file that answered
+      nothing keeps the places it always had. `TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult`
+      pins the repro on both families; one executed mutation (the retained place removed) fails it while
+      the round-15 case stays green, so the new case is the precedence's own pin.
+    * **the reduced OpenCode plan's marking is resolved before the walk** (review 2/5, a P1): the plan
+      marked a call as one whose recorded events stand in for its summary when the walk reached an
+      id-bearing progress event, so a call whose event stood after an id-less result was still counted
+      answered by its summary — the inference bound the result to the other call, the walk then marked
+      the first call and the summary pass refused its summary, so neither call had an established outcome
+      and the result the source never wrote beside either was written as one of their outcomes.
+      `reservePlannedEvents` resolves the marking from the read's own pairing before the walk, with the
+      plan's own evidence rule (a progress event or a terminal result the part refuses marks; an event
+      that states a written outcome marks nothing; the answer is asked only where the event's record
+      stands on the plan's own line and only for results that recorded an id of their own), and the
+      default path keeps the walk's long-standing marking.
+      `TestSelectionDoesNotInferAnIDLessResultOntoASummaryOnlyCall` gains the pending, refused-terminal
+      and written-outcome arms; two executed mutations (the marking dropped; the marking narrowed to
+      progress events) fail it.
+    * **the D1 comparison reads every route's compaction boundary** (review 3/5, a P2): the extractor
+      ignored every non-`response_item` Codex record, including the `compacted` record the writer
+      publishes, so a boundary written for a record the selection left out added a boundary to the
+      target history and left the exact comparison unchanged. `selectionEvidence` now reads each route's
+      boundary record as `compaction <summary>` evidence, the boundary-excluding case asserts the
+      summary text absent beside the comparison, and a boundary-alone case asserts the token on all five
+      routes; two executed mutations (the closure carrying every boundary; the Codex case disabled) fail
+      it.
+    * **the projection guard's mutation is measured against a case that reaches it** (review 4/5, a P2):
+      the round-13 `M6` failure disabled `resultEntryLeavesTheLine` and observed the selected whole read
+      move, but on this head that fixture's reply resolves through the file-answer place before the
+      guard, so the mutation proved nothing; the same mutation is now measured against
+      `TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedResult`, whose fixture reaches the
+      tool-result place with the off-line sibling result (the reply chains under the sibling when the
+      guard is disabled) while the previously cited case stays green.
+    * **a successful selected install is measured against a pre-existing transcript** (review 5/5, a
+      P2): the B2 case converted without installing, so nothing measured that a successful selected
+      install leaves an existing destination transcript alone. The case now plants a rollout in the same
+      dated directory a conversion writes into, installs the selected window beside it and compares the
+      pre-existing bytes byte for byte (the home holding both sessions); one executed mutation (the
+      installer clearing the dated directory) fails it as the recorded negative control.

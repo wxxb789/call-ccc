@@ -529,11 +529,9 @@ func (t *sourceTree) wrote(id string) {
 // conversation left stays off the path the target's own loader walks from the file's last entry. The
 // places, in order:
 //
-//   - the record the source named, resolved through the records the document holds (writtenAncestor): the
-//     entry this conversion wrote for it, or -- for a record the target left out -- the place resolved for
-//     it when it was walked (omittedAncestorEntry: for a record standing under a written tool result that
-//     is the result's own entry, which the raw walk alone cannot reach), else the nearest written
-//     ancestor walked through the document's own relations. Not counted.
+//   - the source file's own relation, where a file stands behind this document (fileParentPlace): the
+//     entry of the record the file's own bytes name as the parent, resolved through the records the
+//     document holds. The source's own place, so nothing is counted.
 //   - the place a written tool result stands for (toolResultEntry), where the read may project: the
 //     source's own file runs call → result → what follows while the read answers the next record as
 //     hanging off the call. Always counted: the read answers a record the source placed under the call
@@ -561,7 +559,18 @@ func (t *sourceTree) wrote(id string) {
 //     follow the entry before it and could put a branch the conversation left on the walk. An inactive
 //     ancestor answers only for a record the read's own line also leaves off it: keeping a branch off the
 //     active walk is recorded history the writer reproduces, but chaining an *on-line* record through an
-//     off-line ancestor is the revival the fallback's check refuses.
+//     off-line ancestor is the revival the fallback's check refuses. It is read here *before* the
+//     projected parent below where the source file named a parent the window does not carry
+//     (fileParentRecorded): the file's own chain through the excluded record is the record's place, and the
+//     projection would chain the record past a result the file ran through -- the result the window
+//     carries -- off the walk a resumed session makes.
+//   - the record the source named, resolved through the records the document holds (writtenAncestor): the
+//     entry this conversion wrote for it, or -- for a record the target left out -- the place resolved for
+//     it when it was walked (omittedAncestorEntry: for a record standing under a written tool result that
+//     is the result's own entry, which the raw walk alone cannot reach), else the nearest written
+//     ancestor walked through the document's own relations. Not counted. Where the file named a parent
+//     the window does not carry, the retained-ancestor place above answers first, because the read's
+//     projected parent is the answer the file's own chain corrects.
 //   - the entry written before it (priorEntry), counted when a relation was recorded but could not be
 //     placed -- a record outside the read, a relation no walk can complete -- or when the record named no
 //     parent and is not the conversation's first. A record that names no parent at all is read as the
@@ -597,6 +606,20 @@ func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
 	if entry, ok := t.toolResultEntry[parent]; ok && !t.resultEntryLeavesTheLine(entry) {
 		return &entry, true
 	}
+	// Where the source file named a parent the window does not carry, the file's own chain -- not the
+	// read's projected parent -- is the record's place: the read answers a record the file placed under
+	// an excluded result as hanging off the message that made the call (`parent`), and following that
+	// answer would chain the record to the call's own entry (or to the last result the call wrote),
+	// leaving the result the file's chain ran through -- and the window carries -- beside the record
+	// instead of under it: off the walk a resumed session makes. The retained answer is the file's own
+	// relation wherever the chain followed the file's answers, and it is counted exactly as the place
+	// below is where the chain crossed the tool-result projection (keptAncestorAnswer.projected). A file
+	// that answered nothing for the record keeps every place below untouched, as before.
+	if t.fileParentRecorded() {
+		if entry, projected, ok := t.keptAncestorEntry(); ok {
+			return &entry, projected
+		}
+	}
 	if entry, ok := t.writtenAncestor(parent); ok {
 		return &entry, false
 	}
@@ -604,6 +627,19 @@ func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
 		return &entry, projected
 	}
 	return t.fallbackPlace(), true
+}
+
+// fileParentRecorded answers whether the source file's own bytes named a parent record for the record
+// being walked: the identity piFileParent answered, which is a record this read holds (a chain that
+// reaches no held record answers ""). Where the file named one and the window left it out, the file's
+// own chain through it is the record's place, and the writers read the retained-ancestor answer rather
+// than the record's projected parent (parentPlace). Only a document a selection produced carries the
+// answer (Conversation.sourceFileParent), so a run without a selection is untouched (goal 0009's D4).
+func (t *sourceTree) fileParentRecorded() bool {
+	if t.record < 0 || t.record >= len(t.fileParent) {
+		return false
+	}
+	return strings.TrimSpace(t.fileParent[t.record]) != ""
 }
 
 // resultEntryLeavesTheLine answers whether the entry a written tool result stands for is one the
