@@ -96,6 +96,21 @@ type CodexRollout struct {
 	Items      []TargetItem `json:"-"`
 	Carried    Carried      `json:"carried"`
 	Losses     []Loss       `json:"losses"`
+	// RecordFates is the per-source-record accounting of a document a selection produced: what became of
+	// every record the conversion walked (which item kinds it wrote, or why nothing was written). It is
+	// empty for a run without a selection, whose shape is what it was (goal 0009's D4), and it is never
+	// serialized into the target document; the report's selection section is where it reaches a caller.
+	RecordFates []RecordFate `json:"-"`
+}
+
+// RecordFate is what the writer's own walk made of one source record of a document a selection produced:
+// the item kinds it wrote for the record -- empty when the target holds nothing of it -- and the loss
+// category that explains a record nothing was written for. It is D1's per-record accounting, taken from
+// the walk itself rather than re-derived by a reader of the target bytes.
+type RecordFate struct {
+	Ordinal int
+	Items   []TargetItemKind
+	Reason  string
 }
 
 // CodexTargetOptions configures one conversion. SessionID and CLIVersion are normally left empty: the
@@ -270,6 +285,15 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 		opts:           opts,
 		sourceFidelity: conv.Fidelity,
 	}
+	if conv.selectionReduced() {
+		// The seam's own answers travel into the writer as they are; nothing here re-reads the reduced
+		// document to reconstruct them (goal 0009's D6).
+		builder.selectionReduced = true
+		builder.pairings = pairedCallOccurrences(conv)
+		builder.finality = callFinalities(conv, builder.pairings)
+		builder.writtenCalls = map[callOccurrence]string{}
+		builder.boundaries = conv.sourceBoundaries
+	}
 	// One encoder writes every line: JSONL is one object per line, and the encoder's own newline is
 	// what separates them. HTML escaping is off because the target stores the conversation's text as it
 	// was recorded, not as JSON would quote it for a browser.
@@ -280,16 +304,17 @@ func ConvertToCodexRollout(conv Conversation, opts CodexTargetOptions) (CodexRol
 	carried := builder.carried
 	carried.Bytes = builder.buffer.Len()
 	rollout := CodexRollout{
-		SessionID:  sessionID,
-		CLIVersion: cliVersion,
-		FileName:   codexRolloutFileName(sessionID, startedAt),
-		Directory:  codexRolloutDirectory(startedAt),
-		Cwd:        source.Cwd,
-		StartedAt:  startedAt,
-		Data:       bytes.Clone(builder.buffer.Bytes()),
-		Items:      builder.items,
-		Carried:    carried,
-		Losses:     builder.losses(),
+		SessionID:   sessionID,
+		CLIVersion:  cliVersion,
+		FileName:    codexRolloutFileName(sessionID, startedAt),
+		Directory:   codexRolloutDirectory(startedAt),
+		Cwd:         source.Cwd,
+		StartedAt:   startedAt,
+		Data:        bytes.Clone(builder.buffer.Bytes()),
+		Items:       builder.items,
+		Carried:     carried,
+		Losses:      builder.losses(),
+		RecordFates: builder.recordFates,
 	}
 	return rollout, nil
 }
@@ -329,6 +354,25 @@ type codexRolloutBuilder struct {
 	// embedding caller never assigned one, and two calls sharing a generated id would read as one call.
 	messageIndex int
 
+	// The seam, when the document is one a selection produced: the answers the read gave before the cut,
+	// which the writer consumes instead of re-deriving a cross-record fact from the reduced stream.
+	// selectionReduced is the marker (Conversation.selectionReduced); the rest are the seam's own
+	// answers. writtenCalls names, per written call occurrence, the id its function_call record stands
+	// under, so a result is written under the call occurrence the *read* paired it with rather than
+	// under an id another written occurrence happens to share, and no result is inferred onto an
+	// occurrence the read did not name (ID-less ownership inference on a selected run is its own later
+	// increment).
+	selectionReduced bool
+	pairings         map[resultOccurrence]callOccurrence
+	finality         map[callOccurrence]callFinality
+	writtenCalls     map[callOccurrence]string
+	boundaries       map[int]boundaryLedger
+	// recordFates and currentReason are D1's accounting, filled only for a reduced document: one fate per
+	// walked record, and the loss category the record currently being written was counted under where
+	// nothing was written for it.
+	recordFates   []RecordFate
+	currentReason string
+
 	// sourceFidelity is the completeness and the provider's own classification of the read itself.
 	// Lines the provider's reader could not turn into a message never reach this writer as evidence at
 	// all, so the conversion's report has to name them from the read's own count; and a read the provider
@@ -363,6 +407,15 @@ type codexRolloutBuilder struct {
 	lossResultBlocks        int
 	lossInactiveBranch      int
 	lossUnresolvedParents   int
+	// The reduction's own counters. They are the disclosures a document a selection produced owes: a
+	// recorded progress event this format cannot carry as progress, a written call whose source never
+	// established an outcome, and the tool evidence a compaction boundary record accounts for (with the
+	// count of boundaries whose replaced history the read cannot establish at all).
+	lossNonterminal       int
+	lossOutstanding       int
+	lossBoundaryCalls     int
+	lossBoundaryResults   int
+	lossBoundaryUncertain int
 
 	ledger
 
@@ -414,15 +467,36 @@ func (b *codexRolloutBuilder) sessionMeta(startedAt time.Time) {
 // this conversion's reading rather than the read's, and the report counts it (unresolved_source_parents)
 // instead of presenting the line as the source's own by right.
 func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
-	inactive, unresolved := inactiveSourceRecords(conv.Messages, conv.Source.Provider)
+	inactive, unresolved := sourceLineAnswers(conv)
 	b.lossUnresolvedParents = unresolved
 	for index, message := range conv.Messages {
 		b.messageIndex = index
-		if inactive[index] {
+		itemsBefore := len(b.items)
+		b.currentReason = ""
+		switch {
+		case inactive[index]:
 			b.lossInactiveBranch++
+			b.currentReason = "inactive_branch_records"
+		default:
+			b.writeMessage(message)
+		}
+		if !b.selectionReduced {
 			continue
 		}
-		b.writeMessage(message)
+		// D1's accounting, taken from this walk: the item kinds the record wrote, or the category the
+		// record was counted under. A record the walk wrote nothing for and never charged is named as
+		// that, rather than leaving a fate with no reason.
+		fate := RecordFate{Ordinal: message.Ordinal}
+		for _, item := range b.items[itemsBefore:] {
+			fate.Items = append(fate.Items, item.Kind)
+		}
+		if len(fate.Items) == 0 {
+			fate.Reason = b.currentReason
+			if fate.Reason == "" {
+				fate.Reason = "no target record states this source record"
+			}
+		}
+		b.recordFates = append(b.recordFates, fate)
 	}
 }
 
@@ -437,6 +511,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		// the target's compacted record would replace the main conversation's model-visible history
 		// with it.
 		b.lossSidechain++
+		b.currentReason = "sidechain_messages"
 		return
 	}
 	if message.IsCompactBoundary {
@@ -445,6 +520,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		// and the turns before it stay in the file (counted as carried, with the caveat reported).
 		b.lossPreBoundary = b.carried.Messages
 		b.sawBoundary = true
+		b.writeBoundaryLedger(b.messageIndex)
 		b.write(codexEnvelope{
 			Timestamp: b.clock.next(message.Timestamp),
 			Type:      codexRecordCompacted,
@@ -479,6 +555,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		// and the report must not say the record held nothing but a trace when what it held was a text
 		// no answer separates from the rendering).
 		b.lossReasoning++
+		b.currentReason = "reasoning_text"
 		return
 	}
 	if strings.TrimSpace(message.Thinking) != "" {
@@ -497,10 +574,13 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		switch role {
 		case parser.RoleTool:
 			b.lossToolRoleMessages++
+			b.currentReason = "tool_role_messages"
 		case parser.RoleSystem:
 			b.lossSystemRecords++
+			b.currentReason = "system_records"
 		default:
 			b.lossUnclassifiedRoles++
+			b.currentReason = "unclassified_role_messages"
 		}
 		if len(message.ToolCalls) == 0 && len(message.ToolResults) == 0 {
 			// Nothing but the role itself: the count above is the whole of what the target does not have.
@@ -515,6 +595,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 		// refuse, so the text is not written and the record is counted. Its tool evidence still travels
 		// below: a call and its output carry no role of their own.
 		b.lossUnresolvedDialogue++
+		b.currentReason = "unresolved_dialogue"
 	} else {
 		if dialogueLossOf(dialogue) == dialogueLossUnprojected {
 			// Content, not a projection, is what travels: the report says so per record
@@ -532,6 +613,7 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 			// is named here; the record's tool evidence is still written below, because a call and its
 			// output carry no role of their own.
 			b.lossWhitespaceDialogue++
+			b.currentReason = "whitespace_only_dialogue"
 		case text != "" && role == parser.RoleUser:
 			b.startTurn(message.Timestamp)
 			b.messageItem(ItemUser, codexRoleUser, codexContentInputText, text, message.Timestamp)
@@ -545,8 +627,10 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 			// category rather than reported as an empty record.
 			if strings.TrimSpace(message.Content) == "" {
 				b.lossEmptyUserMessages++
+				b.currentReason = "empty_user_messages"
 			} else {
 				b.lossNonDialogueText++
+				b.currentReason = "non_dialogue_content"
 			}
 			return
 		}
@@ -562,12 +646,66 @@ func (b *codexRolloutBuilder) writeMessage(message Message) {
 // written (a system-injected record), because a call and its output carry no role of their own in the
 // target and dropping real evidence silently is what the report exists to prevent. A record with no
 // tool evidence contributes nothing here.
+//
+// On a document a selection produced, the pairing and the outcome question are asked of the seam, not of
+// the reduced stream: a result is written only under the call occurrence the *read* paired it with (and
+// only where that occurrence was written), a result whose recorded status is progress is omitted and
+// counted (this format's function_call_output carries an outcome or nothing), and the archive's derived
+// summary of a call is written only where the read pairs no recorded event with the call at all -- a
+// summary whose call the read answers with a progress event is that event's view, not an outcome.
 func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 	for index, call := range message.ToolCalls {
 		b.toolCall(index, call, message.Timestamp)
 	}
+	if b.selectionReduced {
+		for resultIndex, result := range message.ToolResults {
+			place := resultOccurrence{message: b.messageIndex, result: resultIndex}
+			owner, ok := b.pairings[place]
+			if !ok {
+				// The read recorded no link between this result and any call: on a reduced document the
+				// writer does not infer one (ID-less ownership inference is its own later increment), so
+				// the result is omitted and counted rather than written under a call the read never
+				// named.
+				b.lossUnpairedResults++
+				continue
+			}
+			if _, written := b.writtenCalls[owner]; !written {
+				// The call the read paired it with is not in the target (its record is one the read's
+				// line leaves off, or the read is inconsistent): a function_call_output without its call
+				// is not a pair.
+				b.lossUnpairedResults++
+				continue
+			}
+			if !resultStatesAnOutcome(result.Status) {
+				// The read records the call's progress as events of its own; this target's output
+				// carries an outcome or nothing, so a written event would read back as the call's
+				// answer. The event is omitted and named.
+				b.lossNonterminal++
+				continue
+			}
+			b.toolResult(result, message.Timestamp, &owner)
+		}
+		// The archive's own summary of a call is a view of the events the read recorded for it. Where
+		// the read's pairing names such an event, the summary is that event's view and is not written;
+		// where it names none, the summary is the outcome evidence the read holds and is written -- but
+		// only when the read established an outcome at all: a call whose paired events are progress is
+		// written with no output (counted as outstanding), never with the progress text.
+		for _, entry := range b.writtenCallPlaces(message) {
+			place := entry.place
+			call := message.ToolCalls[entry.index]
+			result, ok := derivedResultSummary(call, b.writtenCalls[place])
+			if !ok {
+				continue
+			}
+			if hasPairedResult(b.pairings, place) || !b.finality[place].stateAnOutcome() {
+				continue
+			}
+			b.toolResult(result, message.Timestamp, &place)
+		}
+		return
+	}
 	for _, result := range message.ToolResults {
-		b.toolResult(result, message.Timestamp)
+		b.toolResult(result, message.Timestamp, nil)
 	}
 	// An archive read carries a call's outcome both as the result events the archive kept on the call
 	// and as the summary it holds in ResultContent. That summary is derived from those same events by
@@ -585,7 +723,47 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
-		b.toolResult(result, message.Timestamp)
+		b.toolResult(result, message.Timestamp, nil)
+	}
+}
+
+// writtenCallPlaces answers the call occurrences of one message this walk wrote, in the message's own
+// order, with their places: the occurrences a summary question is asked about.
+func (b *codexRolloutBuilder) writtenCallPlaces(message Message) []writtenCall {
+	places := make([]writtenCall, 0, len(message.ToolCalls))
+	for index := range message.ToolCalls {
+		place := callOccurrence{message: b.messageIndex, call: index}
+		if _, written := b.writtenCalls[place]; written {
+			places = append(places, writtenCall{index: index, place: place})
+		}
+	}
+	return places
+}
+
+// writtenCall is one written call occurrence of the message being walked.
+type writtenCall struct {
+	index int
+	place callOccurrence
+}
+
+// writeBoundaryLedger counts what one compaction boundary record accounts for, on a document a selection
+// produced. The boundary is published as the boundary alone -- its own summary is the compacted record --
+// so the calls and results the record carries are not written, and the seam's ledger is what keeps them
+// from being dropped unnamed. A boundary whose replaced history the read cannot establish (the inherited
+// Codex reader drops `replacement_history`) is counted as that unknown rather than as none, and a
+// boundary the seam answers nothing for is read the same conservative way.
+func (b *codexRolloutBuilder) writeBoundaryLedger(messageIndex int) {
+	if !b.selectionReduced {
+		return
+	}
+	ledger, ok := b.boundaries[messageIndex]
+	if !ok {
+		ledger = boundaryLedger{}
+	}
+	b.lossBoundaryCalls += ledger.calls
+	b.lossBoundaryResults += ledger.results
+	if !ledger.established {
+		b.lossBoundaryUncertain++
 	}
 }
 
@@ -750,18 +928,38 @@ func (b *codexRolloutBuilder) toolCall(index int, call ToolCall, at time.Time) {
 		b.pendingCalls = map[string]struct{}{}
 	}
 	b.pendingCalls[callID] = struct{}{}
+	if b.selectionReduced {
+		place := callOccurrence{message: b.messageIndex, call: index}
+		// The seam's own id for the occurrence, which a result's pairing is written under, and the
+		// read's finality: a call whose source established no outcome is written with no output, and
+		// the count says so rather than letting "converted" read as "answered".
+		b.writtenCalls[place] = callID
+		if !b.finality[place].stateAnOutcome() {
+			b.lossOutstanding++
+		}
+	}
 	b.carried.ToolCalls++
 	b.items = append(b.items, TargetItem{Kind: ItemToolCall, CallID: callID, ToolName: name, InputJSON: input})
 }
 
-func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
+// toolResult writes one recorded result. owner names the call occurrence the seam paired the result
+// with, for a document a selection produced: the result is written under the id that occurrence was
+// written under, and no part of the writer's own ledger is consulted -- on a reduced document the owner
+// is the read's answer, never an inference (ID-less ownership inference is its own later increment). A
+// nil owner is a document that is the read itself: the result is written under the recorded id where a
+// written call holds it, and an id-less result is paired with the sole outstanding call -- the writer's
+// own disclosed reading, counted as generated ids -- or omitted as unpaired.
+func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time, owner *callOccurrence) {
 	callID := strings.TrimSpace(result.ToolUseID)
 	// resultIDInferred says the pairing below is the only id this result has: the source recorded none of
 	// its own. The counter it feeds is incremented past the omission guards, together with the written
 	// result, because an inferred pairing on a result this conversion does not write is not evidence the
 	// file holds.
 	resultIDInferred := false
-	if callID == "" {
+	switch {
+	case owner != nil:
+		callID = b.writtenCalls[*owner]
+	case callID == "":
 		pending, ok := b.solePendingCall()
 		if !ok {
 			// No call is outstanding, or several are and the result could belong to any of them: the
@@ -771,13 +969,15 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time) {
 		}
 		callID = pending
 		resultIDInferred = true
-	} else if _, ok := b.callOwners[callID]; !ok {
-		// The result names a call this conversion did not write (the call preceded the source's
-		// boundary, or the provider recorded a result whose call is not in the read). A
-		// function_call_output without its call is not a pair, and inventing the call would fabricate
-		// a tool invocation.
-		b.lossUnpairedResults++
-		return
+	default:
+		if _, ok := b.callOwners[callID]; !ok {
+			// The result names a call this conversion did not write (the call preceded the source's
+			// boundary, or the provider recorded a result whose call is not in the read). A
+			// function_call_output without its call is not a pair, and inventing the call would fabricate
+			// a tool invocation.
+			b.lossUnpairedResults++
+			return
+		}
 	}
 	// The recorded result answers its call here, whatever its output turns out to be below: a call whose
 	// result arrived leaves the outstanding set, so a later id-less result cannot be attributed to it.
@@ -956,7 +1156,7 @@ func (b *codexRolloutBuilder) losses() []Loss {
 	// word or count a state differently from another.
 	losses = append(losses, dialogueLossRows(b.lossUnresolvedDialogue, b.lossUnprojectedDialogue,
 		codexUnestablishedOutcome)...)
-	return append(losses, []Loss{
+	losses = append(losses, []Loss{
 		{
 			Category:    "whitespace_only_dialogue",
 			Disposition: DispositionOmitted,
@@ -1155,6 +1355,67 @@ func (b *codexRolloutBuilder) losses() []Loss {
 			Detail:      needsRetryDetail,
 		},
 	}...)
+	if b.selectionReduced {
+		losses = append(losses, b.reductionLosses()...)
+	}
+	return losses
+}
+
+// reductionLosses answers the categories only a document a selection produced can charge: they are the
+// reduction's own disclosure surface, and a run without a selection keeps the report it has always had
+// (goal 0009's D4), which is why they are appended here rather than in the fixed list above.
+func (b *codexRolloutBuilder) reductionLosses() []Loss {
+	return []Loss{
+		{
+			Category:    "nonterminal_tool_events",
+			Disposition: DispositionOmitted,
+			Count:       b.lossNonterminal,
+			Detail: "the read records a call's progress as result events of its own beside the call's " +
+				"outcome (a Codex subagent's running notification, a streamed chunk, an OpenCode tool " +
+				"part's time.ran). This target's function_call_output carries an outcome or nothing, so " +
+				"a written event would read back as the call's answer; the event is omitted and the " +
+				"call's own disposition (outstanding_tool_calls where the read established no outcome, " +
+				"a written outcome otherwise) is what the file states",
+		},
+		{
+			Category:    "outstanding_tool_calls",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossOutstanding,
+			Detail: "these calls are written and no outcome is written for them: the read pairs no " +
+				"result event stating an outcome with the call occurrence (its recorded events are " +
+				"progress, or the source recorded none at all), so writing the archive's derived " +
+				"summary of the call would state a completion the source never recorded. The call " +
+				"record itself travels, and the summary's text does not",
+		},
+		{
+			Category:    "compaction_record_tool_calls",
+			Disposition: DispositionOmitted,
+			Count:       b.lossBoundaryCalls,
+			Detail: "these calls sit on a record this conversion publishes as a compaction boundary " +
+				"alone: they are the history the boundary accounts for, and a function_call written " +
+				"beside the boundary's summary would state an invocation the boundary replaced. The " +
+				"seam's own ledger names them rather than the writer reading the record; a read that " +
+				"cannot establish the replaced history reports that as unestablished_compaction_history",
+		},
+		{
+			Category:    "compaction_record_tool_results",
+			Disposition: DispositionOmitted,
+			Count:       b.lossBoundaryResults,
+			Detail: "these results sit on a record this conversion publishes as a compaction boundary " +
+				"alone: no written record states them, and the boundary's own summary is what the file " +
+				"holds. The seam's own ledger names them rather than the writer reading the record",
+		},
+		{
+			Category:    "unestablished_compaction_history",
+			Disposition: DispositionCarriedWithCaveat,
+			Count:       b.lossBoundaryUncertain,
+			Detail: "the read cannot establish which calls a compaction boundary replaced, so the " +
+				"boundary's removed history is unknown rather than none and no count of replaced calls " +
+				"is claimed: the inherited Codex reader drops the boundary record's replacement_history " +
+				"deliberately (its handleCompacted copies the summary and not the replaced messages), " +
+				"and a read through it answers a boundary with an unestablished ledger",
+		},
+	}
 }
 
 // flagCount reports a state of the read or of the run as the count a loss entry carries: one entry when

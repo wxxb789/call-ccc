@@ -711,23 +711,13 @@ func (c *openCodeConverter) callNamedByResult(result ToolResult) string {
 }
 
 // openCodeResultStatesAnOutcome answers whether one recorded result event states an outcome this target
-// can hold, as opposed to the progress a read streams while a call is still executing. The words are the
-// inherited readers' own: internal/parser/termination.go treats any status other than `running` as the
-// call being resolved (a Codex subagent's pending notification stream), the RooCode/Kilo chunk readers
-// record streamed chunks as `running` and flip the last one to the aggregate's own final status, and
-// Copilot's and OpenCode's own call events spell the same state `started`/`pending`/`streaming`
-// (internal/parser/copilot.go, internal/parser/opencode_v2.go). Anything else -- `completed`, `errored`,
-// a provider's own word, or no status at all -- is a recorded outcome, and the writer's own status rule
-// (toolPart) then decides whether the target has a truthful state for it: a failure word is written as
-// `error`, an absent word or `completed` as `completed`, and any other word is left out and counted
-// (tool_result_statuses) rather than given an outcome of this build's making.
+// can hold, as opposed to the progress a read streams while a call is still executing. It is the shared
+// rule (resultStatesAnOutcome), kept under this route's own name because the route reads it beside its
+// own status rule: a failure word is written as `error`, an absent word or `completed` as `completed`,
+// and any other word is left out and counted (tool_result_statuses) rather than given an outcome of this
+// build's making.
 func openCodeResultStatesAnOutcome(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "running", "pending", "streaming", "started", "in_progress":
-		return false
-	default:
-		return true
-	}
+	return resultStatesAnOutcome(status)
 }
 
 // writeConversation walks the document once and writes every message it can express. inactive is the

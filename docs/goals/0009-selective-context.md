@@ -1,9 +1,14 @@
 # 0009 — Select which recorded context crosses a harness boundary
 
-**Status:** Refined 2026-11-20 (owner fork A). The increment is **narrowed to one reference route — Claude
+**Status:** Refined 2026-11-20 (owner fork A) and **implemented 2026-11-20** on
+`feat/0009-selective-context` (uncommitted, unmerged — the operator owns the merge and the archive move):
+`--select`/`--strict-selection` on the reference pair, the read→selection seam of D6, and the evidence
+record [`docs/evidence/0009-selective-context.md`](../evidence/0009-selective-context.md) with its citation
+manifest. The four route increments (0018–0021) follow once this increment is accepted. The increment is
+**narrowed to one reference route — Claude
 Code → Codex**. A wider attempt (PR #14: 19 machine-review rounds, 0 clean, reviewed diff 191 KB → 1.47 MB)
 was closed unmerged; two blind cross-family consults found it non-contractive, and its review log is kept as
-an adversarial-shape corpus for this increment's negative cases. Prerequisite accepted.
+an adversarial-shape corpus for this increment's negative cases.
 **Prerequisite:** [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
 
 ## Intended advance

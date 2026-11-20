@@ -232,6 +232,24 @@ type ContinueOptions struct {
 
 	// DryRun converts and reports without installing anything.
 	DryRun bool
+	// Selection names which of the read's own records to carry, as a specification of ordinal values and
+	// regions ("0-5,9,12-"); the literal empty string with SelectionSupplied false means the whole read,
+	// exactly as a conversion behaved before the option existed, while any other value -- whitespace
+	// alone included, presence bit or not -- is a request that has to name something and is refused when
+	// it cannot (CheckSelectionOptions). The ordinals are the values the read supplied
+	// (Message.Ordinal), never a position, and a record the spec did not name is carried when a recorded
+	// call or result it is paired with is (Select).
+	Selection string
+	// SelectionSupplied says the caller supplied the selection option at all, even when its value came
+	// out empty. An unset shell variable expanded into `--select "$SPEC"` is a request whose value names
+	// nothing, and it is refused (ErrBadSelection, the usage exit code) before anything is read or
+	// installed instead of being read as the flag's absence: a run that installed the whole history is
+	// the one thing the caller's command was written to prevent.
+	SelectionSupplied bool
+	// StrictSelection refuses a selection that would carry a recorded call without the recorded result
+	// that answers it (or the reverse), by name and before anything is installed, instead of carrying
+	// the counterpart.
+	StrictSelection bool
 	// Verify is "none", "load" (default) or "resume".
 	Verify string
 	// ResumePrompt is the turn a "resume" verification runs. It is required for that level, because the
@@ -338,6 +356,7 @@ type ContinueResult struct {
 	Ref           Ref                `json:"ref"`
 	Target        string             `json:"target"`
 	Source        *SessionReport     `json:"source,omitempty"`
+	Selection     *SelectionReport   `json:"selection,omitempty"`
 	Conversion    ConversionReport   `json:"conversion"`
 	TargetSession TargetReport       `json:"target_session"`
 	Installation  InstallationReport `json:"installation"`
@@ -357,6 +376,15 @@ func conversionSourceReport(conversation Conversation) SessionReport {
 	report := reportFrom(conversation)
 	report.FirstUserMessage = ""
 	return report
+}
+
+// selectionRequested answers whether a command line asked for a selection at all: a specification that
+// names something, a value the caller supplied (even an empty one, which CheckSelectionOptions refuses
+// before this is asked), or the strict arm alone. It is the presence test the pair gate and the
+// conversion use, so a run without the flag keeps its exact behaviour and a run with it is answered
+// about the flag rather than silently ignored.
+func selectionRequested(selection string, supplied, strict bool) bool {
+	return supplied || strict || strings.TrimSpace(selection) != ""
 }
 
 // Continue converts a source session into a new native session of the target harness, installs it, and
@@ -380,6 +408,19 @@ func Continue(ctx context.Context, opts ContinueOptions) (ContinueResult, error)
 	}
 	if err := CheckVerifyOptions(opts.Verify, opts.ResumePrompt); err != nil {
 		return ContinueResult{}, err
+	}
+	// The selection's own refusals, in the order the caller's command line reads: the specification has
+	// to be this build's grammar at all, and the pair has to be one whose writer consumes the seam.
+	// Both are answered here, before any source is opened and before anything is installed; a refused
+	// run costs no read of the source and no target identity, and the CLI maps the errors to the usage
+	// exit code (IsSelectionRefusal).
+	if err := CheckSelectionOptions(opts.Selection, opts.StrictSelection, opts.SelectionSupplied); err != nil {
+		return ContinueResult{}, err
+	}
+	if selectionRequested(opts.Selection, opts.SelectionSupplied, opts.StrictSelection) {
+		if err := CheckSelectionPair(opts.Ref, target); err != nil {
+			return ContinueResult{}, err
+		}
 	}
 	level := strings.ToLower(strings.TrimSpace(opts.Verify))
 	if level == "" {
@@ -447,6 +488,28 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// finished writing, which another conversion carries.
 	result.Warnings = append(result.Warnings, boundaryWarnings(&boundary)...)
 
+	// The selection, when the caller named one, is decided here: after the read and the boundary, because
+	// it is a transformation of the *document* (the source file's bytes are measured whole and never
+	// rewritten), and before the source-side leaf guard below, because a specification the read's own
+	// ordinals refuse is a statement about the caller's command line -- the usage exit code, the core's
+	// own sentence -- and must not be reported as something about the source file's leaf. Everything
+	// downstream -- the writer, the structural read-back, the load check, the printed invocation -- is
+	// about the session that is actually written, so the reduced document is what travels on. Nothing is
+	// installed before this point, so a spec this build cannot honour costs no file and no target
+	// identity. The leaf check below is asked about the *read*, never the window: which entry the
+	// source's own loader walks from is a property of the source file and the read, and a window the
+	// selection carries neither moves it nor narrows the read's own last record.
+	conversationForWrite := conversation
+	if selectionRequested(opts.Selection, opts.SelectionSupplied, opts.StrictSelection) {
+		selected, report, err := Select(conversation, opts.Selection, opts.StrictSelection)
+		if err != nil {
+			return ContinueResult{}, err
+		}
+		conversationForWrite = selected
+		result.Selection = &report
+		result.Warnings = append(result.Warnings, selectionWarnings(&report)...)
+	}
+
 	// The record the source's own loader selects as the conversation's leaf, asked of the source file's own
 	// entries: for the Pi-family readers the read's own last record is not that answer (pi_source_leaf.go),
 	// and a conversion written from a record the file's leaf path does not reach would resume a branch the
@@ -480,7 +543,7 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 		facts.CLIVersionSource = "writer-pin"
 	}
 
-	session, err := route.Convert(conversation, targetConvertInput{
+	session, err := route.Convert(conversationForWrite, targetConvertInput{
 		CLIVersion:     facts.CLIVersion,
 		Provider:       facts.ModelProvider,
 		Model:          facts.Model,
@@ -492,6 +555,11 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	})
 	if err != nil {
 		return ContinueResult{}, err
+	}
+	if result.Selection != nil {
+		// D1's per-record table is filled from the writer's own walk, which is the only place that knows
+		// what each record became: the item kinds written for it, or the category it was counted under.
+		fillSelectionRecords(result.Selection, session.RecordFates)
 	}
 	result.Conversion = ConversionReport{
 		State:          ConversionStateConverted,

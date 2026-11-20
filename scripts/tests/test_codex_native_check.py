@@ -628,7 +628,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               second_boundary: str | None = None,
               include_growth_in_second: bool = True,
               copy_mutation: str | None = None,
-              repeat_turn: bool = False
+              repeat_turn: bool = False,
+              selection_document_ok: bool = True,
+              selection_view_ok: bool = True
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
@@ -696,6 +698,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         comparisons. The two ``* turn`` windows require it, because a turn that did not run has no window
         to put a mutation in; their cases assert both turns' own checks passed, so a window whose turn was
         skipped cannot read as one whose mutation nothing caught.
+
+        ``selection_document_ok`` and ``selection_view_ok`` are the selection arm's own controls (goal
+        0009): the stub's flagged-conversion document reports the named window (``0,4`` kept and
+        ``1-3,5-7`` left out) and its view of a selected session lists the kept record's marker. Turning
+        either off leaves those facts out of the stub's answers, so the arm's own checks -- that the
+        report names the window, and that the target's own view holds the kept record and not the
+        excluded one -- must fail, and only they may.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -806,7 +815,16 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 "verification": {"load": {"state": "verified"}, "resume": {"state": "verified"}},
             }
 
-        conversions = {"made": 0}
+        conversions = {"made": 0, "selected": 0}
+        #: The selection arm's own stub sessions (goal 0009) and the views this case answers for them:
+        #: the shipped check's two flagged conversions each install into their own file, and the view of
+        #: each selected session carries the kept record's marker.
+        selected_sessions = ("01a1e000-0000-7000-8000-0000000000a1",
+                             "01a1e000-0000-7000-8000-0000000000a2")
+        selected_installed = {session: home / "sessions" / "2026" / "05" / "08"
+                              / f"rollout-2026-05-08T08-00-00-{session}.jsonl"
+                              for session in selected_sessions}
+        selected_views: set[str] = set()
 
         def same_length_swap(path: Path) -> None:
             """This case's own change to a copy: one field's value swapped for another of the same length.
@@ -835,6 +853,48 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
                 if command[1] == "continue":
+                    if "--select" in command:
+                        # The selection arm (goal 0009): each invocation installs its own session, and
+                        # the document reports the classes the shipped check reads. The source copy is
+                        # not mutated by the selection windows, so no mutation branch applies here.
+                        conversions["selected"] += 1
+                        session = selected_sessions[conversions["selected"] - 1]
+                        path = selected_installed[session]
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(json.dumps({"type": "session_meta"}) + "\n")
+                        selected_views.add(session)
+                        selection_document = {
+                            "conversion": {
+                                "state": "converted", "format": "codex-rollout-jsonl",
+                                "carried": {"messages": 2, "user_messages": 1, "assistant_messages": 1,
+                                            "tool_calls": 0, "tool_results": 0,
+                                            "compaction_boundaries": 0},
+                                "losses": [{"category": "inactive_branch_records",
+                                            "disposition": "omitted", "count": 1,
+                                            "detail": "the stub's one loss"}],
+                            },
+                            "installation": {"state": "installed", "path": str(path),
+                                             "mechanism": "hard-link", "created": True,
+                                             "source_check_state": "unchanged"},
+                            "target_session": {
+                                "session_id": session, "path": str(path), "binary_found": True,
+                                "resume_arguments": [codex, "resume", session],
+                                "exec_resume_arguments": [codex, "exec", "resume", session, "<prompt>"],
+                                "resume_environment": {"CODEX_HOME": str(home)},
+                            },
+                            "selection": {
+                                "spec": NATIVE_CHECK.SELECTION_SPEC,
+                                "included": {"count": 2, "regions": ["0", "4"]} if selection_document_ok
+                                else {"count": 1, "regions": ["0"]},
+                                "excluded": {"count": 6, "regions": ["1-3", "5-7"]}
+                                if selection_document_ok else {"count": 7, "regions": ["1-7"]},
+                                "necessities_added": {"count": 0, "added": []},
+                                "calls_undischarged": {"count": 0, "regions": []},
+                            },
+                            "verification": {"load": {"state": "verified"},
+                                             "resume": {"state": "verified"}},
+                        }
+                        return subprocess.CompletedProcess(cmd, 0, json.dumps(selection_document), "")
                     conversions["made"] += 1
                     which = "first" if conversions["made"] == 1 else "second"
                     converted_copy[which] = source_copy(env)
@@ -898,13 +958,22 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
                 second = session == second_thread_id
-                path = second_installed if second else installed
-                if copy_mutation == ("second load" if second else "first load"):
+                if session in selected_installed:
+                    path = selected_installed[session]
+                else:
+                    path = second_installed if second else installed
+                # A load mutation is this case's change to the copy a *conversion* read, made while the
+                # loader of that conversion's own session runs. The selection arm's loads name other
+                # sessions and are not windows of that table, so they leave the copy alone.
+                if session == second_thread_id and copy_mutation == "second load":
                     # The copy the conversions read, changed while the target harness's own loader runs:
-                    # for the second session that is after the second conversion and its own comparison, so
-                    # only the comparison that runs last can catch it; for the first it is before the
-                    # growth, so the changed bytes would become every later comparison's baseline.
-                    same_length_swap(converted_copy["second" if second else "first"])
+                    # after the second conversion and its own comparison, so only the comparison that
+                    # runs last can catch it.
+                    same_length_swap(converted_copy["second"])
+                elif session == thread_id and copy_mutation == "first load":
+                    # For the first session's own loader the change is before the growth, so the changed
+                    # bytes would become every later comparison's baseline.
+                    same_length_swap(converted_copy["first"])
                 return {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
                                    "cwd": "/tmp"}}
 
@@ -913,7 +982,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
         def fake_thread_view(server, thread):
             lines = [f"thread {thread} (the case's stub's own view)"]
-            if str(thread) == second_thread_id and include_growth_in_second:
+            if str(thread) in selected_views:
+                # A selected session's own view: the kept record's marker, as the harness itself would
+                # list it, and nothing of the records the specification excluded.
+                if selection_view_ok:
+                    lines.append(f"    userMessage: {NATIVE_CHECK.SELECTION_KEPT}")
+            elif str(thread) == second_thread_id and include_growth_in_second:
                 # The target's own view of the later session: the turn the source gained, as the harness
                 # itself lists it.
                 lines += [f"    userMessage: {GROWTH_QUESTION}", f"    agentMessage: {GROWTH_ANSWER}"]
@@ -1002,6 +1076,45 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                       results["the source copy still holds the bytes the first conversion read"][1],
                       "the comparison taken where the copy grows did not name the bytes taken before the "
                       "first conversion")
+        self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
+
+    def test_the_selection_arms_own_checks_are_not_vacuous(self) -> None:
+        """The flagged arm's assertions are red exactly when the target or the report is not what they name.
+
+        The selection arm (goal 0009) holds the reference route to its window at the native level: the
+        conversion's own report names the classes, and the target harness's own view holds the kept
+        record's marker and not the excluded one's. A stub whose document reports another window, and one
+        whose view omits the kept record, must fail those checks -- and only they beyond the intact run's
+        own -- so neither assertion can be green by never asking.
+        """
+        code, results = self.drive(selection_document_ok=False)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         ["the selection arm's conversion 1 reports the named window",
+                          "the selection arm's conversion 2 reports the named window"],
+                         f"a stub reporting another window did not fail the arm's own naming check: "
+                         f"{results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
+
+        code, results = self.drive(selection_view_ok=False)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         ["the selection arm's session 1 holds the carried window and not the rest",
+                          "the selection arm's session 2 holds the carried window and not the rest"],
+                         f"a stub view without the kept record did not fail the arm's own view check: "
+                         f"{results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
+        # The intact run is the other direction: both checks pass, so neither is red for its own reasons.
+        code, results = self.drive()
+        for name in ("the selection arm's conversion 1 reports the named window",
+                     "the selection arm's conversion 2 reports the named window",
+                     "the target harness's own loader opens the selection arm's session 1",
+                     "the target harness's own loader opens the selection arm's session 2",
+                     "the selection arm's session 1 holds the carried window and not the rest",
+                     "the selection arm's session 2 holds the carried window and not the rest",
+                     "the same selection command re-runs into its own fresh sessions"):
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
 
     def test_a_malformed_codex_installed_line_is_a_named_failure(self) -> None:

@@ -264,11 +264,25 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   operation lifecycle finality, *omitted by selection* versus *absent in source*, the calls **and** results a
   compaction boundary accounts for, and retained-versus-already-written ancestry. **No target writer and no
   read-back verifier may infer a cross-record fact from the reduced stream** — an inference reconstructed
-  after the cut is the defect class this rule exists to keep out, not a local bug to patch.
+  after the cut is the defect class this rule exists to keep out, not a local bug to patch. The reference
+  route carries that set as six unexported `Conversation` fields (`internal/ccc/selection.go`, nil on a
+  document that is the read itself): the read's own line membership taken before the cut, the result→call
+  pairing, each carried call's finality (completed / failed / interrupted / in-progress /
+  unknown-undischarged — a progress event is no pair's counterpart and no call's answer), the nearest
+  carried ancestor, and each carried compaction boundary's ledger (its own calls and results, an established
+  *none*, or *not established* where the read's reader skips the replaced history). A counterpart or a
+  record the read's own line leaves inactive is never activated to satisfy closure: the whole selection is
+  refused by name instead.
 - **Goal 0009's increment is one reference route: Claude Code → Codex.** The other four target routes (Pi,
   OMP, OpenCode, Codex-as-source) are **separate later increments**, each of which must prove the same seam
   end to end before the next starts (owner decision 2026-11-20). ID-less ownership inference on a selected
-  run is refused or explicitly omitted, never inferred.
+  run is refused or explicitly omitted, never inferred. `--select ORDINALS`/`--strict-selection` are
+  accepted on that pair alone — the ordinals are the values the read itself supplied, never positions —
+  every other pair is refused by name before the source is opened, and a run without the flags keeps the
+  exact bytes and report it had before the option existed (the plan's before/after probe over the existing
+  fixtures, quoted in the increment's evidence record). A bad specification is refused with the usage exit
+  code before anything is installed, and a run that would split a recorded call/result pair carries the
+  counterpart by default (named in the report) or refuses by name under `--strict-selection`.
 - **Review is contractively bounded** (owner fork A, 2026-11-20). The conductor blocks a goal the moment the
   reviewed diff grows more than 25% in a fix round, findings fail to decrease strictly across three rounds,
   or the ordinary rounds pass six. A trip is an **abstraction-boundary failure** to report and re-decompose,
@@ -280,7 +294,8 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
 ## How to work here
 
 - The continuation core and its per-harness target writers live in `internal/ccc` — the route table
-  `targets.go`, the install/verify/probe machinery the routes share (`route_shared.go`), and the
+  `targets.go`, the install/verify/probe machinery the routes share (`route_shared.go`), the selection's
+  own rules and seam (`selection.go`, `conversation.go`), and the
   writers/installers/verifiers `codex_target.go`, `codex_install.go`,
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
   `pi_install.go`, `pi_verify.go`, `omp_target.go`, `omp_install.go`,

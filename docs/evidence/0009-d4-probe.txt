@@ -1,0 +1,360 @@
+fixture claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 target codex digest=6ede1d38562105c03ddbae0ee200066d692bbf730b5c31492125c1391f935418 bytes=3105 carried=5/1/1/1/2
+  loss omitted malformed_source_lines 1
+  loss carried-with-caveat pre_compaction_history 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unresolved_source_parents 1
+fixture claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 target claude digest=343ad8558a943b43b4067a1df92f581492dbaf0f2689c5963cb3f013ee3c684c bytes=4032 carried=5/1/1/1/0
+  loss omitted malformed_source_lines 1
+  loss omitted message_model_attribution 2
+  loss carried-with-caveat pre_compaction_history 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unresolved_source_parents 1
+fixture claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 target pi digest=a47c5fddd59d4bb93e0bb20eb7d7f9556e76d8ead80e0854140819c65cf861d0 bytes=3051 carried=6/1/1/1/0
+  loss omitted malformed_source_lines 1
+  loss carried-with-caveat message_model_attribution 2
+  loss carried-with-caveat pre_compaction_history 4
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unrecorded_token_usage 4
+  loss carried-with-caveat unresolved_source_parents 1
+fixture claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 target omp digest=fc783ec0f51c989edcee1eee3112d0b5b0f0d385550028e1ac714287b804f141 bytes=3307 carried=6/1/1/1/0
+  loss omitted malformed_source_lines 1
+  loss carried-with-caveat message_model_attribution 2
+  loss carried-with-caveat pre_compaction_history 4
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unrecorded_token_usage 4
+  loss carried-with-caveat unresolved_source_parents 1
+fixture claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10 target opencode digest=bfa2fbb73352e7524e436ebdb0cea8f7033609f3dbcb7c5aef7d5f4766a770ca bytes=2131 carried=7/1/1/1/2
+  loss carried-with-caveat assistant_completion_instant 4
+  loss carried-with-caveat compaction_reason 1
+  loss omitted empty_user_messages 1
+  loss omitted malformed_source_lines 1
+  loss carried-with-caveat message_model_attribution 4
+  loss carried-with-caveat pre_compaction_history 4
+  loss carried-with-caveat target_agent 4
+  loss carried-with-caveat target_model_id_attribution 2
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unresolved_source_parents 1
+  loss carried-with-caveat usage_zeroed 1
+fixture claude:b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef target codex digest=6b86bb7c9a144c2207cb419e913d1cbf54beb446d0e4ea7c979388ae9d225718 bytes=3754 carried=5/3/3/0/2
+  loss omitted reasoning_text 2
+  loss omitted sidechain_messages 1
+  loss omitted system_records 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss carried-with-caveat tool_result_outcomes 1
+  loss omitted tool_result_sources 3
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef target claude digest=79e50e183abb113d7f24047b23a592f90342ac099eb1508bc83a73c075c5234f bytes=5320 carried=5/3/3/0/0
+  loss omitted message_model_attribution 4
+  loss omitted reasoning_text 2
+  loss omitted sidechain_messages 1
+  loss omitted system_records 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 3
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef target pi digest=5729e08d6dee1842bdd9624a7e5ef5c0e7c501b6d9a1e0035660092682ab2813 bytes=5084 carried=9/3/3/0/0
+  loss carried-with-caveat message_model_attribution 5
+  loss carried-with-caveat reasoning_text 2
+  loss omitted sidechain_messages 1
+  loss omitted system_records 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 3
+  loss carried-with-caveat unrecorded_token_usage 7
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef target omp digest=f01d21d9d56df54c3f6f3585698fd719ec4403528c87e9bb0733a8058c26a9ce bytes=5340 carried=9/3/3/0/0
+  loss carried-with-caveat message_model_attribution 5
+  loss carried-with-caveat reasoning_text 2
+  loss omitted sidechain_messages 1
+  loss omitted system_records 1
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 3
+  loss carried-with-caveat unrecorded_token_usage 7
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef target opencode digest=75e7d8762b7bf3116c5dc6287317b33e3819e7332ea016da79e023b1900c1c6f bytes=3282 carried=9/3/3/0/2
+  loss carried-with-caveat assistant_completion_instant 7
+  loss omitted empty_user_messages 2
+  loss carried-with-caveat message_model_attribution 7
+  loss carried-with-caveat reasoning_text 2
+  loss omitted sidechain_messages 1
+  loss omitted system_records 1
+  loss carried-with-caveat target_agent 7
+  loss carried-with-caveat target_model_id_attribution 2
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 3
+  loss carried-with-caveat unresolved_source_parents 6
+  loss carried-with-caveat usage_zeroed 1
+fixture claude:c1a74e28-3b0d-4f91-8d27-6e5b90c4a183 target codex digest=0075c5d338cdead5d5ba5ee1aa83350f52f97f68c97814e7576165212efac7ca bytes=3710 carried=5/3/2/1/2
+  loss carried-with-caveat pre_compaction_history 3
+  loss omitted system_records 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 2
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:c1a74e28-3b0d-4f91-8d27-6e5b90c4a183 target claude digest=5b86b7f5c800fb82a8c748d0db3cc7f603677a682ec373f55baa97a8a35435f6 bytes=5583 carried=5/3/2/1/0
+  loss omitted message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 3
+  loss omitted system_records 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 2
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:c1a74e28-3b0d-4f91-8d27-6e5b90c4a183 target pi digest=f14c5e8d461febc70b0cacc049b6c48b3657226f4ac1d13c0c0ebab4272a9aac bytes=4422 carried=8/3/2/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 5
+  loss omitted system_records 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 2
+  loss carried-with-caveat unrecorded_token_usage 6
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:c1a74e28-3b0d-4f91-8d27-6e5b90c4a183 target omp digest=1c262fde468a5b51c54984a89dca2b6f8e52c524f70a6502c12382c502f010fb bytes=4678 carried=8/3/2/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 5
+  loss omitted system_records 1
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat tool_name_vocabulary 2
+  loss omitted tool_result_sources 2
+  loss carried-with-caveat unrecorded_token_usage 6
+  loss carried-with-caveat unresolved_source_parents 6
+fixture claude:c1a74e28-3b0d-4f91-8d27-6e5b90c4a183 target opencode digest=bd01b057162f21e90f309c6805b789011ef91e5f9c2a1d059d11ccd8e9f77f13 bytes=2614 carried=8/2/2/1/2
+  loss carried-with-caveat assistant_completion_instant 5
+  loss carried-with-caveat compaction_reason 1
+  loss omitted empty_assistant_messages 1
+  loss omitted empty_user_messages 1
+  loss carried-with-caveat message_model_attribution 5
+  loss carried-with-caveat pre_compaction_history 4
+  loss omitted system_records 1
+  loss carried-with-caveat target_agent 5
+  loss carried-with-caveat target_model_id_attribution 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 2
+  loss omitted unpaired_tool_calls 1
+  loss carried-with-caveat unresolved_source_parents 6
+  loss carried-with-caveat usage_zeroed 1
+fixture codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 target codex digest=f44a66bb03795be34dcd62008383643c94eeb9eb4c52cc67b8fcce50c39a8538 bytes=2566 carried=4/1/1/1/2
+  loss carried-with-caveat pre_compaction_history 2
+  loss omitted result_record_instants 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+fixture codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 target claude digest=60cdab33f75be17cf4e67dfc3da37672e87d276031f7bb45eca9b3c259e873a3 bytes=3450 carried=4/1/1/1/0
+  loss omitted message_model_attribution 5
+  loss carried-with-caveat pre_compaction_history 2
+  loss omitted result_record_instants 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+fixture codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 target pi digest=75ec24de98153ebed2a9f16a3153013fc9a04bd2ecb0b44ad1b05b159f722740 bytes=2533 carried=5/1/1/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 3
+  loss omitted result_record_instants 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 target omp digest=d8d00b94f62d5eb0acae049ad058fa8c9c884ca57f1f6049f013ef5a50bf4ab0 bytes=2789 carried=5/1/1/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 3
+  loss omitted result_record_instants 1
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture codex:0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812 target opencode digest=2026a545105799f0bc7bcecfda687688d618356950ed461edc62fb70c760718e bytes=1790 carried=6/1/1/1/2
+  loss carried-with-caveat assistant_completion_instant 3
+  loss carried-with-caveat compaction_reason 1
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 3
+  loss carried-with-caveat target_agent 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat usage_zeroed 1
+fixture codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe target codex digest=587686ef3bb42c134092d10ea0637aa49cf7074b4a531ad007826b425621f069 bytes=2007 carried=2/2/1/0/1
+  loss omitted result_record_instants 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+fixture codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe target claude digest=8ea8cc608650eb25a0e7437a8389b84d444aeb8e25f623022a6d9fe6a1928456 bytes=1968 carried=2/1/1/0/0
+  loss carried-with-caveat coalesced_tool_call_projections 1
+  loss omitted message_model_attribution 3
+  loss omitted result_record_instants 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+fixture codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe target pi digest=d61700d679ce619e6bc22021dd8150dd02d950b1b8285121c2d0743486dc7b1b bytes=1777 carried=3/1/1/0/0
+  loss carried-with-caveat coalesced_tool_call_projections 1
+  loss carried-with-caveat message_model_attribution 2
+  loss omitted result_record_instants 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unrecorded_token_usage 2
+fixture codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe target omp digest=1288465bc7194954eca336c632808353eee0b3f0a52b5277e5140cbdf0a6fe6e bytes=2033 carried=3/1/1/0/0
+  loss carried-with-caveat coalesced_tool_call_projections 1
+  loss carried-with-caveat message_model_attribution 2
+  loss omitted result_record_instants 1
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat unrecorded_token_usage 2
+fixture codex:5b2d7c14-6e8a-4f31-b0c5-9d7e21a4c8fe target opencode digest=173f59ef277dfd2bf30c0cf0c3a94096a77960e14dc2aeb6e7da57f33c9c9ee3 bytes=1302 carried=3/1/1/0/1
+  loss carried-with-caveat assistant_completion_instant 2
+  loss carried-with-caveat coalesced_tool_call_projections 1
+  loss carried-with-caveat message_model_attribution 2
+  loss carried-with-caveat target_agent 2
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss omitted tool_result_sources 1
+  loss carried-with-caveat usage_zeroed 1
+fixture pi:01a1c335-7098-71c2-a91b-b5295c0464f5 target codex digest=e4f6809516d4bd9fefae2c680c40fcad1a0c053b4ce3c5ba1030e9a69981fd3d bytes=2235 carried=4/1/1/0/1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unresolved_source_parents 1
+fixture pi:01a1c335-7098-71c2-a91b-b5295c0464f5 target claude digest=d0f65faf79aa6db68cbc1f8732c22b7297c6e1427ac6f8b52f6865b6d6a9c7ea bytes=2797 carried=4/1/1/0/0
+  loss omitted message_model_attribution 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unresolved_source_parents 1
+fixture pi:01a1c335-7098-71c2-a91b-b5295c0464f5 target pi digest=61931e1474f30a108c54ac0d79863e801a4cd60fc9dd6e166d4c9c993a6fb797 bytes=2163 carried=4/1/1/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unrecorded_token_usage 3
+  loss carried-with-caveat unresolved_source_parents 1
+fixture pi:01a1c335-7098-71c2-a91b-b5295c0464f5 target omp digest=c6c7f718ab6abb5193f1704511f88986ab3c7d80adb01afb425db2fa1f77c87c bytes=2419 carried=4/1/1/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unrecorded_token_usage 3
+  loss carried-with-caveat unresolved_source_parents 1
+fixture pi:01a1c335-7098-71c2-a91b-b5295c0464f5 target opencode digest=dd3c687c98f4cef0a31726ee9f8d63d71700fe01dfa17a24d9a927c08ce8d669 bytes=1494 carried=4/1/1/0/1
+  loss carried-with-caveat assistant_completion_instant 3
+  loss omitted empty_user_messages 1
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat target_agent 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unresolved_source_parents 1
+  loss carried-with-caveat usage_zeroed 1
+fixture pi:01a1c336-4b02-78d3-9e15-6c7a2f0b8d41 target codex digest=214c3ec3c6de538b0af270342eedba9328a2471f8e8515ea371183deece84608 bytes=1480 carried=3/0/0/0/1
+  loss omitted inactive_branch_records 3
+  loss carried-with-caveat unprojected_dialogue 1
+fixture pi:01a1c336-4b02-78d3-9e15-6c7a2f0b8d41 target claude digest=c81a654076c64b47e7bfc0a3e2ef3be2f88fe28fa2633ee4e7693f0dad644d03 bytes=2888 carried=5/0/0/1/0
+  loss omitted message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 2
+  loss carried-with-caveat unprojected_dialogue 2
+fixture pi:01a1c336-4b02-78d3-9e15-6c7a2f0b8d41 target pi digest=7e5965c2dd47610c95225db3abdd59ebc00a67c04ec3dd80a96e1cc24fd1c5fc bytes=2160 carried=5/0/0/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 2
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture pi:01a1c336-4b02-78d3-9e15-6c7a2f0b8d41 target omp digest=456a8ab34df9eb0860143e444bebf40fe9e0e2d6be5a08b97fd2b8ff0b584751 bytes=2416 carried=5/0/0/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 2
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture pi:01a1c336-4b02-78d3-9e15-6c7a2f0b8d41 target opencode digest=73af95a39ec5c7cd2add73f062447b90a9031f0a6cfb994b2b5a5ac45faa35ee bytes=942 carried=3/0/0/0/1
+  loss carried-with-caveat assistant_completion_instant 2
+  loss omitted inactive_branch_records 3
+  loss carried-with-caveat message_model_attribution 2
+  loss carried-with-caveat target_agent 2
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat usage_zeroed 1
+fixture pi:01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90 target codex digest=e3191a899231fad56fc86412dde2cab22eb6c431aba3610dc4d8a82f0dbb3034 bytes=2105 carried=4/0/0/0/2
+  loss omitted inactive_branch_records 1
+  loss carried-with-caveat unprojected_dialogue 2
+fixture pi:01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90 target claude digest=d4e1e78d47afa4618b0f9c02c384b2f88c6ffa3ed700a7e241545cdd6b463d78 bytes=2202 carried=5/0/0/0/0
+  loss omitted message_model_attribution 3
+  loss carried-with-caveat unprojected_dialogue 2
+fixture pi:01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90 target pi digest=870d7e901e7c340b46c4414b68afd3a097432281395bb1fbc7da0c171fa33212 bytes=1979 carried=5/0/0/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture pi:01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90 target omp digest=a030f765349671ab617c7149cf8536b7fa87cf4d9eef60ee2eef316085e315ca bytes=2235 carried=5/0/0/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture pi:01a1c337-6d1e-7f84-9b2c-4e5f6a7b8c90 target opencode digest=454266e85825fe808663f9043c152d663bce99eb37b69b2ebe51de87ce1a79c7 bytes=1137 carried=4/0/0/0/2
+  loss carried-with-caveat assistant_completion_instant 2
+  loss omitted inactive_branch_records 1
+  loss carried-with-caveat message_model_attribution 2
+  loss carried-with-caveat target_agent 2
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat usage_zeroed 1
+fixture omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 target codex digest=e4f6809516d4bd9fefae2c680c40fcad1a0c053b4ce3c5ba1030e9a69981fd3d bytes=2235 carried=4/1/1/0/1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unresolved_source_parents 1
+fixture omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 target claude digest=d0f65faf79aa6db68cbc1f8732c22b7297c6e1427ac6f8b52f6865b6d6a9c7ea bytes=2797 carried=4/1/1/0/0
+  loss omitted message_model_attribution 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unresolved_source_parents 1
+fixture omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 target pi digest=61931e1474f30a108c54ac0d79863e801a4cd60fc9dd6e166d4c9c993a6fb797 bytes=2163 carried=4/1/1/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unrecorded_token_usage 3
+  loss carried-with-caveat unresolved_source_parents 1
+fixture omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 target omp digest=c6c7f718ab6abb5193f1704511f88986ab3c7d80adb01afb425db2fa1f77c87c bytes=2419 carried=4/1/1/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unrecorded_token_usage 3
+  loss carried-with-caveat unresolved_source_parents 1
+fixture omp:01a1c338-9e4f-7c21-8f3d-2b6a05e1d7a4 target opencode digest=dd3c687c98f4cef0a31726ee9f8d63d71700fe01dfa17a24d9a927c08ce8d669 bytes=1494 carried=4/1/1/0/1
+  loss carried-with-caveat assistant_completion_instant 3
+  loss omitted empty_user_messages 1
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat target_agent 3
+  loss carried-with-caveat tool_name_vocabulary 1
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat unresolved_source_parents 1
+  loss carried-with-caveat usage_zeroed 1
+fixture omp:01a1c339-1d7a-7b02-9c44-5e8f2a3b6d10 target codex digest=214c3ec3c6de538b0af270342eedba9328a2471f8e8515ea371183deece84608 bytes=1480 carried=3/0/0/0/1
+  loss omitted inactive_branch_records 3
+  loss carried-with-caveat unprojected_dialogue 1
+fixture omp:01a1c339-1d7a-7b02-9c44-5e8f2a3b6d10 target claude digest=c81a654076c64b47e7bfc0a3e2ef3be2f88fe28fa2633ee4e7693f0dad644d03 bytes=2888 carried=5/0/0/1/0
+  loss omitted message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 2
+  loss carried-with-caveat unprojected_dialogue 2
+fixture omp:01a1c339-1d7a-7b02-9c44-5e8f2a3b6d10 target pi digest=7e5965c2dd47610c95225db3abdd59ebc00a67c04ec3dd80a96e1cc24fd1c5fc bytes=2160 carried=5/0/0/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 2
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture omp:01a1c339-1d7a-7b02-9c44-5e8f2a3b6d10 target omp digest=456a8ab34df9eb0860143e444bebf40fe9e0e2d6be5a08b97fd2b8ff0b584751 bytes=2416 carried=5/0/0/1/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat pre_compaction_history 2
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture omp:01a1c339-1d7a-7b02-9c44-5e8f2a3b6d10 target opencode digest=73af95a39ec5c7cd2add73f062447b90a9031f0a6cfb994b2b5a5ac45faa35ee bytes=942 carried=3/0/0/0/1
+  loss carried-with-caveat assistant_completion_instant 2
+  loss omitted inactive_branch_records 3
+  loss carried-with-caveat message_model_attribution 2
+  loss carried-with-caveat target_agent 2
+  loss carried-with-caveat unprojected_dialogue 1
+  loss carried-with-caveat usage_zeroed 1
+fixture omp:01a1c33a-6b2e-7a91-8d17-4c0f93e5b28a target codex digest=e3191a899231fad56fc86412dde2cab22eb6c431aba3610dc4d8a82f0dbb3034 bytes=2105 carried=4/0/0/0/2
+  loss omitted inactive_branch_records 1
+  loss carried-with-caveat unprojected_dialogue 2
+fixture omp:01a1c33a-6b2e-7a91-8d17-4c0f93e5b28a target claude digest=d4e1e78d47afa4618b0f9c02c384b2f88c6ffa3ed700a7e241545cdd6b463d78 bytes=2202 carried=5/0/0/0/0
+  loss omitted message_model_attribution 3
+  loss carried-with-caveat unprojected_dialogue 2
+fixture omp:01a1c33a-6b2e-7a91-8d17-4c0f93e5b28a target pi digest=870d7e901e7c340b46c4414b68afd3a097432281395bb1fbc7da0c171fa33212 bytes=1979 carried=5/0/0/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture omp:01a1c33a-6b2e-7a91-8d17-4c0f93e5b28a target omp digest=a030f765349671ab617c7149cf8536b7fa87cf4d9eef60ee2eef316085e315ca bytes=2235 carried=5/0/0/0/0
+  loss carried-with-caveat message_model_attribution 3
+  loss carried-with-caveat title_slot_written 1
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat unrecorded_token_usage 3
+fixture omp:01a1c33a-6b2e-7a91-8d17-4c0f93e5b28a target opencode digest=454266e85825fe808663f9043c152d663bce99eb37b69b2ebe51de87ce1a79c7 bytes=1137 carried=4/0/0/0/2
+  loss carried-with-caveat assistant_completion_instant 2
+  loss omitted inactive_branch_records 1
+  loss carried-with-caveat message_model_attribution 2
+  loss carried-with-caveat target_agent 2
+  loss carried-with-caveat unprojected_dialogue 2
+  loss carried-with-caveat usage_zeroed 1

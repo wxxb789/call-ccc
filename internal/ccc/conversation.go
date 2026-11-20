@@ -215,6 +215,77 @@ type Conversation struct {
 	Source   SourceIdentity `json:"source"`
 	Messages []Message      `json:"messages"`
 	Fidelity Fidelity       `json:"fidelity"`
+	// The selection seam. Every field is nil on a document that *is* the read itself, which is the
+	// marker selectionReduced reads and the reason a run without a specification keeps the bytes, the
+	// item list and the whole report it had before selections existed. Select sets them all, keyed to
+	// the reduced document's positions: the answers a writer needs to decide a cross-record fact are the
+	// read's own and cannot be re-derived from the window, because a record the window left out is
+	// indistinguishable there from one the source never recorded.
+	//
+	// sourceLineInactive carries, per message of Messages, whether the *read's* own relations place the
+	// record off the line the read's last record answers (readLineAnswers). This target's log is one
+	// sequence of records with no parent relation -- a record written there becomes model-visible
+	// history -- so a window must not redefine the line by making its own last record the end of it: the
+	// writer omits an off-line record and counts it (inactive_branch_records) exactly as it does for the
+	// read itself.
+	sourceLineInactive []bool
+	// sourceLineUnresolved carries, per message of Messages, whether the place the read's line walk took
+	// *into* that record was a relation the read did not establish (a record chained through a tool
+	// result standing between it and the call it named, a record the read left parentless, or one naming
+	// a parent the read does not hold). The writer counts the written records' answers as the walk's own
+	// accounting (unresolved_source_parents); answering it here is what keeps the count the read's
+	// rather than the window's.
+	sourceLineUnresolved []bool
+	// sourceResultPairs carries the read's own pairing of recorded results to the calls they answer,
+	// keyed to the reduced document's positions (pairedCallOccurrences, resolved over the read before
+	// the cut): a result whose recorded ancestry the window left out would otherwise fall back to a
+	// nearer occurrence the window happened to carry. A result the read recorded with no link at all
+	// (an id-less occurrence) has no entry, and a writer on a reduced document omits and counts it
+	// rather than inventing an owner -- ID-less ownership inference on a selected run is its own later
+	// increment, and an ambiguous shape is never inferred.
+	sourceResultPairs map[resultOccurrence]callOccurrence
+	// sourceCallFinality carries, per message of Messages, the read's own finality for every call
+	// occurrence it holds (callFinalities): completed, failed, interrupted, in-progress, or
+	// unknown-undischarged. It is what tells a writer whether an outcome is established at all: a call
+	// whose only recorded evidence is progress is written with no output and counted
+	// (outstanding_tool_calls), and the archive's derived summary of such a call is never published as
+	// its completion.
+	sourceCallFinality map[callOccurrence]callFinality
+	// sourceKeptAncestor carries, per message of Messages, the reduced document's position of the
+	// nearest ancestor the *read* holds that the selection also carries, or -1 where the read answers
+	// none: what a writer whose target format is a tree chains a record's entry to when the record's own
+	// parent was cut. The reference route's Codex writer writes one sequence with no parent relation and
+	// consumes neither this answer nor the projection detail a tree writer would count; it travels with
+	// the seam because a later route must not re-derive it.
+	sourceKeptAncestor []int
+	// sourceBoundaries carries what each carried compaction boundary accounts for, keyed to the reduced
+	// document's positions (boundaryLedgers): the calls and results the boundary record itself carries,
+	// none, or not-established where the read's own reader skips the replaced history the format records
+	// (the inherited Codex reader drops `replacement_history`). A writer counts the established ledger
+	// and discloses an unestablished one as the unknown it is, never reading it as none.
+	sourceBoundaries map[int]boundaryLedger
+}
+
+// resultOccurrence names one recorded tool result by its position in Messages: the message it travels
+// on and its index in that message's ToolResults.
+type resultOccurrence struct {
+	message int
+	result  int
+}
+
+// callOccurrence names one recorded tool call the same way.
+type callOccurrence struct {
+	message int
+	call    int
+}
+
+// selectionReduced answers whether this conversation is a document a selection produced rather than the
+// read itself: the per-record line answer only Select sets (sourceLineInactive) is the signal, and it is
+// the same one the writer's line rule and the summary question ask. A writer consults it before applying
+// a rule that belongs to the reduction, because a conversation the read returned keeps the acceptance
+// the writer had before selections existed, byte for byte (goal 0009's D4).
+func (c Conversation) selectionReduced() bool {
+	return c.sourceLineInactive != nil
 }
 
 // fidelityWarnings names what the provider itself said about the completeness of one read, in the words

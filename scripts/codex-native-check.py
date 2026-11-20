@@ -118,6 +118,15 @@ BINARY = Path("bin", "ccc-native-check")
 GROWTH_ROOT = Path("internal", "ccc", "testdata", "growth")
 GROWTH_TURN = "claude-complete-turn.jsonl"
 
+#: The selection arm (goal 0009): the same fixture copy converted with one specification, twice. The
+#: spec names two ordinals of the committed transcript's own space -- the assistant record at 4 and the
+#: user record at 0 -- and leaves every other record out, so the markers below are the target's own view
+#: read for a kept and an excluded record. The spec keeps no record of the fixture's tool call (ordinal
+#: 2) or of its recorded result (ordinal 3), so the closure rule has nothing to reunite.
+SELECTION_SPEC = "0,4"
+SELECTION_KEPT = "Four attempts with exponential backoff"
+SELECTION_EXCLUDED = "Now check where the backoff cap is configured"
+
 #: The provider root the copy is written under: a Claude Code transcript is resolved through the directory
 #: its project-dir spelling names, and this run drives the conversions with `CLAUDE_PROJECTS_DIR` pointing
 #: at its scratch root rather than at the committed fixtures.
@@ -952,6 +961,53 @@ def main(argv: list[str] | None = None) -> int:
             record("a real turn continues from the installed session", False,
                    "not attempted: pass --resume-prompt to run one", skipped=True)
 
+        # ---------------------------------------------------------------- the selection arm: the same
+        # fixture copy converted with one specification, twice (goal 0009). The reference route's whole
+        # point is that the target holds exactly the selected window, so this half asserts it at the
+        # native level: the conversion's own report names the classes, the target harness's own view of
+        # the installed session holds the kept record's marker and not the excluded record's, and the
+        # same command run a second time installs a *fresh* session rather than reusing or replacing the
+        # first -- repeating a selection is the same operation as repeating a conversion.
+        selected_sessions: list[str] = []
+        for attempt in (1, 2):
+            selected = run([
+                str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
+                "--target-home", str(home), "--target-binary", codex,
+                "--select", SELECTION_SPEC, "--json",
+            ], cwd=repo, env=env)
+            if selected.returncode != 0:
+                record(f"the selection arm's conversion {attempt} converts and installs", False,
+                       last_meaningful_line(selected.stderr))
+                return 1
+            selected_document = json.loads(selected.stdout)
+            selection = selected_document.get("selection") or {}
+            selected_target = selected_document["target_session"]
+            selected_thread = selected_target["session_id"]
+            selected_installed = Path(selected_target["path"])
+            classes = (selection.get("included", {}).get("regions"),
+                       selection.get("excluded", {}).get("regions"),
+                       selection.get("calls_undischarged", {}).get("count"))
+            record(f"the selection arm's conversion {attempt} reports the named window",
+                   classes == (["0", "4"], ["1-3", "5-7"], 0) and selected_installed.is_file(),
+                   f"included={classes[0]} excluded={classes[1]} undischarged={classes[2]}; "
+                   f"installed {selected_installed.relative_to(home)}")
+            selected_view, selected_kinds = load_and_view(
+                codex, home, selected_thread, selected_installed,
+                f"the target harness's own loader opens the selection arm's session {attempt}",
+                f"the target harness's own view of the selection arm's session {attempt}:")
+            selected_view_text = "\n".join(selected_view)
+            record(f"the selection arm's session {attempt} holds the carried window and not the rest",
+                   SELECTION_KEPT in selected_view_text
+                   and SELECTION_EXCLUDED not in selected_view_text,
+                   f"{len(selected_kinds)} item(s); kept marker present="
+                   f"{SELECTION_KEPT in selected_view_text}, excluded present="
+                   f"{SELECTION_EXCLUDED in selected_view_text}")
+            selected_sessions.append(selected_thread)
+        record("the same selection command re-runs into its own fresh sessions",
+               len(set(selected_sessions)) == 2 and selected_sessions[0] not in existing_ids
+               and selected_sessions[1] not in existing_ids,
+               f"two invocation(s) installed {selected_sessions[0]} then {selected_sessions[1]}")
+
         # ---------------------------------------------------------------- the source grows, and is
         # converted again. Everything above is the first conversion's own answer; what follows is the
         # goal's repeatable-handoff half: the source gains one turn, the same session is converted a
@@ -1070,8 +1126,10 @@ def main(argv: list[str] | None = None) -> int:
             record("a real turn continues from the second installed session", False,
                    "not attempted: pass --repeat-resume-prompt to run one", skipped=True)
         print()
-        print(f"conversions: 2 session(s) installed ({thread_id} then {second_thread_id}); real turn(s) "
-              f"run: {int(bool(args.resume_prompt)) + int(bool(args.repeat_resume_prompt))}")
+        print(f"conversions: {2 + len(selected_sessions)} session(s) installed ({thread_id}, then the "
+              f"selection arm's {selected_sessions[0]} and {selected_sessions[1]}, then "
+              f"{second_thread_id}); real turn(s) run: "
+              f"{int(bool(args.resume_prompt)) + int(bool(args.repeat_resume_prompt))}")
 
         # Every promise about files this run must not change is answered here, after the loader and —
         # when it ran — the real turn: a comparison recorded beside the read-back above would let a
@@ -1135,6 +1193,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(json.dumps({"results": [{"check": n, "state": s, "detail": d} for n, s, d in RESULTS],
                               "target_session": thread_id, "installed": str(installed),
+                              "selected_sessions": selected_sessions,
                               "second_session": second_thread_id, "second_installed": str(second_installed),
                               "codex": codex, "codex_home": str(home)}, indent=2))
         return 1 if failures else 0

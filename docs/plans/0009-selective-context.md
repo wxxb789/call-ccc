@@ -306,3 +306,52 @@ abstraction-boundary failure to report, not a budget to raise.
   for the operator pass: this is a documents-only **prep** increment, not the artifact that ships; its design
   findings are the operator's to adjudicate; and the contractive breaker had already established that the
   fix loop was not contracting on it (30 270 → 46 420 bytes in one round).
+- **Implementation (2026-11-20, branch `feat/0009-selective-context`).** The plan's six dispositions are
+  carried as the seam this build ships; where the plan left the encoding open, these are the readings taken,
+  each with the test that pins it.
+  1. **Closure pairs an *outcome* result, not a progress event** (§3.2/§4(a)). A recorded result whose status
+     says the call is still running (`running`, `pending`, `streaming`, `started`, `in_progress` — the
+     inherited readers' own words) is the read's record of a call that has not finished, so it is no pair's
+     counterpart: a specification that keeps the call leaves the progress record out, and the carried
+     finality (in-progress) is what stops the writer's summary fallback from publishing the progress text as
+     the call's completion. With progress events paired, §4(a)'s mutation arm could not be built at all (the
+     counterpart would be carried in). A progress event the *caller* names is retained, and on a reduced
+     document the writer omits it and counts it (`nonterminal_tool_events`, the OpenCode route's own
+     category) rather than publishing it as an answer. A counterpart that is an outcome result is carried as
+     §3.2 says, and one the read's line leaves inactive refuses the selection by name
+     (`TestSelectionCarriesTheCounterpartOfASeparatedPair`, `TestSelectionRefusesASeparatedPairUnderStrictSelection`,
+     `TestSelectionRefusesACounterpartOffTheReadsLine`, `TestSelectionAnswersNoProgressEventAsACallOutcome`,
+     `TestSelectionPublishesAProgressEventOnlyThroughItsCall`).
+  2. **The seam's encoding** is six unexported `Conversation` fields, all nil on a document that is the read
+     itself (`selectionReduced`, the D4 marker — `internal/ccc/selection.go`, `conversation.go`):
+     `sourceLineInactive`/`sourceLineUnresolved` (per carried record, from the walk `readLineAnswers` now
+     answers per record as well as in total), `sourceResultPairs` (the read's pairing, keyed to the reduced
+     document's positions), `sourceCallFinality` (per carried call occurrence; completed / failed /
+     interrupted / in-progress / unknown-undischarged), `sourceKeptAncestor` (the nearest carried ancestor
+     per record), and `sourceBoundaries` (per carried compaction boundary: the record's own call and result
+     counts with the ledger established, or unestablished where the read's own reader skips the replaced
+     history — the inherited Codex reader drops `replacement_history`; a Claude boundary is an established
+     *none*).
+  3. **D1's table** is `SelectionReport.Records`, filled from the writer's own walk (`RecordFate`: the item
+     kinds written for the record, or the loss category it was charged under — the writer sets that at its
+     own decision points). The classes reconcile: included + necessities + excluded = the read's records,
+     and every written item is paired with the ordinal it came from
+     (`TestSelectionAccountsForEveryCarriedRecord`).
+  4. **The reduction's own loss rows**, appended only to a reduced document's report so an unflagged run's
+     report keeps its own categories: `nonterminal_tool_events` (a retained progress event this format
+     cannot carry as progress), `outstanding_tool_calls` (a written call whose source established no
+     outcome), `compaction_record_tool_calls`/`compaction_record_tool_results` (the accounted evidence), and
+     `unestablished_compaction_history` (a boundary whose replaced history the read cannot establish — zero
+     on every real run of this route). §4's negative-case mutations set exactly these seam answers back to
+     nil and assert the wire output and the counts on both sides.
+  5. **D6(e)'s ancestry is carried but has no consumer on the reference route**: the Codex target is one
+     sequence of records with no parent relation, so its writer chains nothing. It is computed and pinned
+     (`TestSelectionKeepsTheNearestCarriedAncestor`) and will be consumed by the tree-target increments
+     (0018–0021); carrying it now is what keeps those routes from re-deriving it.
+  6. **The read-back verifier needed no change.** `compareCodexRoundTrip` compares the writer's own item
+     list with a read-back of the *installed file*; it never reads the reduced document, so there is no
+     cross-record fact for it to infer. The seam's consumer on this route is the writer (and `Select`).
+  7. **The native arm** (§4) is the re-runnable flagged pair of conversions in
+     `scripts/codex-native-check.py`, whose view assertions the harness's own selftest drives through its
+     subprocess/app-server seams (`test_the_selection_arms_own_checks_are_not_vacuous`); the real loader run
+     is quoted in the increment's evidence record.

@@ -130,6 +130,20 @@ no line feed is reported as what it is — a record the source had not terminate
 the read carried it is left to the read's own answer rather than claimed either way; converting again once
 the file is written reads it again.
 
+`--select ORDINALS` makes the carried window explicit: with
+`ccc continue claude:<id> --to codex --select 0-4,9` the read keeps the records whose own ordinal values
+the specification names and the conversion writes that window as a fresh target session — the report's
+`selection.ordinal_space` block states the space the ordinals are values in, and an ordinal outside it,
+an inverted or duplicated region and a non-numeric value are refused by name with the usage exit code
+before anything is installed. A window that would separate a recorded call from its recorded result
+carries the counterpart as a declared necessity (the report's `selection.necessities_added`), and
+`--strict-selection` refuses that window by name instead. The report (human and `--json`) names the
+transformation per class — included, excluded, necessities added, and the calls the source itself left
+undischarged — and accounts for every kept record by its ordinal and the items it became. The option is
+a capability of the **reference pair alone** (a Claude Code source → a Codex target); every other pair,
+and `--strict-selection` without `--select`, is refused by name before the source is opened. A run
+without the flag is byte-identical to the same run before the option existed.
+
 The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
 CLI: `SourceReader` reads a native session — an OpenCode one included — into a typed, transient
 Conversation document,

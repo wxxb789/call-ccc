@@ -52,7 +52,11 @@ type convertedTarget struct {
 	Data    []byte
 	Carried Carried
 	Losses  []Loss
-	Raw     any
+	// RecordFates is the per-source-record accounting of a document a selection produced (D1), filled by
+	// a writer whose route keeps one. Empty for every other document and route, which is what leaves an
+	// unflagged run's report as it was.
+	RecordFates []RecordFate
+	Raw         any
 }
 
 // targetFactsInput is what a target's own harness is asked with. It is answered after the source read,
@@ -254,15 +258,16 @@ func codexRoute() targetRoute {
 				return convertedTarget{}, err
 			}
 			return convertedTarget{
-				ID:        rollout.SessionID,
-				FileName:  rollout.FileName,
-				Directory: rollout.Directory,
-				Cwd:       rollout.Cwd,
-				StartedAt: rollout.StartedAt,
-				Data:      rollout.Data,
-				Carried:   rollout.Carried,
-				Losses:    rollout.Losses,
-				Raw:       rollout,
+				ID:          rollout.SessionID,
+				FileName:    rollout.FileName,
+				Directory:   rollout.Directory,
+				Cwd:         rollout.Cwd,
+				StartedAt:   rollout.StartedAt,
+				Data:        rollout.Data,
+				Carried:     rollout.Carried,
+				Losses:      rollout.Losses,
+				RecordFates: rollout.RecordFates,
+				Raw:         rollout,
 			}, nil
 		},
 		Install: func(_ context.Context, session convertedTarget, in targetInstallInput) (string, string, error) {

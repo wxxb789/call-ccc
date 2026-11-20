@@ -486,9 +486,24 @@ func (t *sourceTree) writtenAncestor(sourceID string) (string, bool) {
 // answers as hanging off the message that made a call -- while the source's file runs call → result →
 // what follows -- keeps the result on the line.
 func inactiveSourceRecords(messages []Message, provider string) ([]bool, int) {
+	inactive, _, unresolved := readLineAnswers(messages, provider)
+	return inactive, unresolved
+}
+
+// readLineAnswers is the walk behind inactiveSourceRecords, with one answer per record: the inactive
+// vector, a flag per record whose place the walk took for a relation the read did not establish, and the
+// count of those places. The flags are the same count, attributed to the record the walk reached, which
+// is what lets a reduced document's writer count the walk's own accounting for the records it still
+// writes (sourceLineAnswers) instead of re-walking the window.
+//
+// The walk needs no depth bound: each step moves to a record before the one it is at, so a record is
+// visited at most once and a cycle cannot be entered -- a source's linear history of any length is
+// walked to its end rather than cut off at a bound no real conversation was measured against.
+func readLineAnswers(messages []Message, provider string) ([]bool, []bool, int) {
 	inactive := make([]bool, len(messages))
+	unresolvedAt := make([]bool, len(messages))
 	if len(messages) == 0 {
-		return inactive, 0
+		return inactive, unresolvedAt, 0
 	}
 	byIdentity := make(map[string]int, len(messages))
 	for index, message := range messages {
@@ -500,9 +515,6 @@ func inactiveSourceRecords(messages []Message, provider string) ([]bool, int) {
 	}
 	onLine := make([]bool, len(messages))
 	unresolved := 0
-	// The walk needs no depth bound: each step moves to a record before the one it is at, so a record is
-	// visited at most once and a cycle cannot be entered -- a source's linear history of any length is
-	// walked to its end rather than cut off at a bound no real conversation was measured against.
 	for cursor := len(messages) - 1; cursor >= 0; {
 		if onLine[cursor] {
 			break
@@ -512,6 +524,9 @@ func inactiveSourceRecords(messages []Message, provider string) ([]bool, int) {
 			projectedParentProvider(provider))
 		if counted {
 			unresolved++
+			if next >= 0 && next < len(messages) {
+				unresolvedAt[next] = true
+			}
 		}
 		if next >= cursor {
 			break
@@ -521,7 +536,148 @@ func inactiveSourceRecords(messages []Message, provider string) ([]bool, int) {
 	for index, message := range messages {
 		inactive[index] = strings.TrimSpace(message.SourceUUID) != "" && !onLine[index]
 	}
-	return inactive, unresolved
+	return inactive, unresolvedAt, unresolved
+}
+
+// sourceLineAnswers answers a document's line the way its writer must read it: the read's own line
+// membership per record, and the count of places the walk took for a relation the read did not establish.
+// A document a selection produced carries its own answers (Conversation.sourceLineInactive and
+// sourceLineUnresolved, taken over the *read* before the cut), and the writer consumes those: re-walking
+// the window would make its last record the line's end, so a window ending on a record the read's line
+// placed off it would activate a branch the source's conversation left.
+func sourceLineAnswers(conversation Conversation) ([]bool, int) {
+	if conversation.selectionReduced() {
+		unresolved := 0
+		for index, flag := range conversation.sourceLineUnresolved {
+			if !flag {
+				continue
+			}
+			if index < len(conversation.sourceLineInactive) && conversation.sourceLineInactive[index] {
+				continue
+			}
+			unresolved++
+		}
+		return conversation.sourceLineInactive, unresolved
+	}
+	return inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
+}
+
+// pairedCallOccurrences answers the seam's own pairing at occurrence granularity: for every recorded
+// result that names an id, the call occurrence the result's own recorded relations name where they do --
+// the call the read holds on the result's own ancestry chain (its own record, else the nearest record its
+// recorded parent walk reaches) that records the same non-empty id, so a reused id later in file order
+// cannot override the call the source placed the result under -- and otherwise the call occurrence the
+// same non-empty id records nearest before it, in the read's own order, the reading the inherited
+// readers' termination check takes (internal/parser/termination.go's hasOrphanedToolCall counts only
+// results recorded after the call they answer). The answer is the seam's own: the closure's pairs, the
+// report's undischarged count and the writers cannot disagree about which call a recorded result answers.
+//
+// A conversation a selection produced carries the pairing its own read answered
+// (Conversation.sourceResultPairs), in the reduced document's positions: the window may have left the
+// records the ancestry walk steps through out of the document, and re-reading the pairing over it would
+// let a nearer carried occurrence override the answer the read gave -- the writer would then write the
+// result under a call the read did not pair it with. A conversation the read returned carries no such
+// answers (nil), and this walk resolves them.
+//
+// A call or result the source recorded with no id is not an occurrence here: the document holds no link
+// for it, and a writer's own inference for an id-less result on an unflagged run is its disclosed
+// reading, not this pairing.
+func pairedCallOccurrences(conversation Conversation) map[resultOccurrence]callOccurrence {
+	if conversation.selectionReduced() {
+		return conversation.sourceResultPairs
+	}
+	messages := conversation.Messages
+	byIdentity := make(map[string]int, len(messages))
+	for index, message := range messages {
+		if id := strings.TrimSpace(message.SourceUUID); id != "" {
+			if _, seen := byIdentity[id]; !seen {
+				byIdentity[id] = index
+			}
+		}
+	}
+	// firstCallOn answers the call occurrence a record records under one non-empty id.
+	firstCallOn := func(index int, id string) (callOccurrence, bool) {
+		for callIndex, call := range messages[index].ToolCalls {
+			if strings.TrimSpace(call.ToolUseID) == id {
+				return callOccurrence{message: index, call: callIndex}, true
+			}
+		}
+		return callOccurrence{}, false
+	}
+	// ancestryCall answers the call occurrence the result's recorded ancestry establishes: the walk starts
+	// on the result's own record (where the read folded the outcome onto the call's own message) and steps
+	// through the recorded parent relations to the nearest record that records the same id. The walk steps
+	// through the identities the read answered and the records it holds -- an identity the read does not
+	// hold ends it -- and is bounded by the document's own size so a cycle a source recorded cannot keep
+	// it going.
+	ancestryCall := func(index int, id string) (callOccurrence, bool) {
+		if call, ok := firstCallOn(index, id); ok {
+			return call, true
+		}
+		at := index
+		for steps := 0; steps <= len(messages); steps++ {
+			parent := strings.TrimSpace(messages[at].SourceParentUUID)
+			if parent == "" {
+				return callOccurrence{}, false
+			}
+			next, ok := byIdentity[parent]
+			if !ok || next >= at {
+				return callOccurrence{}, false
+			}
+			if call, ok := firstCallOn(next, id); ok {
+				return call, true
+			}
+			at = next
+		}
+		return callOccurrence{}, false
+	}
+	mostRecent := map[string]callOccurrence{}
+	paired := map[resultOccurrence]callOccurrence{}
+	for index, message := range messages {
+		seen := map[string]bool{}
+		for callIndex, call := range message.ToolCalls {
+			id := strings.TrimSpace(call.ToolUseID)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			mostRecent[id] = callOccurrence{message: index, call: callIndex}
+		}
+		for resultIndex, result := range message.ToolResults {
+			id := strings.TrimSpace(result.ToolUseID)
+			if id == "" {
+				continue
+			}
+			place := resultOccurrence{message: index, result: resultIndex}
+			if call, ok := ancestryCall(index, id); ok {
+				paired[place] = call
+				continue
+			}
+			if call, ok := mostRecent[id]; ok {
+				paired[place] = call
+			}
+		}
+	}
+	return paired
+}
+
+// resultStatesAnOutcome answers whether one recorded result occurrence states an outcome, as opposed to
+// the progress a read streams while a call is still executing. The words are the inherited readers' own:
+// internal/parser/termination.go treats any status other than `running` as the call being resolved (a
+// Codex subagent's pending notification stream), the RooCode/Kilo chunk readers record streamed chunks as
+// `running` and flip the last one to the aggregate's own final status, and Copilot's and OpenCode's own
+// call events spell the same state `started`/`pending`/`streaming`. Anything else -- `completed`,
+// `errored`, a provider's own word, or no status at all -- is a recorded outcome. The selection consults
+// it to decide whether a call was left undischarged and whether a call/result pair is one structure; a
+// writer of a reduced document consults it to decide whether a recorded event may be published as the
+// call's answer at all.
+func resultStatesAnOutcome(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "pending", "streaming", "started", "in_progress":
+		return false
+	default:
+		return true
+	}
 }
 
 // sourceLineParent answers the record a walk from index hangs off, by the writers' own rule, and whether

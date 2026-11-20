@@ -351,7 +351,7 @@ func splitFlags(args []string) (optionArgs, operands []string, err error) {
 // misspelled option is refused by the flag set instead of swallowing the reference.
 func takesValue(name string) bool {
 	switch name {
-	case "data-dir", "to", "target-home", "target-binary", "verify", "resume-prompt":
+	case "data-dir", "to", "target-home", "target-binary", "verify", "resume-prompt", "select":
 		return true
 	default:
 		return false
@@ -440,14 +440,20 @@ func writeHuman(out io.Writer, inspection ccc.Inspection) {
 // continueUsage is the one-line usage `ccc continue` prints for `-h`, for a usage error and for a
 // missing operand.
 const continueUsage = "usage: ccc continue <provider>:<session-id-or-path> --to codex|claude|pi|omp|opencode [--json] [--dry-run]\n" +
+	"                         [--select ORDINALS] [--strict-selection]\n" +
 	"                         [--target-home DIR] [--target-binary PATH] [--data-dir DIR]\n" +
-	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n"
+	"                         [--verify none|load|resume] [--resume-prompt TEXT]\n" +
+	"                         (a selection is honoured on claude:… --to codex alone; ORDINALS are the\n" +
+	"                         ordinal values the read supplied, as regions like 0-5,9,12-)\n"
 
 func runContinue(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("continue", flag.ContinueOnError)
 	asJSON := flags.Bool("json", false, "write the result as JSON")
 	dryRun := flags.Bool("dry-run", false, "convert without installing")
 	target := flags.String("to", "", "target harness to write")
+	selectFlag := flags.String("select", "", "ordinal regions to carry (claude:… --to codex only)")
+	strictSelection := flags.Bool("strict-selection", false,
+		"refuse a selection that separates a recorded call from its recorded result")
 	targetHome := flags.String("target-home", "", "the target harness's data directory")
 	targetBinary := flags.String("target-binary", "", "the target harness's executable")
 	dataDir := flags.String("data-dir", "", "data directory whose sessions.db is consulted")
@@ -461,6 +467,15 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, continueUsage)
 		return exitUsage
 	}
+	// Whether --select was supplied at all, even with an empty value: `--select "$SPEC"` whose shell
+	// variable was unset is a request that names nothing, and the core refuses it instead of reading it
+	// as the flag's absence (which would install the whole history the caller meant to cut).
+	selectionSupplied := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "select" {
+			selectionSupplied = true
+		}
+	})
 	if strings.TrimSpace(*target) == "" {
 		fmt.Fprint(stderr, continueUsage)
 		fmt.Fprintf(stderr, "ccc: --to names the target harness (%s)\n", strings.Join(ccc.Targets(), ", "))
@@ -490,17 +505,20 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result, err := continueRun(context.Background(), ccc.ContinueOptions{
-		Ref:          ref,
-		Target:       *target,
-		Config:       cfg,
-		Reader:       ccc.NewSourceReader(cfg),
-		ArchivePath:  cfg.DBPath,
-		TargetHome:   *targetHome,
-		TargetBinary: *targetBinary,
-		DryRun:       *dryRun,
-		Verify:       *verify,
-		ResumePrompt: *resumePrompt,
-		Stderr:       stderr,
+		Ref:               ref,
+		Target:            *target,
+		Config:            cfg,
+		Reader:            ccc.NewSourceReader(cfg),
+		ArchivePath:       cfg.DBPath,
+		TargetHome:        *targetHome,
+		TargetBinary:      *targetBinary,
+		DryRun:            *dryRun,
+		Selection:         *selectFlag,
+		SelectionSupplied: selectionSupplied,
+		StrictSelection:   *strictSelection,
+		Verify:            *verify,
+		ResumePrompt:      *resumePrompt,
+		Stderr:            stderr,
 	})
 	if err != nil {
 		// A run that failed after the conversion is not a run without an answer: the report it came back
@@ -514,6 +532,12 @@ func runContinue(args []string, stdout, stderr io.Writer) int {
 			writeWarnings(stderr, result.Warnings)
 		}
 		fmt.Fprintf(stderr, "ccc: %v\n", err)
+		// A selection this build refuses is a statement about the command line, not about the source or
+		// the target: the caller's next move is to write a different command, so the run answers with
+		// the usage exit code exactly as a malformed option does.
+		if ccc.IsSelectionRefusal(err) {
+			return exitUsage
+		}
 		return exitFailure
 	}
 
@@ -617,6 +641,7 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 		}
 		writeBoundary(out, source.Boundary)
 	}
+	writeSelection(out, result.Selection)
 	carried := result.Conversion.Carried
 	fmt.Fprintf(out, "  converted:    %s, %d bytes: %d message(s), %d tool call(s), %d tool result(s), %d boundary(ies), %d turn(s)\n",
 		result.Conversion.Format, carried.Bytes, carried.Messages, carried.ToolCalls, carried.ToolResults,
@@ -686,6 +711,65 @@ func writeContinuation(out io.Writer, result ccc.ContinueResult) {
 		fmt.Fprintf(out, "  warning:      %s\n", oneLine(warning))
 	}
 	writeCarried(out)
+}
+
+// writeSelection prints the selection's own section: the space the specification was written against,
+// the four classes with their counts and the ordinals they sit at, and the per-record fate table D1 asks
+// for -- every record the selection carried, what became of it and which written items it produced. A
+// run without a selection prints nothing here, exactly as its report has always read.
+func writeSelection(out io.Writer, selection *ccc.SelectionReport) {
+	if selection == nil {
+		return
+	}
+	strict := ""
+	if selection.Strict {
+		strict = ", strict"
+	}
+	space := selection.Space
+	positional := ""
+	if space.Min != 0 || !space.Contiguous {
+		positional = fmt.Sprintf(" (the read's own values, not the positions 0..%d)", space.Records-1)
+	}
+	fmt.Fprintf(out, "  selection:    %s%s; ordinal space %d..%d: %d record(s)%s\n",
+		selection.Spec, strict, space.Min, space.Max, space.Records, positional)
+	fmt.Fprintf(out, "  included:     %d record(s) at %s\n", selection.Included.Count,
+		selectionRegions(selection.Included.Regions))
+	fmt.Fprintf(out, "  excluded:     %d record(s) at %s\n", selection.Excluded.Count,
+		selectionRegions(selection.Excluded.Regions))
+	if selection.NecessitiesAdded.Count > 0 {
+		parts := make([]string, 0, len(selection.NecessitiesAdded.Added))
+		for _, necessity := range selection.NecessitiesAdded.Added {
+			parts = append(parts, fmt.Sprintf("%d (pulled by %d)", necessity.Ordinal, necessity.PulledBy))
+		}
+		fmt.Fprintf(out, "  necessities:  %d added: %s\n", selection.NecessitiesAdded.Count,
+			strings.Join(parts, ", "))
+	} else {
+		fmt.Fprintf(out, "  necessities:  none added\n")
+	}
+	fmt.Fprintf(out, "  undischarged: %d call(s) at %s\n", selection.CallsUndischarged.Count,
+		selectionRegions(selection.CallsUndischarged.Regions))
+	for _, record := range selection.Records {
+		necessity := ""
+		if record.Necessity && record.PulledBy != nil {
+			necessity = fmt.Sprintf(" [necessity, pulled by %d]", *record.PulledBy)
+		}
+		if record.Became == ccc.BecameNativeHistory {
+			fmt.Fprintf(out, "  record %-7d native history (%s)%s\n", record.Ordinal,
+				strings.Join(record.Written, ", "), necessity)
+			continue
+		}
+		fmt.Fprintf(out, "  record %-7d lost (%s)%s\n", record.Ordinal,
+			valueOr(record.Reason, "no reason recorded"), necessity)
+	}
+}
+
+// selectionRegions spells a class's regions for the human block, answering "none" for a class that names
+// no ordinal.
+func selectionRegions(regions []string) string {
+	if len(regions) == 0 {
+		return "none"
+	}
+	return strings.Join(regions, ", ")
 }
 
 // sourceCheckLine is the human spelling of the installation's source check: the goal asks the run to
