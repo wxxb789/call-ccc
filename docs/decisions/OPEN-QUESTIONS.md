@@ -2951,3 +2951,28 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Settled by:** an owner sentence on whether a no-Go-change increment may use row form (b) — the answer
   decides how 0009b–0009d's own manifests are written, and whether a fourth options-list item (a
   header-only manifest) is ever legitimate.
+
+## Q-0009a-02 — The goal-0009 review budget has tripped, and the series continues on a dispatch
+
+- **Status:** open (default taken: this round — the eighth fix stage over reviewed head `0d16a874`, itself
+  a conductor dispatch — ran to completion; its ledger is recorded in
+  `docs/evidence/0009a-native-oracle.md`'s own preamble; nothing here commits, pushes or opens a pull
+  request, and no further review round is taken on this increment's own authority).
+- **Question:** `AGENTS.md`'s review-boundedness rule (owner fork A) blocks a goal "the moment … findings
+  fail to decrease strictly across three rounds, or the ordinary rounds pass six", and a trip is "an
+  abstraction-boundary failure to report and re-decompose, never a budget to raise". Goal 0009a's own
+  ledger trips both arms — seven numbered fix rounds (r8's own review counts them), with rounds r1–r7
+  finding 8, 7, 7, 4, 4, 5 and 5 defects — while the conductor dispatched this eighth fix stage anyway.
+  Does the goal-0009a series continue as ordinary review rounds with the dispatch recorded as the
+  exception, or does it stop and re-decompose before any further round (the rule's own reading)?
+- **Options:** (a) the dispatch is the explicit external decision the rule's "stop and report" wanted, and
+  the series continues as ordinary rounds; (b) stop after this round's fixes and re-decompose goal 0009a's
+  remaining acceptance (the structural half and the receipt-schema half are separable) before another
+  review round; (c) relax or raise the bound — refused by the rule itself.
+- **Default taken:** the dispatched fixes were completed and their pins recorded; the evidence record's
+  preamble states the ledger beside the dispatch, explicitly so "a later reader can weigh both". Neither
+  (a) nor (b) is chosen here: the choice is the owner's/conductor's, and taking either on this increment's
+  behalf would be the budget-raise the rule forbids.
+- **Reversal:** one conductor/owner sentence settling (a) or (b), recorded in `AGENTS.md`'s rule or the
+  goal file; nothing in the tree's code, tests or evidence depends on the outcome of this question.
+- **Settled by:** the owner/conductor, before the next review round on this branch.

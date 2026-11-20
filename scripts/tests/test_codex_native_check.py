@@ -1461,6 +1461,36 @@ def oracle_item_is(kind: str, needle: str) -> Callable[[dict], bool]:
     return match
 
 
+def duplicate_output(text: str, output: str) -> str:
+    """One fixture with its first call output duplicated immediately after itself, under the same
+    `call_id` and the same instant, its recorded text replaced by `output`.
+
+    The duplicate keeps the slot's instant where it stands, so the clock stays nondecreasing, and the
+    record it copies is the `function_call_output` the receipt's own result entry names.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not oracle_item_is("function_call_output", "call_oracle_0001")(json.loads(line)):
+            continue
+        duplicate = json.loads(line)
+        duplicate["payload"]["output"] = output
+        return "\n".join(lines[:index + 1] + [oracle_quote(duplicate)] + lines[index + 1:]) + "\n"
+    raise AssertionError("the fixture no longer holds the call output this helper duplicates")
+
+
+def receipt_with_second_result(receipt: dict, output: str) -> dict:
+    """`receipt` with a second `tool_result` entry for the duplicated output, immediately after the
+    first — the order the artifact's own occurrences stand in, which `oracle.plan-order` compares."""
+    for index, entry in enumerate(receipt["occurrences"]):
+        if entry.get("kind") != "tool_result":
+            continue
+        receipt["occurrences"].insert(index + 1, {
+            "kind": "tool_result", "call_id": entry.get("call_id"), "text": output,
+            "disposition": "emitted"})
+        return receipt
+    raise AssertionError("the fixture's plan holds no tool_result entry")
+
+
 class OracleMutation(NamedTuple):
     """One negative fixture: the mutation that removes a rule, the fixture pair it is applied to, and
     what a failure names it by."""
@@ -1557,6 +1587,12 @@ def _originator_dropped(record: dict) -> None:
 
 def _content_becomes_empty(record: dict) -> None:
     record["payload"]["content"] = []
+
+
+def _role_dropped(record: dict) -> None:
+    """One message's `role` deleted: the rule's own non-empty-string arm, which the content arms all
+    fail without (review round r8's finding: removing the guard left every mutation green)."""
+    record["payload"].pop("role")
 
 
 def _content_block_type_is_not_read(record: dict) -> None:
@@ -1814,6 +1850,20 @@ def _mutation_message_block_type_not_read(text: str, receipt: dict | None) -> tu
 def _mutation_message_text_blank(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     return oracle_edit(text, oracle_item_is("message", "And now?"),
                        change=_content_text_becomes_blank), receipt
+
+
+def _mutation_message_role_dropped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One message's `role` deleted, its content untouched.
+
+    The developer-role mutation under `oracle.plan-accounted` keeps a valid nonblank role and is
+    refused by the vocabulary check, so the structural role guard at
+    `scripts/codex-native-check.py`'s `oracle_message_violations` had no negative fixture: removing
+    that guard would have left every case green (review round r8's finding). This mutation is
+    artifact-only — no plan is supplied — because the role's absence is the structural rule's own
+    subject, and with the guard removed no rule reads the record's role at all.
+    """
+    return oracle_edit(text, oracle_item_is("message", "The synthetic one."),
+                       change=_role_dropped), receipt
 
 
 def _mutation_event_message_not_a_string(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2204,6 +2254,32 @@ def _mutation_plan_order_view_swapped(text: str, receipt: dict | None) -> tuple[
     return "\n".join(lines) + "\n", receipt
 
 
+def _mutation_plan_result_collapsed_by_read(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The fixture's output duplicated under the same call id with its trailing line feed removed, and
+    a second plan entry naming the duplicate.
+
+    Review round r8's finding: the two raw texts are distinct occurrences to `oracle_occurrences` and
+    to the receipt's `call_id`/recorded-text identity, so both accounting rules count two — while the
+    carried read's `CodexCollectingSink.appendToolResultEvent` suppresses the second as equivalent
+    (`hasEquivalentCallResultEvent` compares status and `strings.TrimSpace` content) and answers one
+    result. Without the refusal this artifact and this receipt validate green, certifying a result
+    multiplicity no read of the artifact answers; with it, only `oracle.plan-accounted` can be red.
+    """
+    assert receipt is not None
+    for line in text.splitlines():
+        if not oracle_item_is("function_call_output", "call_oracle_0001")(json.loads(line)):
+            continue
+        output = json.loads(line)["payload"]["output"]
+        if not isinstance(output, str) or not output.endswith("\n"):
+            raise AssertionError("the fixture's output no longer ends with the line feed this mutation "
+                                 "removes")
+        stripped = output[:-1]
+        break
+    else:
+        raise AssertionError("the fixture no longer holds the call output this mutation duplicates")
+    return duplicate_output(text, stripped), receipt_with_second_result(receipt, stripped)
+
+
 def _mutation_plan_pair_split(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """A call the plan emits while its recorded result is marked omitted, and the result is not there.
 
@@ -2290,6 +2366,7 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
         OracleMutation("a block the reader does not read", "session.jsonl", None,
                        _mutation_message_block_type_not_read),
         OracleMutation("a message whose text is blank", "session.jsonl", None, _mutation_message_text_blank),
+        OracleMutation("a message with no role", "session.jsonl", None, _mutation_message_role_dropped),
     ),
     "oracle.event-message": (
         OracleMutation("an event message that is not a string", "session.jsonl", None,
@@ -2341,6 +2418,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "session-receipt.json", _mutation_plan_custom_tool_call_output),
         OracleMutation("a result under a call the read answers elsewhere", "session.jsonl",
                        "session-receipt.json", _mutation_plan_special_result_call),
+        OracleMutation("a second output the read collapses into the one before it", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_result_collapsed_by_read),
         OracleMutation("a call whose recorded input is not a string", "session.jsonl",
                        "session-receipt.json", _mutation_plan_non_string_call_input),
         OracleMutation("an image-generation call the receipt cannot name", "reduced.jsonl",
@@ -3182,6 +3261,70 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertNotEqual(NATIVE_CHECK.oracle_result_text({}),
                             NATIVE_CHECK.oracle_result_text({"output": None}),
                             "the absent member and the written `null` are one identity")
+
+    def test_a_result_the_read_collapses_is_refused_with_a_plan(self) -> None:
+        """Two raw outputs the carried read trims to one text are two occurrences to the receipt's
+        identity and one result to every read of the artifact — refused where a plan is compared.
+
+        Review round r8's finding: the fixture's output duplicated under the same call id and instant
+        with the trailing line feed removed, and a second receipt entry naming the duplicate, validated
+        green although read-back cannot establish the result multiplicity the plan claims — the carried
+        read's `CodexCollectingSink.appendToolResultEvent` drops a candidate whose status and
+        `strings.TrimSpace` content equal an event the call already answers
+        (`hasEquivalentCallResultEvent`), so a read of the artifact returns **one** result where the
+        receipt names two. The refusal belongs to the read the receipt is a statement about, not to the
+        structural rules: a native rollout may carry the shape, so the artifact alone stays green. The
+        controls pin what the refusal is not — a byte-identical duplicate is the same result to the
+        read (the trim is not what makes it disappear) and is refused too, while a second output whose
+        text reads distinct stays green with its own plan entry, because the read answers two results
+        there.
+        """
+        session = oracle_fixture("session.jsonl")
+
+        attack = duplicate_output(session, "# notes")
+        attack_receipt = receipt_with_second_result(oracle_receipt("session-receipt.json"), "# notes")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(attack), [],
+                         "the duplicate is not structurally green (a native rollout may carry it)")
+        records = NATIVE_CHECK.oracle_records(attack)[0]
+        self.assertEqual(len(records), 18, "the duplicate is no second record")
+        counted = [key for key, _ in NATIVE_CHECK.oracle_occurrences(records)]
+        self.assertIn(("tool_result", "call_oracle_0001", "# notes\n"), counted,
+                      f"the original result is not an occurrence: {counted}")
+        self.assertIn(("tool_result", "call_oracle_0001", "# notes"), counted,
+                      f"the duplicate is not counted by its own raw text: {counted}")
+        self.assertEqual(len(counted), 8,
+                         f"the duplicate is not counted as its own occurrence: {counted}")
+        refused = NATIVE_CHECK.validate_artifact(attack, receipt=attack_receipt)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the collapsing duplicate certified the plan's result multiplicity: "
+                         f"{refused}")
+        self.assertIn(NATIVE_CHECK.oracle_digest("call_oracle_0001"), refused[0].detail,
+                      f"the refusal does not name the call: {refused[0]}")
+        self.assertIn("line 9", refused[0].detail,
+                      f"the refusal does not name the result the read keeps: {refused[0]}")
+        self.assertIn("a multiplicity no read of the artifact answers", refused[0].detail,
+                      f"{refused[0]}")
+        self.assertNotIn("# notes", refused[0].detail,
+                         f"the refusal echoed the recorded text: {refused[0]}")
+
+        # A byte-identical duplicate is the same event to the read: the suppression is the read's own
+        # (`hasEquivalentCallResultEvent` compares the trimmed content), not an artefact of the trim.
+        identical = duplicate_output(session, "# notes\n")
+        identical_receipt = receipt_with_second_result(oracle_receipt("session-receipt.json"),
+                                                       "# notes\n")
+        refused = NATIVE_CHECK.validate_artifact(identical, receipt=identical_receipt)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"a byte-identical duplicate certified the plan: {refused}")
+
+        # The control: a second output the read answers as its own result — different text after the
+        # trim — is what the receipt's second identity is for, and stays green.
+        distinct = duplicate_output(session, "# notes, and more\n")
+        distinct_receipt = receipt_with_second_result(oracle_receipt("session-receipt.json"),
+                                                      "# notes, and more\n")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(distinct), [],
+                         "the distinct second output is not structurally green")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(distinct, receipt=distinct_receipt), [],
+                         "a second result the read answers was refused")
 
     def test_a_moved_turn_context_is_outside_the_receipts_vocabulary(self) -> None:
         """The receipt names no turns, so `oracle.plan-order` compares order, not turn membership.

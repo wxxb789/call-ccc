@@ -390,7 +390,10 @@ says so.
   carried read answers), an object-valued `content` a read iterates the member values of — refused there
   too, and so is a result the carried read does not establish — one whose call the read answers elsewhere
   (`spawn_agent` appends no result; `wait`/`wait_agent` answer per-agent results from the output's own
-  `status` object, the exec-cell poll excepted) or one carrying no output a read appends a result from —
+  `status` object, the exec-cell poll excepted), one carrying no output a read appends a result from, or
+  one whose recorded text is the text of the result written before it after the read's own trim
+  (`hasEquivalentCallResultEvent` suppresses the duplicate: two raw texts that trim to one are one result
+  to every read, and a receipt naming both certifies a multiplicity no read answers) —
   a line whose object (or a receipt document whose object) writes a member name twice refused before
   comparison,
   because this oracle's decoder and the carried reader's `gjson` answer a repeated name differently,

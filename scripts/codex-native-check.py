@@ -832,7 +832,11 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # and appends no result, `wait`/`wait_agent` answer per-agent results from the output's own `status`
 # object (the exec-cell poll, which the read routes as an ordinary result, excepted) — and a record that
 # carries no output a read appends a result from are refused the same way, because a receipt marking such
-# a result emitted would certify evidence no read of the artifact returns (review round r7's finding). A
+# a result emitted would certify evidence no read of the artifact returns (review round r7's finding),
+# and so is a duplicate the read suppresses rather than appends: `hasEquivalentCallResultEvent` compares
+# an event's status and its `strings.TrimSpace` content, so two result records under one call id whose
+# recorded texts trim to one are one result to every read, and a receipt naming both certifies a
+# multiplicity no read of the artifact answers (review round r8's finding). A
 # `reasoning` item is not one of these: the reader answers it as a thinking row with an
 # explicitly empty dialogue projection, so it carries no dialogue. The structural half refuses an output
 # written before its owner in either mode: the target's own reader keeps such an event as an unattached
@@ -902,7 +906,9 @@ ORACLE_RULES: dict[str, str] = {
         "whose call the read answers elsewhere (`spawn_agent`'s output links a subagent session and "
         "appends no result; `wait`/`wait_agent` answer per-agent results from the output's own `status` "
         "object — the exec-cell poll reads as an ordinary result and is exempt) or one that carries no "
-        "output a read appends a result from; the plan is total, in both of the target's dialogue channels",
+        "output a read appends a result from, or one the carried read suppresses as equivalent — the "
+        "same status and recorded text after its own trim — to the result the artifact writes before "
+        "it; the plan is total, in both of the target's dialogue channels",
     "oracle.plan-order":
         "the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, "
         "and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past "
@@ -1932,16 +1938,25 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
       `wait`/`wait_agent` append one result per agent entry — for the fixture's plain-text output,
       none — so the receipt's `call_id`/recorded-text identity is not the result a read answers. One
       `wait` shape is exempt: the exec-cell poll the read routes as an ordinary result
-      (`oracle_exec_cell_wait` mirrors `handleFunctionCall`'s condition).
+      (`oracle_exec_cell_wait` mirrors `handleFunctionCall`'s condition);
+    - a duplicate the read suppresses rather than appends: `CodexCollectingSink.appendToolResultEvent`
+      drops an event whose status and `strings.TrimSpace` content equal an event the call already
+      answers (`hasEquivalentCallResultEvent`), so two result records under one call id whose recorded
+      texts trim to one are one result to every read, and a receipt naming both certifies a
+      multiplicity no read of the artifact answers (review round r8's finding: the fixture's output
+      duplicated under its call id with the trailing line feed removed matched two receipt entries
+      while the read answers one result).
 
     Refused only where a plan is compared: a native rollout may legitimately carry these shapes
-    (measured: twelve blank outputs across Codex 0.170.0's own 25 sessions, §0 of the evidence record),
-    and the structural rules say nothing about an output's text or about the arm a read takes for its
-    call. The calls are walked in record order and an output is read against the call written before it,
-    the ownership `oracle.call-pairing` states: an output naming an absent call, or one written before
-    it, is that rule's finding and is left alone here.
+    (measured: twelve blank outputs across Codex 0.170.0's own 25 sessions, §0 of the evidence record;
+    no native session holds a call id with two outputs at all, §0), and the structural rules say
+    nothing about an output's text, about the arm a read takes for its call, or about how many outputs
+    one call id carries. The calls are walked in record order and an output is read against the call
+    written before it, the ownership `oracle.call-pairing` states: an output naming an absent call, or
+    one written before it, is that rule's finding and is left alone here.
     """
     owners: dict[str, tuple[str, bool]] = {}
+    answered: dict[str, list[tuple[int, tuple[str, str]]]] = {}
     violations: list[Violation] = []
     for line, record in records:
         if record.get("type") != "response_item":
@@ -1973,6 +1988,36 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
                                         "read answers"))
             continue
         if name not in ORACLE_SPECIAL_RESULT_CALLS or exec_cell:
+            # The ordinary arm's own event: its `Content` is the recorded text after Go's trim
+            # (`parseCodexFunctionOutput` reads a string member trimmed, and `TrimSpace` is applied
+            # again), and its `Status` is empty for the `function_call_output` family or the custom
+            # family's own string `status` (`completed` where it holds none) — the two members
+            # `hasEquivalentCallResultEvent` compares beside an `AgentID` this arm never sets. A
+            # non-string output is left to `oracle_unmodelled_shape_violations`: its raw bytes cannot
+            # be recovered from the decoded value, so no signature is computable here.
+            if not isinstance(output, str):
+                continue
+            status = ""
+            if item == "custom_tool_call_output":
+                declared = payload.get("status")
+                status = (declared if isinstance(declared, str) and declared != ""
+                          else "completed")
+            signature = (status, oracle_go_trim(output))
+            held = answered.setdefault(call_id, [])
+            previous_line = next((earlier for earlier, earlier_signature in held
+                                  if earlier_signature == signature), None)
+            if previous_line is not None:
+                violations.append(Violation("oracle.plan-accounted", line,
+                                            f"the artifact holds a second result under call "
+                                            f"{oracle_digest(call_id)} whose recorded text is the text "
+                                            f"the result on line {previous_line} answers after the "
+                                            f"read's own trim (`strings.TrimSpace`): "
+                                            f"`hasEquivalentCallResultEvent` suppresses this event as "
+                                            f"equivalent (the same status and content), so the "
+                                            f"receipt's two result identities here certify a "
+                                            f"multiplicity no read of the artifact answers"))
+                continue
+            held.append((line, signature))
             continue
         if name == "spawn_agent":
             found = ("the output belongs to a `spawn_agent` call, and the carried read appends **no** "

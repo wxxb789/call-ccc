@@ -149,13 +149,25 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   (`internal/parser/codex.go`) and still validates green, so the rule's own sentence says the placement
   is not compared, and the case pins the scope (review round r7's finding; §12 of the evidence record
   injects the turn check and shows the case turning red, so widening the scope cannot happen silently).
+- *A duplicate the read suppresses is refused where a plan is compared* — a result occurrence's identity
+  is its `call_id` and recorded text, so two result records under one call id whose recorded texts trim
+  to one text are two occurrences to the receipt and one result to every read:
+  `CodexCollectingSink.appendToolResultEvent` drops an event whose status and `strings.TrimSpace`
+  content equal an event the call already answers (`hasEquivalentCallResultEvent`), and a receipt naming
+  both certifies a multiplicity no read of the artifact answers (review round r8's finding). Refused only
+  where a plan is compared, because a native rollout may carry a repeated output and the structural
+  rules state nothing about how many outputs one call id carries; the case pins both the trim-equal
+  duplicate and the byte-identical one, with a second output whose text reads distinct as the green
+  control.
 - *Every arm a rule states carries its own negative fixture* — the positional arm of
   `oracle.session-meta` ("the artifact opens with its one metadata record") is reached by a mutation that
   moves the metadata record behind another record with each slot keeping the instant it held, so the
   clock stays legal and no other rule can fail; the deleted, duplicated and emptied fixtures all fail
   without it (review round r6's finding). Likewise the envelope's non-empty-`type` arm, the metadata
   members' `originator` arm, the plan-accounted result-read and non-string-member arms, each with its own
-  mutation (review round r7's finding).
+  mutation (review round r7's finding), and the `oracle.message` role arm, which review round r8's
+  finding named as having no negative fixture: removing its guard left every case green, and the round's
+  artifact-only mutation pins it (`a message with no role`).
 - *Unknown payload types are accepted* (Codex's own event and item vocabulary is open and measured);
   unknown **envelope** types are refused, because this build writes five and reads a measured eight.
 - The oracle judges this route's occurrence vocabulary — a message (the writer's own two roles, user and
@@ -210,7 +222,9 @@ real converted artifact (§5); and, for the review fix rounds, the gate and cita
 executed revert-mutation per fix for the r3 round (§8), the r4 round (§9) — whose instant-revert fix
 re-derives §8's own recipe with the group count preserved — the r5 round (§10), the r6 round (§11) and
 the r7 round (§12 — whose sixth study runs the other way: it injects the turn check the round did *not*
-add and shows the scope case turning red),
+add and shows the scope case turning red) and the r8 round (§13 — the collapse refusal and the structural
+role guard; §8's five r3 blocks were re-spelled to §9's executable `fresh` form in the same round, and
+§7's transcript redacted to `<repo>` and `~`),
 each from the scratch tree its section spells out (the replay's own `mktemp -d` root, allocated once in
 the record's preamble since review round r7's finding 4).
 
@@ -267,7 +281,7 @@ stating what holds, not what would be nice to hold):
   PR #16's, to be rebuilt in 0009d against this frozen oracle.
 
 **The review fix rounds moved the oracle while the increment was still under review** (the freeze binds the
-rest of goal 0009, not this increment's own fix stage). The r1, r2, r3, r4, r5, r6 and r7 findings and their fixes are
+rest of goal 0009, not this increment's own fix stage). The r1, r2, r3, r4, r5, r6, r7 and r8 findings and their fixes are
 enumerated in the stage reports; the shape the freeze now holds is the one above: a result's identity
 includes its recorded text and a call's its name and recorded input (a same-id substitution of either is
 refused, and the recorded input is the member the artifact **writes** — `arguments` then `input`, read
@@ -284,7 +298,9 @@ result whose recorded text is written as a non-string member is refused there to
 reconstruct the receipt's string key while the carried reader answers the member's raw bytes — and a
 result the carried read does not establish (a call the read answers elsewhere — `spawn_agent`,
 `wait`/`wait_agent`, the exec-cell poll excepted — or no output a read appends a result from) is refused
-the same way (both review round r7's finding), a line whose object writes a
+the same way (both review round r7's finding), or one whose recorded text is the text of the result
+written before it after the read's own trim — `hasEquivalentCallResultEvent` suppresses the duplicate,
+so a receipt naming both certifies a multiplicity no read answers (review round r8's finding), a line whose object writes a
 member name twice — and a receipt whose object does — is refused before comparison because this oracle's
 decoder and the carried reader's `gjson` answer a repeated name differently (review round r5's finding),
 a call whose `name` is not the non-empty string the carried reader registers is refused with its orphaned
@@ -305,7 +321,8 @@ non-JSON constants, no replacement-decoded text), an unreadable-by-nesting recei
 than a traceback, a decoded string strict UTF-8 cannot encode is named by a digest that never raises
 where the diagnostic needs one, default diagnostics name occurrences and refused values by type and
 by digest without echoing their text, and a record's turn placement is stated as outside the receipt's
-vocabulary rather than half-checked (review round r7's finding). The evidence record's §1–§12 carry the re-run outputs for that state,
+vocabulary rather than half-checked (review round r7's finding). The evidence record's §1–§13 carry the re-run outputs for that state,
 with one executed revert-mutation per fix (§8 for r3's, §9 for r4's, §10 for r5's, §11 for r6's, §12
 for r7's — whose last study injects the turn check the round did not add and shows the scope case
-turning red).
+turning red — and §13 for r8's: the collapse refusal and the structural role guard, each reverted in its
+own fresh tree with the case that pins it failing there).
