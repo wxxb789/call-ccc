@@ -2901,9 +2901,9 @@ drawing on the tag where it fits — the set the reference route needs. The root
 instead of introducing a second parser or a persistent index.
 
 **Reversal:** re-open the wider scope by adding a carrying disposition set for all five routes at once (the
-cost is the M×N matrix this decision exists to avoid), or retire the breaker by setting
-`CONTRACTIVE_MAX_ORDINARY_ROUNDS` above the series' historical maximum (the cost is the 19-round/1.47 MB
-failure mode returning silently).
+cost is the M×N matrix this decision exists to avoid), or retire the breaker by raising
+`CONTRACTIVE_MAX_ORDINARY_ROUNDS` — the review conductor's own knob, outside this tree — above the series'
+historical maximum (the cost is the 19-round/1.47 MB failure mode returning silently).
 **Settled by:** an operator instruction; nothing downstream needs to re-decide it.
 
 ## Q-0009-02 — Which four routes "the other four target routes" are

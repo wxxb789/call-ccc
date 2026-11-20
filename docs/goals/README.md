@@ -14,7 +14,7 @@ The normal feedback window is approximately 12 hours of agent work. If a goal pr
 | [0006](archive/0006-omp-continuation.md) | Native two-way Oh My Pi continuation | 0005 | Accepted: merged onto `main` as `338df94`; archived |
 | [0007](archive/0007-opencode-target-continuation.md) | Continue existing conversations in OpenCode | 0002 | Accepted: merged onto `main` as `e68f18a`; archived |
 | [0008](archive/0008-opencode-source-continuation.md) | Continue OpenCode history in other agents | 0007 and 0003 | Accepted: merged onto `main` as `9f17535`; archived |
-| [0009](0009-selective-context.md) | Select which source history travels (reference route: Claude Code → Codex) | 0003 | Refined 2026-11-20 (fork A: narrowed to one reference route); activating |
+| [0009](0009-selective-context.md) | Select which source history travels (reference route: Claude Code → Codex) | 0003 | Refined 2026-11-20 (fork A: narrowed to one reference route); prerequisite accepted |
 | [0010](0010-selective-compaction.md) | Compress selected regions while protecting others | 0009 | Provisional |
 | [0011](0011-context-summaries.md) | Produce explicit reusable summaries | 0009 | Provisional; independent of 0010 |
 | [0012](0012-minimal-content-redaction.md) | Minimal opt-in redaction with visible changes | 0009 | Provisional; independent of 0010/0011 |

@@ -269,7 +269,7 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   OMP, OpenCode, Codex-as-source) are **separate later increments**, each of which must prove the same seam
   end to end before the next starts (owner decision 2026-11-20). ID-less ownership inference on a selected
   run is refused or explicitly omitted, never inferred.
-- **Review is contractively bounded** (owner fork A, 2026-11-20). The driver blocks a goal the moment the
+- **Review is contractively bounded** (owner fork A, 2026-11-20). The conductor blocks a goal the moment the
   reviewed diff grows more than 25% in a fix round, findings fail to decrease strictly across three rounds,
   or the ordinary rounds pass six. A trip is an **abstraction-boundary failure** to report and re-decompose,
   never a budget to raise: the increment that motivated the rule ran 19 rounds with zero clean and grew its
