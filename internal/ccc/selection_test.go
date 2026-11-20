@@ -139,6 +139,8 @@ func TestSelectionRefusesABadSpecificationByName(t *testing.T) {
 		want string
 	}{
 		{spec: "x", want: `"x" is not an ordinal`},
+		{spec: "-1", want: `"-1" is not an ordinal`},
+		{spec: "-", want: `"-" is not an ordinal`},
 		{spec: "1,,2", want: `"" is not an ordinal`},
 		{spec: "5-3", want: "inverted"},
 		{spec: "1-3,3", want: "already names"},
@@ -609,6 +611,66 @@ func TestSelectionAnswersNoProgressEventAsACallOutcome(t *testing.T) {
 	}
 }
 
+// TestSelectionAnswersTheLastOutcomeTheReadRecorded pins D6's finality as a function of the recorded
+// document: a read that answered one call twice -- an errored result and a later completion -- has one
+// answer, the last result it recorded, and the seam carries that answer whichever way the pairing map
+// happens to iterate. Without the read-order walk the map's own iteration order decides, so the same
+// document answers completed or failed from run to run; the repeated calls below are what make that
+// nondeterminism red.
+func TestSelectionAnswersTheLastOutcomeTheReadRecorded(t *testing.T) {
+	document := func(first, second string) Conversation {
+		return testConversation(
+			Message{Ordinal: 0, Role: "user", Content: "question", Dialogue: "question", SourceUUID: "u1"},
+			Message{Ordinal: 1, Role: "assistant", Content: "calling", Dialogue: "calling",
+				SourceUUID: "c2", SourceParentUUID: "u1",
+				ToolCalls: []ToolCall{{ToolUseID: "call_x", Name: "Bash", InputJSON: `{}`}}},
+			Message{Ordinal: 2, Role: "user", SourceUUID: "r3", SourceParentUUID: "c2",
+				ToolResults: []ToolResult{{ToolUseID: "call_x", Status: first,
+					ContentRaw: "first", ContentSize: len("first")}}},
+			Message{Ordinal: 3, Role: "user", SourceUUID: "r4", SourceParentUUID: "c2",
+				ToolResults: []ToolResult{{ToolUseID: "call_x", Status: second,
+					ContentRaw: "second", ContentSize: len("second")}}},
+		)
+	}
+	for _, testCase := range []struct {
+		first, second string
+		want          callFinality
+	}{
+		{first: "errored", second: "completed", want: callFinalityCompleted},
+		{first: "completed", second: "errored", want: callFinalityFailed},
+	} {
+		conversation := document(testCase.first, testCase.second)
+		place := callOccurrence{message: 1, call: 0}
+		paired := pairedCallOccurrences(conversation)
+		for index, message := range conversation.Messages {
+			for resultIndex := range message.ToolResults {
+				if got := paired[resultOccurrence{message: index, result: resultIndex}]; got != place {
+					t.Fatalf("%s then %s: the result at record %d pairs to %+v, want %+v: the case's "+
+						"premise is that both results answer the one call", testCase.first,
+						testCase.second, index, got, place)
+				}
+			}
+		}
+		for attempt := range 200 {
+			if got := callFinalities(conversation, paired)[place]; got != testCase.want {
+				t.Fatalf("%s then %s: attempt %d answered %q, want %q: the finality is the read's last "+
+					"recorded outcome, never the pairing map's iteration order", testCase.first,
+					testCase.second, attempt, got, testCase.want)
+			}
+		}
+		// The same answer crosses the seam: a window the caller named holds the finality the read's own
+		// document established.
+		selected, _, err := Select(conversation, "0-3", false)
+		if err != nil {
+			t.Fatalf("%s then %s: selecting the whole document: %v", testCase.first, testCase.second, err)
+		}
+		if got := selected.sourceCallFinality[place]; got != testCase.want {
+			t.Errorf("%s then %s: the carried finality = %q, want %q", testCase.first, testCase.second,
+				got, testCase.want)
+		}
+	}
+}
+
 // TestSelectionPublishesAProgressEventOnlyThroughItsCall pins the other half of the progress rule: a
 // progress event the *caller* names is retained in the window, and the writer still does not publish its
 // text as the call's answer -- this format's function_call_output carries an outcome or nothing -- so the
@@ -624,7 +686,7 @@ func TestSelectionPublishesAProgressEventOnlyThroughItsCall(t *testing.T) {
 			ToolResults: []ToolResult{{ToolUseID: "call_wait", Status: "running",
 				ContentRaw: progressText, ContentSize: len(progressText)}}},
 	)
-	selected, _, err := Select(conversation, "0-1", false)
+	selected, report, err := Select(conversation, "0-1", false)
 	if err != nil {
 		t.Fatalf("selecting both records: %v", err)
 	}
@@ -641,6 +703,18 @@ func TestSelectionPublishesAProgressEventOnlyThroughItsCall(t *testing.T) {
 	}
 	if count, ok := optionalLoss(rollout.Losses, "outstanding_tool_calls"); !ok || count != 1 {
 		t.Errorf("outstanding_tool_calls = %d (present=%v), want the call counted", count, ok)
+	}
+	// The record's own fate names the category the walk charged it to: the table's contract is that a
+	// lost record's reason is the loss category behind it, not the fallback sentence for a record no
+	// count explains.
+	fillSelectionRecords(&report, rollout.RecordFates)
+	if len(report.Records) != 2 {
+		t.Fatalf("the report accounts for %d record(s), want the two the specification named",
+			len(report.Records))
+	}
+	if report.Records[1].Became != BecameLost || report.Records[1].Reason != "nonterminal_tool_events" {
+		t.Errorf("record 1's fate = %+v, want it lost under the nonterminal_tool_events category",
+			report.Records[1])
 	}
 	// The default path keeps the answer its writer has always had: a run without a selection writes the
 	// event as the call's output and carries no reduction row.
@@ -804,6 +878,28 @@ func TestSelectionRefusesACounterpartOffTheReadsLine(t *testing.T) {
 	if report.NecessitiesAdded.Count != 1 {
 		t.Errorf("necessities_added = %+v, want the one counterpart", report.NecessitiesAdded)
 	}
+	// The mixed entry: a record the read folded a result onto can carry a call of its own, so the
+	// refusal's sentence must name the roles as the read recorded them. Here the *result* sits on its own
+	// record beside a call of that record's own, and the pair's call record stands off the line: reading
+	// the roles back off the record that pulled the counterpart in would call the result's record the call.
+	mixed := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "start", Dialogue: "start", SourceUUID: "u1"},
+		Message{Ordinal: 1, Role: "assistant", Content: "call", DialogueProjected: true,
+			SourceUUID: "c2", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_mixed", Name: "grep", InputJSON: `{}`}}},
+		Message{Ordinal: 2, Role: "user", SourceUUID: "r3", SourceParentUUID: "u1",
+			ToolCalls: []ToolCall{{ToolUseID: "toolu_own", Name: "read", InputJSON: `{}`}},
+			ToolResults: []ToolResult{{ToolUseID: "toolu_mixed", ContentRaw: "the outcome",
+				ContentSize: len("the outcome")}}},
+		Message{Ordinal: 3, Role: "assistant", Content: "the reply", Dialogue: "the reply",
+			SourceUUID: "d4", SourceParentUUID: "r3"},
+	)
+	if _, _, err := Select(mixed, "2", false); !errors.Is(err, ErrSelectionUnrepresentable) {
+		t.Errorf("Select(mixed, 2): err = %v, want ErrSelectionUnrepresentable", err)
+	} else if !strings.Contains(err.Error(),
+		"the call recorded at ordinal 1 and the result recorded at ordinal 2") {
+		t.Errorf("the mixed-entry refusal names the roles wrongly: %v", err)
+	}
 }
 
 // TestSelectionIsRefusedOnEveryOtherPair pins D7: the flag is honoured on the reference pair alone, and
@@ -882,7 +978,7 @@ func TestSelectionKeepsAnIDLessResultOutOfASelectedRun(t *testing.T) {
 		Message{Ordinal: 1, Role: "user", SourceUUID: "r2", SourceParentUUID: "c1",
 			ToolResults: []ToolResult{{ContentRaw: outcome, ContentSize: len(outcome)}}},
 	)
-	selected, _, err := Select(conversation, "0-1", false)
+	selected, report, err := Select(conversation, "0-1", false)
 	if err != nil {
 		t.Fatalf("selecting both records: %v", err)
 	}
@@ -897,6 +993,15 @@ func TestSelectionKeepsAnIDLessResultOutOfASelectedRun(t *testing.T) {
 	if count, ok := optionalLoss(rollout.Losses, "unpaired_tool_results"); !ok || count != 1 {
 		t.Errorf("unpaired_tool_results = %d (present=%v), want the result counted", count, ok)
 	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	if len(report.Records) != 2 {
+		t.Fatalf("the report accounts for %d record(s), want the two the specification named",
+			len(report.Records))
+	}
+	if report.Records[1].Became != BecameLost || report.Records[1].Reason != "unpaired_tool_results" {
+		t.Errorf("record 1's fate = %+v, want it lost under the unpaired_tool_results category",
+			report.Records[1])
+	}
 	unflagged, err := ConvertToCodexRollout(conversation, testOptions())
 	if err != nil {
 		t.Fatalf("converting the read without a selection: %v", err)
@@ -904,6 +1009,54 @@ func TestSelectionKeepsAnIDLessResultOutOfASelectedRun(t *testing.T) {
 	if output, ok := rolloutOutputFor(t, unflagged.Data, "call_a"); !ok || output != outcome {
 		t.Errorf("the unflagged conversion's output = %q (present=%v), want the writer's own disclosed "+
 			"inference to carry it", output, ok)
+	}
+}
+
+// TestSelectionNamesTheCategoryBehindALostToolResult pins the per-record fate table for the results a
+// reduced document omits for their own recorded shape: a result whose recorded text is empty, and one
+// whose text is whitespace alone (the target's own reader would trim it away). Neither record wrote an
+// item, so each row's reason has to be the loss category the writer counted -- the fallback sentence is
+// for a record no count explains, not for one a category does.
+func TestSelectionNamesTheCategoryBehindALostToolResult(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call a", Dialogue: "call a", SourceUUID: "c1",
+			ToolCalls: []ToolCall{{ToolUseID: "call_a", Name: "Bash", InputJSON: `{}`}}},
+		Message{Ordinal: 1, Role: "user", SourceUUID: "r2", SourceParentUUID: "c1",
+			ToolResults: []ToolResult{{ToolUseID: "call_a"}}},
+		Message{Ordinal: 2, Role: "assistant", Content: "call b", Dialogue: "call b", SourceUUID: "c3",
+			SourceParentUUID: "r2",
+			ToolCalls:        []ToolCall{{ToolUseID: "call_b", Name: "Read", InputJSON: `{}`}}},
+		Message{Ordinal: 3, Role: "user", SourceUUID: "r4", SourceParentUUID: "c3",
+			ToolResults: []ToolResult{{ToolUseID: "call_b", ContentRaw: "  ", ContentSize: 2}}},
+	)
+	selected, report, err := Select(conversation, "0-3", false)
+	if err != nil {
+		t.Fatalf("selecting the whole document: %v", err)
+	}
+	rollout, err := ConvertToCodexRollout(selected, testOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	if count, ok := optionalLoss(rollout.Losses, "empty_tool_results"); !ok || count != 1 {
+		t.Errorf("empty_tool_results = %d (present=%v), want the empty result counted", count, ok)
+	}
+	if count, ok := optionalLoss(rollout.Losses, "whitespace_only_tool_results"); !ok || count != 1 {
+		t.Errorf("whitespace_only_tool_results = %d (present=%v), want the whitespace result counted",
+			count, ok)
+	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	for _, want := range []struct {
+		index  int
+		reason string
+	}{
+		{index: 1, reason: "empty_tool_results"},
+		{index: 3, reason: "whitespace_only_tool_results"},
+	} {
+		record := report.Records[want.index]
+		if record.Became != BecameLost || record.Reason != want.reason {
+			t.Errorf("record %d (ordinal %d): became %q reason %q, want lost under %q", want.index,
+				record.Ordinal, record.Became, record.Reason, want.reason)
+		}
 	}
 }
 

@@ -968,8 +968,20 @@ def main(argv: list[str] | None = None) -> int:
         # the installed session holds the kept record's marker and not the excluded record's, and the
         # same command run a second time installs a *fresh* session rather than reusing or replacing the
         # first -- repeating a selection is the same operation as repeating a conversion.
+        #
+        # The arm's specification, its marker words and its expected classes are the *default* fixture's
+        # own records (SELECTION_SPEC and the two markers below), so the arm runs only when this run
+        # converts that fixture. Another --session is named as not attempted rather than converted with a
+        # spec written about another read -- measured: the tooling session reported the arm's window as
+        # missing because the window was never its own records. ``--select`` is still held to its pair
+        # gate and its own refusals by the Go suite the gate runs; this is the native half's own scope.
+        arm_sessions = (1, 2) if args.session == SOURCE_SESSION else ()
+        if not arm_sessions:
+            record("the selection arm converts the fixture it is written for", False,
+                   f"not attempted: --session {args.session} names another session than the arm's own "
+                   f"fixture ({SOURCE_SESSION})", skipped=True)
         selected_sessions: list[str] = []
-        for attempt in (1, 2):
+        for attempt in arm_sessions:
             selected = run([
                 str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
                 "--target-home", str(home), "--target-binary", codex,
@@ -1003,10 +1015,11 @@ def main(argv: list[str] | None = None) -> int:
                    f"{SELECTION_KEPT in selected_view_text}, excluded present="
                    f"{SELECTION_EXCLUDED in selected_view_text}")
             selected_sessions.append(selected_thread)
-        record("the same selection command re-runs into its own fresh sessions",
-               len(set(selected_sessions)) == 2 and selected_sessions[0] not in existing_ids
-               and selected_sessions[1] not in existing_ids,
-               f"two invocation(s) installed {selected_sessions[0]} then {selected_sessions[1]}")
+        if arm_sessions:
+            record("the same selection command re-runs into its own fresh sessions",
+                   len(set(selected_sessions)) == 2 and selected_sessions[0] not in existing_ids
+                   and selected_sessions[1] not in existing_ids,
+                   f"two invocation(s) installed {selected_sessions[0]} then {selected_sessions[1]}")
 
         # ---------------------------------------------------------------- the source grows, and is
         # converted again. Everything above is the first conversion's own answer; what follows is the
@@ -1126,9 +1139,14 @@ def main(argv: list[str] | None = None) -> int:
             record("a real turn continues from the second installed session", False,
                    "not attempted: pass --repeat-resume-prompt to run one", skipped=True)
         print()
-        print(f"conversions: {2 + len(selected_sessions)} session(s) installed ({thread_id}, then the "
-              f"selection arm's {selected_sessions[0]} and {selected_sessions[1]}, then "
-              f"{second_thread_id}); real turn(s) run: "
+        if selected_sessions:
+            installed_note = (f"{thread_id}, then the selection arm's {selected_sessions[0]} and "
+                              f"{selected_sessions[1]}, then {second_thread_id}")
+        else:
+            installed_note = (f"{thread_id}, then {second_thread_id}; the selection arm did not run "
+                              f"because --session {args.session} is not its fixture ({SOURCE_SESSION})")
+        print(f"conversions: {2 + len(selected_sessions)} session(s) installed ({installed_note}); "
+              f"real turn(s) run: "
               f"{int(bool(args.resume_prompt)) + int(bool(args.repeat_resume_prompt))}")
 
         # Every promise about files this run must not change is answered here, after the loader and —

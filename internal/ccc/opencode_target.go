@@ -327,7 +327,7 @@ type openCodeCall struct {
 	// can write it as an outcome. A progress event is not an outcome here, but it is still evidence the
 	// read holds: the archive's summary is a view of the call's recorded events, so a call whose read
 	// holds one cannot use that summary as the only evidence of an outcome the events never stated
-	// (openCodeResultStatesAnOutcome).
+	// (resultStatesAnOutcome).
 	recordedEvents bool
 	// inferredResultID says the result was paired through a generated call id (a result that recorded
 	// none), which is what the generated_call_ids caveat counts beside the calls themselves.

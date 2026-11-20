@@ -669,6 +669,7 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 				// the result is omitted and counted rather than written under a call the read never
 				// named.
 				b.lossUnpairedResults++
+				b.currentReason = "unpaired_tool_results"
 				continue
 			}
 			if _, written := b.writtenCalls[owner]; !written {
@@ -676,6 +677,7 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 				// line leaves off, or the read is inconsistent): a function_call_output without its call
 				// is not a pair.
 				b.lossUnpairedResults++
+				b.currentReason = "unpaired_tool_results"
 				continue
 			}
 			if !resultStatesAnOutcome(result.Status) {
@@ -683,6 +685,7 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 				// carries an outcome or nothing, so a written event would read back as the call's
 				// answer. The event is omitted and named.
 				b.lossNonterminal++
+				b.currentReason = "nonterminal_tool_events"
 				continue
 			}
 			b.toolResult(result, message.Timestamp, &owner)
@@ -967,6 +970,7 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time, owner 
 			// No call is outstanding, or several are and the result could belong to any of them: the
 			// source recorded no id, so the pairing would be an invention.
 			b.lossUnpairedResults++
+			b.currentReason = "unpaired_tool_results"
 			return
 		}
 		callID = pending
@@ -978,6 +982,7 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time, owner 
 			// function_call_output without its call is not a pair, and inventing the call would fabricate
 			// a tool invocation.
 			b.lossUnpairedResults++
+			b.currentReason = "unpaired_tool_results"
 			return
 		}
 	}
@@ -992,6 +997,7 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time, owner 
 			// empty string would read as "the tool returned nothing" rather than "the source recorded no
 			// output text".
 			b.lossEmptyResults++
+			b.currentReason = "empty_tool_results"
 		} else {
 			// The read holds text, but every byte of it is whitespace. The inherited Codex reader trims a
 			// function_call_output's text and reads an output that is only whitespace as no result at all
@@ -1001,6 +1007,7 @@ func (b *codexRolloutBuilder) toolResult(result ToolResult, at time.Time, owner 
 			// evidence it holds. The omission is counted under its own category rather than as a result
 			// that recorded no text.
 			b.lossWhitespaceResults++
+			b.currentReason = "whitespace_only_tool_results"
 		}
 		return
 	}

@@ -5,7 +5,7 @@
 #   D1      every selected record has an attributable disposition, and every written item pairs with the
 #           ordinal it came from (the reconciliation of included + necessities + excluded with the read);
 #   D2.1    the transformation's own classes, with counts, in the report; D2.2 the human report's lines
-#           for them and the run's selection warning;
+#           for them; D2.3 the run's selection warning;
 #   D3.1    a split pair carries its counterpart by default and the report discloses it; D3.2 the same
 #           selection under --strict-selection is refused by name; D3.3 closure eligibility — a
 #           counterpart the source's line leaves inactive refuses the whole selection (default as well
@@ -53,7 +53,8 @@
 rule_id	test	package	artifact
 D1	TestSelectionAccountsForEveryCarriedRecord	./internal/ccc	0009-selective-context.md §1 (the reference route end to end)
 D2.1	TestContinueWithASelectionReportsTheClassesAndFates	./cmd/ccc	0009-selective-context.md §1 (the report classes and D1's per-record table)
-D2.2	TestContinueWithASelectionInstallsExactlyTheWindow	./cmd/ccc	0009-selective-context.md §1 (the human report's classes, non-zero ones included, and the run's window warning)
+D2.2	TestContinueWithASelectionInstallsExactlyTheWindow	./cmd/ccc	0009-selective-context.md §1 (the human report's classes, non-zero ones included)
+D2.3	TestSelectionWarningsNameTheWindow	./internal/ccc	0009-selective-context.md §1 (the run's selection warning: carried/excluded counts, the pulled-in necessity, the undischarged call)
 D3.1	TestSelectionCarriesTheCounterpartOfASeparatedPair	./internal/ccc	0009-selective-context.md §1 (ordinal 3 carried as a declared necessity)
 D3.2	TestSelectionRefusesASeparatedPairUnderStrictSelection	./internal/ccc	0009-selective-context.md §2 (the strict refusal, quoted)
 D3.3	TestSelectionRefusesACounterpartOffTheReadsLine	./internal/ccc	0009-selective-context.md §3 (closure eligibility's own refusal)

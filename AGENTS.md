@@ -266,11 +266,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   read-back verifier may infer a cross-record fact from the reduced stream** — an inference reconstructed
   after the cut is the defect class this rule exists to keep out, not a local bug to patch. The reference
   route carries that set as six unexported `Conversation` fields (`internal/ccc/conversation.go`, nil on a
-  document that is the read itself): the read's own line membership taken before the cut, the result→call
-  pairing, each carried call's finality (completed / failed / interrupted / in-progress /
-  unknown-undischarged — a progress event is no pair's counterpart and no call's answer), the nearest
-  carried ancestor, and each carried compaction boundary's ledger (its own calls and results, an established
-  *none*, or *not established* where the read's reader skips the replaced history). A counterpart or a
+  document that is the read itself): the read's own line answers taken before the cut — per-record
+  membership, and the places the read's walk did not establish — the result→call pairing, each carried
+  call's finality (completed / failed / interrupted / in-progress / unknown-undischarged — a progress
+  event is no pair's counterpart and no call's answer), the nearest carried ancestor, and each carried
+  compaction boundary's ledger (its own calls and results, an established *none*, or *not established*
+  where the read's reader skips the replaced history). A counterpart or a
   record the read's own line leaves inactive is never activated to satisfy closure: the whole selection is
   refused by name instead.
 - **Goal 0009's increment is one reference route: Claude Code → Codex.** The other four target routes (Pi,

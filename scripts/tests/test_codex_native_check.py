@@ -630,7 +630,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               copy_mutation: str | None = None,
               repeat_turn: bool = False,
               selection_document_ok: bool = True,
-              selection_view_ok: bool = True
+              selection_view_ok: bool = True,
+              selection_view_excluded: bool = False,
+              session: str | None = None
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
@@ -704,8 +706,16 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         ``1-3,5-7`` left out) and its view of a selected session lists the kept record's marker. Turning
         either off leaves those facts out of the stub's answers, so the arm's own checks -- that the
         report names the window, and that the target's own view holds the kept record and not the
-        excluded one -- must fail, and only they may.
+        excluded one -- must fail, and only they may. ``selection_view_excluded`` adds the excluded
+        record's marker to a selected session's view as well, so the second half of the view check
+        (``SELECTION_EXCLUDED not in the view``) has its own failing arm.
+
+        ``session`` names the session the run converts: the default is the shipped check's own fixture
+        (``SOURCE_SESSION``), whose records every selection-arm constant describes. Another session
+        leaves the arm unattempted -- the shipped check names that as a skip -- so a case can drive that
+        path with the fixture bytes written under the name it asked for.
         """
+        session = session or NATIVE_CHECK.SOURCE_SESSION
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
         # which this case does): a host whose temporary root is reached through a symlink, or whose
@@ -720,7 +730,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
         repo = scratch / "repo"
         fixture = (repo / NATIVE_CHECK.FIXTURE_ROOT / NATIVE_CHECK.SOURCE_PROVIDER
-                   / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl")
+                   / "-fake-project" / f"{session}.jsonl")
         fixture.parent.mkdir(parents=True)
         fixture.write_text(json.dumps({"type": "user"}) + "\n")
         # The committed growth fragment this run appends to its *copy*: two records, as the shipped
@@ -775,7 +785,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             measures for itself.
             """
             root = Path((env or {}).get("CLAUDE_PROJECTS_DIR", str(scratch / "source")))
-            return root / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl"
+            return root / "-fake-project" / f"{session}.jsonl"
 
         def document_for(which: str, env: dict | None) -> dict:
             """One conversion's stub document: its own session id, path and boundary of the copy's bytes."""
@@ -984,9 +994,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             lines = [f"thread {thread} (the case's stub's own view)"]
             if str(thread) in selected_views:
                 # A selected session's own view: the kept record's marker, as the harness itself would
-                # list it, and nothing of the records the specification excluded.
+                # list it, and nothing of the records the specification excluded -- unless the case asks
+                # the stub to leak the excluded record's marker, which is the view check's own red arm
+                # for its second half.
                 if selection_view_ok:
                     lines.append(f"    userMessage: {NATIVE_CHECK.SELECTION_KEPT}")
+                if selection_view_excluded:
+                    lines.append(f"    userMessage: {NATIVE_CHECK.SELECTION_EXCLUDED}")
             elif str(thread) == second_thread_id and include_growth_in_second:
                 # The target's own view of the later session: the turn the source gained, as the harness
                 # itself lists it.
@@ -1002,13 +1016,17 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             # turn each), so a case can put its mutation in either turn's own window.
             prompts += ["--repeat-resume-prompt", "answer only from this conversation"]
         before = len(NATIVE_CHECK.RESULTS)
+        argv = ["--repo", str(repo), "--codex", "codex", "--codex-home", str(home)]
+        if session != NATIVE_CHECK.SOURCE_SESSION:
+            # The shipped check's default is its own fixture; naming another session is how a case drives
+            # the arm's unattempted path, and the fixture above is written under that name.
+            argv += ["--session", session]
         with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
                 mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer), \
                 mock.patch.object(NATIVE_CHECK, "thread_view", fake_thread_view), \
                 mock.patch("shutil.which", fake_which), \
                 contextlib.redirect_stdout(io.StringIO()):
-            code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
-                                      "--codex-home", str(home)] + prompts)
+            code = NATIVE_CHECK.main(argv + prompts)
         results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
         del NATIVE_CHECK.RESULTS[before:]
         return code, results
@@ -1083,9 +1101,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
         The selection arm (goal 0009) holds the reference route to its window at the native level: the
         conversion's own report names the classes, and the target harness's own view holds the kept
-        record's marker and not the excluded one's. A stub whose document reports another window, and one
-        whose view omits the kept record, must fail those checks -- and only they beyond the intact run's
-        own -- so neither assertion can be green by never asking.
+        record's marker and not the excluded one's. Three controls drive the stub's answers: a document
+        reporting another window, a view omitting the kept record, and a view that also carries the
+        excluded record's marker -- so each half of the view assertion, the present and the absent one,
+        has a failing arm -- and each control fails its own checks and only they beyond the intact run's
+        own, so none can be green by never asking.
         """
         code, results = self.drive(selection_document_ok=False)
         failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
@@ -1104,6 +1124,15 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"a stub view without the kept record did not fail the arm's own view check: "
                          f"{results}")
         self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
+
+        code, results = self.drive(selection_view_excluded=True)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         ["the selection arm's session 1 holds the carried window and not the rest",
+                          "the selection arm's session 2 holds the carried window and not the rest"],
+                         f"a stub view carrying the excluded record's marker did not fail the arm's own "
+                         f"view check: {results}")
+        self.assertEqual(code, 1, f"exit {code} for a run with failed checks: {results}")
         # The intact run is the other direction: both checks pass, so neither is red for its own reasons.
         code, results = self.drive()
         for name in ("the selection arm's conversion 1 reports the named window",
@@ -1116,6 +1145,34 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             state, detail = results.get(name, ("missing", ""))
             self.assertEqual(state, "PASS", f"{name}: {state} — {detail}; all results: {results}")
         self.assertEqual(code, 0, f"exit {code} for an intact run: {results}")
+
+    def test_a_non_default_session_leaves_the_selection_arm_unattempted(self) -> None:
+        """The arm is the default fixture's own window; another ``--session`` is a named skip, not a run.
+
+        The arm's specification, its two marker words and its expected classes are the default
+        transcript's own records, so a run converting another session has nothing they describe to
+        measure: the shipped check names the arm as not attempted for that session instead of reporting
+        the other read as not carrying a window it never held. The intact-run case above is the other
+        direction, where the arm runs and passes; this case's assertion that the arm's own checks are
+        absent is what makes the old unconditional arm red here.
+        """
+        code, results = self.drive(session=NATIVE_CHECK.TOOLING_SESSION)
+        state, detail = results.get("the selection arm converts the fixture it is written for",
+                                    ("missing", ""))
+        self.assertEqual(state, "SKIP",
+                         f"the arm was not skipped for another session: {results}")
+        self.assertIn(NATIVE_CHECK.TOOLING_SESSION, detail,
+                      f"the skip does not name the session it was asked for: {detail!r}")
+        self.assertEqual([name for name in results if "selection arm's conversion" in name], [],
+                         f"the arm ran for another session: {results}")
+        self.assertEqual(sorted(name for name, (state, _) in results.items() if state == "FAIL"), [],
+                         f"a run for another session failed a check: {results}")
+        self.assertEqual(sorted(name for name, (state, _) in results.items() if state == "SKIP"),
+                         ["a real turn continues from the second installed session",
+                          "the selection arm converts the fixture it is written for"],
+                         f"the run skipped something other than the arm and the unrequested turn: "
+                         f"{results}")
+        self.assertEqual(code, 0, f"exit {code} for a run whose arm was skipped: {results}")
 
     def test_a_malformed_codex_installed_line_is_a_named_failure(self) -> None:
         """An unparseable installed line is a FAIL the run reports, not a traceback out of ``main``.

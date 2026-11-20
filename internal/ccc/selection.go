@@ -309,6 +309,13 @@ func parseSelectionRegion(token string) (selectionRegion, error) {
 				"between regions)", ErrBadSelection, token)
 	}
 	lower, upper, hasRange := strings.Cut(trimmed, "-")
+	if strings.TrimSpace(lower) == "" {
+		// A token like `-1` or `-` cuts at its first dash, leaving an empty lower half: the refusal quotes
+		// the whole token the caller wrote, the way every other malformed-token sentence does, rather
+		// than the empty half the cut produced.
+		return selectionRegion{}, fmt.Errorf(
+			"%w: %q is not an ordinal: write values and ranges like 0-5,9,12-", ErrBadSelection, trimmed)
+	}
 	lo, err := selectionOrdinal(lower)
 	if err != nil {
 		return selectionRegion{}, err
@@ -727,10 +734,10 @@ func selectionClosure(
 			return nil, nil, strictSelectionRefusal(conversation, pair, carried[pair.call])
 		}
 	}
-	counterparts := make([][]int, len(conversation.Messages))
+	counterparts := make([][]selectionPair, len(conversation.Messages))
 	for _, pair := range pairs {
-		counterparts[pair.call] = append(counterparts[pair.call], pair.result)
-		counterparts[pair.result] = append(counterparts[pair.result], pair.call)
+		counterparts[pair.call] = append(counterparts[pair.call], pair)
+		counterparts[pair.result] = append(counterparts[pair.result], pair)
 	}
 	necessityAt := make([]int, len(conversation.Messages))
 	for index := range necessityAt {
@@ -742,12 +749,16 @@ func selectionClosure(
 			if !carried[index] {
 				continue
 			}
-			for _, member := range counterparts[index] {
+			for _, pair := range counterparts[index] {
+				member := pair.result
+				if pair.call != index {
+					member = pair.call
+				}
 				if carried[member] {
 					continue
 				}
 				if member < len(lineInactive) && lineInactive[member] {
-					return nil, nil, unrepresentableCounterpartRefusal(conversation, index, member)
+					return nil, nil, unrepresentableCounterpartRefusal(conversation, pair)
 				}
 				carried[member] = true
 				necessityAt[member] = index
@@ -783,27 +794,27 @@ func strictSelectionRefusal(conversation Conversation, pair selectionPair, callS
 // unrepresentableCounterpartRefusal words the refusal for a counterpart the route cannot carry: the pair
 // and both of its ordinals are named, because the caller's next move is to write a spec that holds both
 // -- and the record's own off-line place is what makes the whole selection impossible rather than one
-// addition unwise.
-func unrepresentableCounterpartRefusal(conversation Conversation, pulledBy, counterpart int) error {
-	call, result := pulledBy, counterpart
-	if len(conversation.Messages[call].ToolCalls) == 0 {
-		call, result = counterpart, pulledBy
-	}
+// addition unwise. The pair is passed whole rather than the two records: a record can carry a call of its
+// own beside the result that answers another call, so reading the roles back off the pulled record's
+// ToolCalls is how this sentence would name the wrong record as the call.
+func unrepresentableCounterpartRefusal(conversation Conversation, pair selectionPair) error {
 	return fmt.Errorf(
 		"%w: the call recorded at ordinal %d and the result recorded at ordinal %d are one structure, and "+
 			"the record the selection would have to carry beside the one it names is off the line the read's "+
 			"last record answers; name a region whose records both stand on that line, or narrow the "+
-			"selection", ErrSelectionUnrepresentable, conversation.Messages[call].Ordinal,
-		conversation.Messages[result].Ordinal)
+			"selection", ErrSelectionUnrepresentable, conversation.Messages[pair.call].Ordinal,
+		conversation.Messages[pair.result].Ordinal)
 }
 
 // callFinalities answers the read's own finality for every call occurrence it holds: completed, failed
 // or interrupted where a recorded result states an outcome; in-progress where the read pairs recorded
 // events with the call and none of them states an outcome; completed where the call carries the archive's
 // own derived summary and the read pairs no recorded event with it (the summary is then the outcome
-// evidence the read holds); and unknown-undischarged where the read holds no outcome evidence at all. A
-// progress event beside a summary leaves the call in-progress: the summary is a view of that event, not
-// an outcome recorded beside it.
+// evidence the read holds); and unknown-undischarged where the read holds no outcome evidence at all.
+// A progress event beside a summary leaves the call in-progress: the summary is a view of that event, not
+// an outcome recorded beside it. Where the read recorded more than one outcome-stating result for one
+// call, the last one in the read's own order is the answer: the finality is a function of the recorded
+// document, never of map iteration.
 //
 // A conversation a selection produced carries the answers its own read established
 // (Conversation.sourceCallFinality), keyed to the reduced document's positions: the window cannot
@@ -815,10 +826,18 @@ func callFinalities(
 	if conversation.selectionReduced() {
 		return conversation.sourceCallFinality
 	}
+	// The events are gathered in the document's own read order -- never by ranging the pairing map, whose
+	// iteration order is Go's own -- because a call a read answered more than once (an errored result and
+	// a later completion) takes the outcome of the last result the read recorded: the answer is a
+	// function of the recorded document, and this walk is what makes it one.
 	events := make(map[callOccurrence][]ToolResult)
-	for place, call := range paired {
-		result := conversation.Messages[place.message].ToolResults[place.result]
-		events[call] = append(events[call], result)
+	for index, message := range conversation.Messages {
+		for resultIndex, result := range message.ToolResults {
+			place := resultOccurrence{message: index, result: resultIndex}
+			if call, ok := paired[place]; ok {
+				events[call] = append(events[call], result)
+			}
+		}
 	}
 	finality := make(map[callOccurrence]callFinality)
 	for index, message := range conversation.Messages {

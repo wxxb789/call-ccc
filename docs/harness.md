@@ -337,15 +337,22 @@ says so.
   same route code writes both, and the renderer's spelling is pinned by `cmd/ccc`'s own cases, so the
   second document is consumed for its identity, its path, what it carried and its boundary.
   **The selection arm (goal 0009) runs once those checks are through:** the script converts the
-  fixture the first stages used, with `--select 0,4` — the first and last turns of the read, the middle
-  named as excluded — and holds the report to the window it was asked for (`included`/`excluded`/
-  `undischarged`, and the installed path the conversion reports), then reads **both** installed sessions
+  fixture the first stages used, with `--select 0,4` — the fixture's first user record and the assistant
+  record that answers it, with the read's other turns named as excluded (`1-3,5-7`: the read is eight
+  records, so 0 and 4 are not its ends) — and holds the report to the window it was asked for
+  (`included`/`excluded`/`undischarged`, and the installed path the conversion reports), then reads
+  **both** installed sessions
   through the harness's own loader and asserts each view holds the kept turn's words and not the
   excluded ones; it runs the same selection command a second time and shows that run installs its own
   **fresh** session rather than writing twice into one (the same snapshot-succeeds-by-repeating rule the
   repeat scenario measures on the ordinary path), and the ids it installed are named in the summary
-  line and in `--json` (`selected_sessions`). A requested real turn in a selection arm is one turn per
-  prompt flag, exactly as the other arms.
+  line and in `--json` (`selected_sessions`). The arm works at the load level and adds no turn of its
+  own: `--resume-prompt`/`--repeat-resume-prompt` run their turns in the ordinary sessions alone, one
+  turn per flag, and the report line says how many ran. The arm's specification, its two marker words
+  and its expected classes are the **default fixture's own records**, so it runs only when the run
+  converts that fixture (`--session` absent or the default): a run naming another session records the
+  arm as a named **skip** with that session, rather than asking it whether a read holds a window its
+  records never made.
   The two rendered command lines (`resume_command`, `exec_resume_command`) are checked by **reading
   them the way a POSIX shell reads them**: word by word — a home the renderer quotes, any path holding
   a space or a Windows backslash, is accepted, while an unquoted home a shell would split into two words

@@ -136,8 +136,10 @@ the specification names and the conversion writes that window as a fresh target 
 `selection.ordinal_space` block states the space the ordinals are values in, and an ordinal outside it,
 an inverted or duplicated region and a non-numeric value are refused by name with the usage exit code
 before anything is installed. A window that would separate a recorded call from its recorded result
-carries the counterpart as a declared necessity (the report's `selection.necessities_added`), and
-`--strict-selection` refuses that window by name instead. The report (human and `--json`) names the
+carries the counterpart as a declared necessity (the report's `selection.necessities_added`) — but only
+where the counterpart stands on the line the read's own last record answers; where it does not, the whole
+selection is refused by name rather than activating a branch the source's conversation left — and
+`--strict-selection` refuses a separated window by name instead. The report (human and `--json`) names the
 transformation per class — included, excluded, necessities added, and the calls the source itself left
 undischarged — and accounts for every kept record by its ordinal and the items it became. The option is
 a capability of the **reference pair alone** (a Claude Code source → a Codex target); every other pair,

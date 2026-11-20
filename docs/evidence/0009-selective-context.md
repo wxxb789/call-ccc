@@ -6,10 +6,11 @@ Claude Code → Codex). Plan: [`docs/plans/0009-selective-context.md`](../plans/
 [`0009-citations.tsv`](0009-citations.tsv).
 
 The tree this record measures is the working tree of branch `feat/0009-selective-context` at base revision
-`f3e9ec8`, Go 1.27.4, 24 changed/added paths, since committed as `3b71614` (unmerged — the operator owns
-the merge and the archive move). Every command below was run in the repository root unless its own `$`
-line says otherwise; the transcripts below are that working tree's, taken before the commit, and nothing
-was pushed or rewritten.
+`f3e9ec8`, Go 1.27.4, committed in stages as `3b71614` (the selection) and `f430f2a` (the applied
+simplifications), with the review round's fixes present in the working tree at the time of writing
+(unmerged — the operator owns the merge and the archive move). Every command below was run in the
+repository root unless its own `$` line says otherwise; a transcript taken on the later working tree says
+so in its own section, and nothing was pushed or rewritten.
 
 ## 0. What was measured before the increment was written
 
@@ -26,7 +27,8 @@ was pushed or rewritten.
   probe for absence — an excluded ordinal's own words must not appear in the installed rollout.
 - Host tooling: `go1.27.4 linux/amd64`; Codex `codex-cli 0.170.0` at
   `/home/azureuser/.local/share/mise/installs/codex/latest/bin/codex`. The writer's own pinned report line
-  says `cli_version: 0.169.0 (writer-pin)` — the version `internal/ccc/codex_install.go` pins — while the
+  says `cli_version: 0.169.0 (writer-pin)` — the version `CodexFormatVersion`
+  (`internal/ccc/codex_target.go`) pins — while the
   native arm (§5) runs the host's 0.170.0 binary as the harness it is.
 - The `--select` ordinal space is the read's own supplied values, never positions; the report's
   `ordinal_space` block states min/max/count/contiguity, and an ordinal outside it is refused by name (§2).
@@ -137,6 +139,9 @@ written. The `$` lines are the actual invocations (fixture root as in §1):
 $ /tmp/ccc0009 continue claude:c1a74e28-… --to codex --select "x" --dry-run
 ccc: the selection cannot be honoured: "x" is not an ordinal: write values and ranges like 0-5,9,12-
 exit=2
+$ /tmp/ccc0009 continue claude:c1a74e28-… --to codex --select=-1 --dry-run
+ccc: the selection cannot be honoured: "-1" is not an ordinal: write values and ranges like 0-5,9,12-
+exit=2
 $ /tmp/ccc0009 continue claude:c1a74e28-… --to codex --select "5-3" --dry-run
 ccc: the selection cannot be honoured: the region "5-3" is inverted: a range is written low-high, like 0-5
 exit=2
@@ -160,7 +165,9 @@ exit=2
 The last line is D7's core answer, raised before the read; the CLI half runs before the source is opened —
 `TestSelectionIsRefusedOnEveryOtherPairBeforeTheSourceIsOpened` pins that the route's own reader is called
 **zero** times on a refused pair and that no target file appears. The Go rows for §2 are D5.1–D5.3 and
-D7.1–D7.2.
+D7.1–D7.2. The `--select=-1` line was re-taken after the review round's fix: the earlier build answered
+`"" holds no ordinal` for a token whose dash left an empty lower half, and the sentence now quotes the
+token the caller wrote.
 
 ## 3. D6: the seam, and the superseded PR's negative shapes
 
@@ -186,7 +193,8 @@ Verbatim from the progress case (`internal/ccc/selection_test.go`):
 	mutatedRollout, err := ConvertToCodexRollout(mutated, testOptions())
 	…
 	if output, ok := rolloutOutputFor(t, mutatedRollout.Data, "call_wait"); !ok || output != progressText {
-		t.Errorf("the mutation did not turn the arm red: the carried lifecycle answer gone …")
+		t.Errorf("the mutation did not turn the arm red: without the carried lifecycle answer the "+
+			"writer wrote no summary output (present=%v, %q)", ok, output)
 	}
 ```
 
@@ -197,9 +205,15 @@ The remaining dispositions are pinned beside these:
   selection by name, mentioning both ordinals and the fact that the counterpart is off the line —
   `ErrSelectionUnrepresentable` in the default arm, `ErrStrictSelection` under `--strict-selection`, both
   naming `ordinal 2`; the same specification over a linear shape carries the counterpart as a necessity.
+  The refusal carries the pair's roles from the closure rather than re-reading them off the record that
+  pulled the counterpart in: a mixed entry whose result's record carries a call of its own still answers
+  "the call recorded at ordinal 1 and the result recorded at ordinal 2" (the case's mixed-entry arm,
+  which the old role guess answered in the swapped order).
 - **D6.1 ID-less ownership** — `TestSelectionKeepsAnIDLessResultOutOfASelectedRun`: a result with no id
-  whose pairing is not the read's own is left out of a selected run and counted, never inferred onto a
-  call; an id-less result the read *did* pair travels with its call.
+  is left out of a selected run and counted (`unpaired_tool_results`), never inferred onto a call — the
+  read recorded no link for it, and the pairing the seam carries holds only links the read established;
+  the *unflagged* conversion of the same read keeps the writer's own disclosed inference (the sole
+  outstanding call), the behaviour the goal's non-scope leaves untouched.
 - **D6.3 a retained progress event is published only through its call** —
   `TestSelectionPublishesAProgressEventOnlyThroughItsCall`: the caller-named progress record is omitted
   from this format's output and counted (`nonterminal_tool_events` ×1) while the call is written and
@@ -226,6 +240,18 @@ The remaining dispositions are pinned beside these:
 - **X2 recorded instants survive the cut** — `TestSelectionTimeStampsAreNeverOlderThanTheReadsRecord`: a
   selected window's written records keep the read's own instants; the writer's clock rule never re-times a
   record because a neighbour was cut.
+- **D6.2's own order rule** — `TestSelectionAnswersTheLastOutcomeTheReadRecorded`: a call a read answered
+  twice (an errored result and a later completion) takes the last outcome the read recorded, and every one
+  of 200 calls answers the same value — the pairing map's iteration order never decides, which is D6's
+  purity bound (the same document, the same answer). Without the read-order walk the case fails: the two
+  orders it builds (`errored` then `completed`, and the reverse) both let the map's order pick the answer.
+- **D1's reason column** — a lost record's reason is the loss category the walk charged it to, not the
+  no-reason fallback: `TestSelectionPublishesAProgressEventOnlyThroughItsCall` (the retained progress
+  event's record → `nonterminal_tool_events`), `TestSelectionKeepsAnIDLessResultOutOfASelectedRun` (the
+  id-less result's record → `unpaired_tool_results`), and
+  `TestSelectionNamesTheCategoryBehindALostToolResult` (the empty and whitespace-only results'
+  records → `empty_tool_results` / `whitespace_only_tool_results`) each assert the table's `reason` is
+  that category.
 
 ## 4. D4: the default path is byte-identical (the throw-away probe)
 
@@ -259,39 +285,58 @@ D4 in the manifest header instead of a citation row.
 ## 5. The native arm: the target harness's own loader (D3/D7's machine half)
 
 `scripts/codex-native-check.py` was extended with a re-runnable *selection arm*: after the existing
-conversion/load checks it converts the fixture twice with `--select 0,4` (a window holding the first user
-turn and the last assistant turn, excluding the middle by name), reads both installed rollouts through
-Codex's own app-server (`thread/resume`), and asserts the loader's own view holds the kept marker and not
-the excluded one; the two invocations installing two distinct fresh session ids is what proves the same
-command re-runs into its own fresh session.
-Run against the host's Codex:
+conversion/load checks it converts the fixture twice with `--select 0,4` (the fixture's first user record
+and the assistant record that answers it; the read's other turns are excluded by name), reads both
+installed rollouts through Codex's own app-server (`thread/resume`), and asserts the loader's own view
+holds the kept marker and not the excluded one; the two invocations installing two distinct fresh session
+ids is what proves the same command re-runs into its own fresh session.
+Run against the host's Codex (re-taken on this tree, after the review round's fixes):
 
 ```
 $ python3 scripts/codex-native-check.py --codex /home/azureuser/.local/share/mise/installs/codex/latest/bin/codex
 …                                                                                          # exit 0
-PASS: the selection arm's conversion 1 reports the named window — included=['0', '4'] excluded=['1-3', '5-7'] undischarged=0
-PASS: the target harness's own loader opens the selection arm's session 1 — thread/resume -> 01a1f919-3a81-… [legacy] cwd=/home/user/code/example-api
+PASS: the selection arm's conversion 1 reports the named window — included=['0', '4'] excluded=['1-3', '5-7'] undischarged=0; installed sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1f943-0d3f-7017-b886-54b974ff4f4e.jsonl
+PASS: the target harness's own loader opens the selection arm's session 1 — thread/resume -> 01a1f943-0d3f-7017-b886-54b974ff4f4e [legacy] cwd=/home/user/code/example-api
 
 the target harness's own view of the selection arm's session 1:
-    thread 01a1f919-3a81-… [legacy] provider=openai
+    thread 01a1f943-0d3f-7017-b886-54b974ff4f4e [legacy] provider=openai
       turn rollout-2
         userMessage: Summarize the retry policy in internal/retry/policy.go.
         agentMessage: Four attempts with exponential backoff, capped at 30s between attempts.
 PASS: the selection arm's session 1 holds the carried window and not the rest — 2 item(s); kept marker present=True, excluded present=False
-PASS: the selection arm's conversion 2 reports the named window — included=['0', '4'] excluded=['1-3', '5-7'] undischarged=0
-PASS: the target harness's own loader opens the selection arm's session 2 — thread/resume -> 01a1f919-3c7e-… [legacy] cwd=/home/user/code/example-api
+PASS: the selection arm's conversion 2 reports the named window — included=['0', '4'] excluded=['1-3', '5-7'] undischarged=0; installed sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1f943-0f40-7f17-9831-737498b8b9f0.jsonl
+PASS: the target harness's own loader opens the selection arm's session 2 — thread/resume -> 01a1f943-0f40-7f17-9831-737498b8b9f0 [legacy] cwd=/home/user/code/example-api
 PASS: the selection arm's session 2 holds the carried window and not the rest — 2 item(s); kept marker present=True, excluded present=False
-PASS: the same selection command re-runs into its own fresh sessions — two invocation(s) installed 01a1f919-3a81-… then 01a1f919-3c7e-…
+PASS: the same selection command re-runs into its own fresh sessions — two invocation(s) installed 01a1f943-0d3f-7017-b886-54b974ff4f4e then 01a1f943-0f40-7f17-9831-737498b8b9f0
 …
-conversions: 4 session(s) installed (01a1f919-3856-…, then the selection arm's 01a1f919-3a81-… and 01a1f919-3c7e-…, then 01a1f919-3e7c-…); real turn(s) run: 0
+conversions: 4 session(s) installed (01a1f943-0b16-…, then the selection arm's 01a1f943-0d3f-… and 01a1f943-0f40-…, then 01a1f943-114b-…); real turn(s) run: 0
 33 check(s) passed, 0 failed, 2 skipped
 ```
 
-The two skips are the check's unrequested real turns (`--resume-prompt`); every arm that *was* requested
-passed. The arm's assertions are themselves non-vacuous: `scripts/tests/test_codex_native_check.py`'s
+The same script run for the *other* committed fixture is the arm's own unattempted path
+(`--session b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef`, the tooling read the arm's specification is not written
+about):
+
+```
+$ python3 scripts/codex-native-check.py --codex /home/azureuser/.local/share/mise/installs/codex/latest/bin/codex \
+    --session b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef
+SKIP: the selection arm converts the fixture it is written for — not attempted: --session b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef names another session than the arm's own fixture (9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10)
+…
+conversions: 2 session(s) installed (01a1f943-2378-…, then 01a1f943-2673-…; the selection arm did not run because --session b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef is not its fixture (9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10)); real turn(s) run: 0
+26 check(s) passed, 0 failed, 3 skipped                                       # exit 0
+```
+
+Before this fix the same tooling-session run reported four *failed* checks (the arm asked whether the
+tooling read holds a window its records never made), so this run is the executed contrast.
+
+The two default-run skips are the check's unrequested real turns (`--resume-prompt`); every arm that *was*
+requested passed. The arm's assertions are themselves non-vacuous: `scripts/tests/test_codex_native_check.py`'s
 `test_the_selection_arms_own_checks_are_not_vacuous` drives the check's subprocess/app-server seams with a
-stubbed harness and shows a wrong view (an excluded marker present, a missing kept marker, a mutation of
-the applied path) makes its arm fail — the required `selftest` step runs it. The load arm and its python
+stubbed harness through three controls — a document reporting another window, a view dropping the kept
+record's marker, and a view that also carries the excluded record's marker — and each control fails the
+arm's own checks and only those; a further case drives a run whose `--session` is not the arm's fixture and
+asserts the arm is a named skip rather than a run. The required `selftest` step runs all of them. The load
+arm and its python
 case are named in the citations manifest header as deliberately not row-carried (the gate runs Go tests;
 the native half is not a gate step, per AGENTS.md's rule that a native check is re-runnable and
 deliberately not a gate step).
@@ -302,13 +347,13 @@ deliberately not a gate step).
 $ python3 scripts/gate.py
 gate: /home/azureuser/repos/call-ccc
 gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
-  PASS     gofmt    3624 file(s) gofmt-clean
+  PASS     gofmt    3627 file(s) gofmt-clean
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 443 tests in 8.939s (rc=0)
+  PASS     selftest Ran 444 tests in 8.716s (rc=0)
   PASS     parity   … carried: 5553 file(s) identical to the pinned revision (compared through git's own object store); reported by cmd/ccc: 83195c8a…
-  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 20 row(s) verified
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 21 row(s) verified
   PASS     secrets  no leaks found in 200 file(s) this repository owns …
 GATE: PASS
 ```
@@ -317,28 +362,34 @@ Exit code 0; no step partial, skipped or bounded (the `partial:` banner would na
 step runs `go test -count=1 -tags fts5 ./cmd/ccc/... ./internal/ccc/...` (the flags come from
 `scripts/gate-goflags.txt`), and its `3 package(s) ok` are `cmd/ccc`, `internal/ccc` and
 `internal/ccc/parity` — so the gate's green covers every Go case §1–§3 cite. `citations` re-derived
-this increment's 20 rows in this very run — the cited test exists in the named package and passed.
+this increment's 21 rows in this very run — the cited test exists in the named package and passed.
 
-Before this final run the tree was formatted (`gofmt -w internal/ccc/fixturegen/main.go`, whose earlier
-miss was the gate's own `gofmt` step catching it) and the throw-away probe file was removed; the run
-above is that working tree as it stood, before the increment was committed as `3b71614` (on the committed
-tree the same `gofmt` step lists `3627` file(s): the three new `.go` files were untracked when the
-transcript ran).
+This transcript is the working tree *after* the review round's fixes (this increment's further
+uncommitted changes; the increment's earlier commits are `3b71614` and `f430f2a`). The earlier run of
+this record listed `3624` file(s) because the three new `.go` files were untracked then, and `Ran 443
+tests` because the python case the fix round added did not exist yet. The throw-away probe file (D4) was
+removed before both runs.
 
 ## 7. Bookkeeping
 
 - `AGENTS.md` grew in the same increment, as the rule requires: the seam paragraph now names the six
-  carried dispositions and the reference route's `--select`/`--strict-selection` contract, and the layout
+  carried dispositions and the reference route's `--select`/`--strict-selection` contract (the review
+  round named the sixth field's half explicitly: the line answers' per-record membership and the places
+  the read's walk did not establish), and the layout
   paragraph names `internal/ccc/selection.go` and `conversation.go`.
 - `docs/harness.md`'s native-check entry gained the selection arm
   (`scripts/codex-native-check.py`'s flagged pair and what it holds the harness's own view to), and
   `docs/goals/0009-selective-context.md`'s own `Status:` line now states the implementation, its branch
-  and its evidence record.
+  and its evidence record. The review round corrected the entry's two untrue statements about the arm
+  (which records `0,4` names; the arm runs at the load level and a prompt flag adds no turn to it) and
+  recorded that the arm is the default fixture's own and a skip for another `--session`.
 - `docs/plans/0009-selective-context.md` §11 (implementation) records the seven departures/readings the
   plan left open, each with the test that pins it.
-- `README.md` documents `--select`/`--strict-selection` in the `ccc continue` section.
+- `README.md` documents `--select`/`--strict-selection` in the `ccc continue` section; the review round
+  added the closure-eligibility outcome (a counterpart off the read's line refuses the whole selection).
 - `docs/goals/README.md` carries this increment's row; the goal file stays in `docs/goals/` (the increment
   is not merged; the operator owns the merge and archive move).
 - No other tree was touched: the source fixtures are read-only to this build, the scratch homes under
-  `/tmp` were created by these runs, and nothing was pushed or rewritten — the increment's own commit is
-  `3b71614`.
+  `/tmp` were created by these runs, and nothing was pushed or rewritten — the increment's own commits are
+  `3b71614` (the selection), the simplify/apply round's `f430f2a`, and the review round's fixes, left
+  uncommitted in the working tree for the operator.
