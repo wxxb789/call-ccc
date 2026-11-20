@@ -25,7 +25,7 @@
 #         receipt yet: the receipt's producer is goal 0009c/0009d (this goal's Non-scope), and the rules
 #         are stated over the synthetic receipts committed with the fixtures. Their re-derivation is the
 #         same `selftest` case's mutation table (four mutations for `oracle.receipt`, two for
-#         `oracle.plan-emitted`, ten for `oracle.plan-accounted`, two for `oracle.plan-order` and
+#         `oracle.plan-emitted`, twelve for `oracle.plan-accounted`, two for `oracle.plan-order` and
 #         one for `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
 #         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
 #         refused before comparison, a metadata-only artifact included),
@@ -61,13 +61,28 @@
 #         `test_a_custom_tool_call_output_is_refused_with_a_plan` (a `message` in a role outside the
 #         writer's two carrying readable text, and a result in the family whose carried read answers an
 #         outcome this route's writer's own results have no member for — each refused where a plan is
-#         compared, green without one, and counted in the ten `oracle.plan-accounted` mutations above)
+#         compared, green without one, and counted among the twelve `oracle.plan-accounted` mutations above)
 #         and by `test_a_call_without_a_usable_name_is_no_call` (a call whose `name` is not the
 #         non-empty string the carried reader registers is refused with its orphaned output, and no
 #         receipt — the fixture's own or one edited to `name: ""` — certifies the pair: the new clause
 #         of the `oracle.call-pairing` row above, whose cited Go test pins the rule's other clause),
 #         with the executed reverts of all four new mutations in
 #         docs/evidence/0009a-native-oracle.md §11.
+#         Review round r7's refusals are pinned by
+#         `test_a_result_the_receipt_cannot_establish_is_refused_with_a_plan` (a result whose call the
+#         read answers elsewhere — `spawn_agent` links a subagent session and appends no result,
+#         `wait`/`wait_agent` answer per-agent results from the output's own `status` object, the
+#         exec-cell poll excepted — or whose output no read appends a result from is refused where a
+#         plan is compared, green without one),
+#         `test_a_non_string_identity_member_is_refused_with_a_plan` (a call's recorded input or a
+#         result's recorded text written as a non-string member is refused where a plan is compared,
+#         its JSON spelling — which reconstructs the receipt's own string key — pinned as the identity
+#         it would otherwise be matched on, and the explicit-`null` identity `null` distinguished from
+#         the absent member's empty string) and
+#         `test_a_moved_turn_context_is_outside_the_receipts_vocabulary` (a record's turn placement is
+#         outside what the receipt states; the finding's own `turn_context` move validates green), with
+#         the four new mutations' executed reverts and the scope pin's inverted study in
+#         docs/evidence/0009a-native-oracle.md §12.
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`, and
 #         `test_decoded_input_never_aborts_validation`: a decoded string strict UTF-8 cannot encode and a

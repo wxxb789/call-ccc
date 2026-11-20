@@ -1531,6 +1531,12 @@ def _payload_becomes_a_list(record: dict) -> None:
     record["payload"] = ["not", "an", "object"]
 
 
+def _type_dropped(record: dict) -> None:
+    """One record's envelope `type` deleted: the rule's own non-empty-string arm, which the deleted,
+    unknown-type and empty-artifact fixtures all fail without."""
+    record.pop("type")
+
+
 def _type_becomes_unknown(record: dict) -> None:
     record["type"] = "conversation_item"
 
@@ -1541,6 +1547,12 @@ def _id_becomes_empty(record: dict) -> None:
 
 def _cli_version_dropped(record: dict) -> None:
     record["payload"].pop("cli_version")
+
+
+def _originator_dropped(record: dict) -> None:
+    """The metadata record's `originator` deleted: the third member the rule names, which the empty-id
+    and dropped-`cli_version` fixtures both fail without."""
+    record["payload"].pop("originator")
 
 
 def _content_becomes_empty(record: dict) -> None:
@@ -1646,6 +1658,17 @@ def _mutation_envelope_payload_not_an_object(text: str, receipt: dict | None) ->
     return oracle_edit(text, oracle_record_is("world_state"), change=_payload_becomes_a_list), receipt
 
 
+def _mutation_envelope_without_type(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One record's envelope `type` deleted: the rule's non-empty-string arm.
+
+    The other envelope mutations reach the timestamp and the payload arms alone, so this one is the arm
+    that states a record must carry a type at all (`oracle.record-type` deliberately leaves a missing or
+    blank one to this rule). The `world_state` record carries no other rule's subject, and the clock
+    does not read a type, so only `oracle.envelope` can refuse the artifact (review round r7's finding).
+    """
+    return oracle_edit(text, oracle_record_is("world_state"), change=_type_dropped), receipt
+
+
 def _mutation_envelope_offset_out_of_range(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """One record's numeric offset leaves the range RFC 3339 bounds: `+99:99` dates no instant.
 
@@ -1743,6 +1766,18 @@ def _mutation_session_meta_id_empty(text: str, receipt: dict | None) -> tuple[st
 
 def _mutation_session_meta_cli_version_dropped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     return oracle_edit(text, oracle_record_is("session_meta"), change=_cli_version_dropped), receipt
+
+
+def _mutation_session_meta_originator_dropped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The metadata record's `originator` deleted: the rule's third member arm.
+
+    The empty-`id` and dropped-`cli_version` mutations reach the other two members alone, so this one is
+    the arm that states `originator`, which the carried reader needs from that record (review round r7's
+    finding). Only `oracle.session-meta-members` reads the member, and the record stays the artifact's
+    first and only metadata record.
+    """
+    return oracle_edit(text, oracle_record_is("session_meta"),
+                       change=_originator_dropped), receipt
 
 
 def _mutation_clock_swapped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -1970,6 +2005,51 @@ def _mutation_plan_custom_tool_call_output(text: str, receipt: dict | None) -> t
                            "type", "custom_tool_call_output")), receipt
 
 
+def _mutation_plan_special_result_call(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The call renamed `wait_agent` in the artifact **and** the receipt, its output left as plain text.
+
+    `handleFunctionCallOutput` answers a `wait_agent` output from the record's own `status` object and
+    returns before recording a result for a plain-text one (`internal/parser/codex_parser_test.go`'s
+    wait-output fixture pins the arm), while the receipt's result identity — the call id and the same
+    recorded text, both unchanged — still matches: the artifact validated green although no read of it
+    returns the result the receipt marks emitted (review round r7's finding). The receipt's call name is
+    renamed with the artifact's, so every identity the receipt states still matches and only the new
+    refusal can turn the artifact red.
+    """
+    assert receipt is not None
+    renamed = 0
+    for entry in receipt["occurrences"]:
+        if entry.get("kind") == "tool_call":
+            entry["name"] = "wait_agent"
+            renamed += 1
+    if renamed != 1:
+        raise AssertionError("the plan no longer holds exactly one tool_call entry to rename")
+    return oracle_edit(text, oracle_item_is("function_call", "call_oracle_0001"),
+                       change=lambda record: record["payload"].__setitem__(
+                           "name", "wait_agent")), receipt
+
+
+def _mutation_plan_non_string_call_input(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The call's recorded input written as a JSON object, spaces after its colons.
+
+    The oracle's identity serializes a non-string member back to compact JSON and so reconstructs the
+    receipt's own `arguments` string, while the carried reader answers the member's raw bytes
+    (`extractCodexInputJSON`) and this route's writer's own calls write `arguments` as a string
+    (`internal/ccc/codex_target.go`'s `codexFunctionCallPayload`): a changed member certified as the
+    unchanged invocation (review round r7's finding). The receipt is untouched — it still names the
+    compact spelling the mutation reconstructs, so without the refusal the comparison is green.
+    """
+    needle = '"arguments":"{\\"file_path\\":\\"/work/oracle-fixture/notes.md\\"}"'
+    replacement = '"arguments":{"file_path": "/work/oracle-fixture/notes.md"}'
+    for line in text.splitlines():
+        if not oracle_item_is("function_call", "call_oracle_0001")(json.loads(line)):
+            continue
+        if needle not in line:
+            raise AssertionError("the fixture no longer writes the call's arguments this mutation edits")
+        return text.replace(needle, replacement, 1), receipt
+    raise AssertionError("the fixture no longer holds the call this mutation edits")
+
+
 def _mutation_plan_image_generation_call(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """An `image_generation_call` appended, which a read turns into a tool call the receipt cannot name.
 
@@ -2174,6 +2254,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_envelope_without_timestamp),
         OracleMutation("a payload that is not an object", "session.jsonl", None,
                        _mutation_envelope_payload_not_an_object),
+        OracleMutation("a record without its type", "session.jsonl", None,
+                       _mutation_envelope_without_type),
         OracleMutation("an offset the format forbids", "session.jsonl", None,
                        _mutation_envelope_offset_out_of_range),
         OracleMutation("an instant at the leap second", "session.jsonl", None,
@@ -2197,6 +2279,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
     "oracle.session-meta-members": (
         OracleMutation("an empty id", "session.jsonl", None, _mutation_session_meta_id_empty),
         OracleMutation("no cli_version", "session.jsonl", None, _mutation_session_meta_cli_version_dropped),
+        OracleMutation("no originator", "session.jsonl", None,
+                       _mutation_session_meta_originator_dropped),
     ),
     "oracle.clock": (
         OracleMutation("two adjacent instants swapped", "session.jsonl", None, _mutation_clock_swapped),
@@ -2255,6 +2339,10 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "reduced-receipt.json", _mutation_plan_omitted_developer_message),
         OracleMutation("a recorded result rewritten into the custom tool family", "session.jsonl",
                        "session-receipt.json", _mutation_plan_custom_tool_call_output),
+        OracleMutation("a result under a call the read answers elsewhere", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_special_result_call),
+        OracleMutation("a call whose recorded input is not a string", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_non_string_call_input),
         OracleMutation("an image-generation call the receipt cannot name", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_image_generation_call),
         OracleMutation("an omitted message that survives in the turn view", "reduced.jsonl",
@@ -2880,6 +2968,270 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertEqual({key: value for key, value in output_payload(custom).items() if key != "type"},
                          {key: value for key, value in output_payload(session).items() if key != "type"},
                          "the case's edit changed more than the result's own family")
+
+    def test_a_result_the_receipt_cannot_establish_is_refused_with_a_plan(self) -> None:
+        """A result whose call the read answers elsewhere, or whose output a read appends nothing from,
+        is refused where a plan is compared.
+
+        Review round r7's finding: the fixture's call renamed `wait_agent` — in the artifact **and** in
+        the receipt, so every identity the receipt states still matches — with its output left as the
+        same plain text validated green while a read of the artifact returns **no** result: the carried
+        read's `handleFunctionCallOutput` answers a `wait_agent` output from the record's own `status`
+        object and returns before recording one for a plain-text output
+        (`internal/parser/codex_parser_test.go`'s wait-output fixture pins the arm), so the receipt
+        certified a result the target will never show. The refusal is stated over the class: a
+        `spawn_agent` output appends no result at all (it links the call to the subagent session it
+        names), and a record with no `output` member or a Go-blank string one is refused too —
+        `parseCodexFunctionOutput` returns before recording a result, which is the rule this route's
+        writer already obeys (`lossEmptyResults`/`lossWhitespaceResults`). The controls pin the read's
+        own routing: the exec-cell `wait` poll, which `handleFunctionCall` routes as `code_mode_wait`
+        (a non-blank string `cell_id`, no `ids`/`targets`), reads as an ordinary result and stays green;
+        a `wait` carrying a target does not reroute and is refused; and every one of these shapes is
+        structurally green, because a native rollout may carry it.
+        """
+        session = oracle_fixture("session.jsonl")
+
+        def renamed(name: str, arguments: str | None = None) -> tuple[str, dict]:
+            """The fixture with its call renamed (its recorded input replaced where given), and a receipt
+            renamed the same way, so every identity the receipt states still matches."""
+            artifact = oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),
+                                   change=lambda record: record["payload"].__setitem__("name", name))
+            if arguments is not None:
+                artifact = oracle_edit(artifact, oracle_item_is("function_call", "call_oracle_0001"),
+                                       change=lambda record: record["payload"].__setitem__(
+                                           "arguments", arguments))
+            receipt = oracle_receipt("session-receipt.json")
+            for entry in receipt["occurrences"]:
+                if entry.get("kind") != "tool_call":
+                    continue
+                entry["name"] = name
+                if arguments is not None:
+                    entry["arguments"] = arguments
+                break
+            else:
+                raise AssertionError("the plan no longer holds the tool call this case renames")
+            return artifact, receipt
+
+        for label, name, arguments in (
+            ("the finding's own `wait_agent` rename", "wait_agent", None),
+            ("a `spawn_agent` output, which the read appends no result for", "spawn_agent", None),
+            ("a `wait` carrying `ids`, which the read does not reroute", "wait",
+             '{"ids":["agent-0001"],"timeout_ms":600000}'),
+            ("a `wait` naming both a cell and a target, which the read does not reroute either", "wait",
+             '{"cell_id":"cell-0001","ids":["agent-0001"]}'),
+        ):
+            with self.subTest(arm=label):
+                artifact, receipt = renamed(name, arguments)
+                self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                                 f"{label} is not structurally green")
+                refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+                self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                                 f"{label} certified the result its read does not return: {refused}")
+                self.assertIn(name, refused[0].detail,
+                              f"the refusal does not name the call's registered name: {refused[0]}")
+                self.assertNotIn("# notes", refused[0].detail,
+                                 f"the refusal echoed the recorded text: {refused[0]}")
+
+        # The wait family's own per-agent answer: the same call with a `status` object written as the
+        # record's string output is still not the receipt's single result — the read appends one result
+        # per agent entry, with that entry's own text — so the shape is refused even though the identity
+        # the receipt states (the whole written string) matches.
+        status = '{"status":{"agent-0001":{"completed":"done"}}}'
+        artifact, receipt = renamed("wait_agent")
+        artifact = oracle_edit(artifact, oracle_item_is("function_call_output", "call_oracle_0001"),
+                               change=lambda record: record["payload"].__setitem__("output", status))
+        oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"),
+                            lambda entry: entry.__setitem__("text", status))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                         "the status-object output is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the per-agent status output was certified: {refused}")
+        self.assertIn("`status`", refused[0].detail, f"{refused[0]}")
+
+        # The control: the exec-cell poll the read routes as an ordinary result, so its output's read is
+        # the receipt's own and the artifact stays green.
+        artifact, receipt = renamed("wait", '{"cell_id":"cell-0001"}')
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                         "the exec-cell wait is not structurally green")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact, receipt=receipt), [],
+                         "the exec-cell wait reads as an ordinary result and was refused")
+
+        # A record no read appends a result from: no `output` member, and one every byte of which Go's
+        # own trim calls blank. The identity is the written member (empty string, or the whitespace
+        # itself), so a receipt naming it would match while no read returns a result — refused too.
+        for label, change, planned_text in (
+            ("an output member that is absent",
+             lambda record: record["payload"].pop("output"), ""),
+            ("an output of whitespace alone, which every read trims to none",
+             lambda record: record["payload"].__setitem__("output", "   "), "   "),
+        ):
+            with self.subTest(arm=label):
+                artifact = oracle_edit(session, oracle_item_is("function_call_output", "call_oracle_0001"),
+                                       change=change)
+                receipt = oracle_receipt("session-receipt.json")
+                oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"),
+                                    lambda entry: entry.__setitem__("text", planned_text))
+                self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                                 f"{label} is not structurally green")
+                keys = [key for key, _ in NATIVE_CHECK.oracle_occurrences(
+                    NATIVE_CHECK.oracle_records(artifact)[0])]
+                self.assertIn(("tool_result", "call_oracle_0001", planned_text), keys,
+                              f"the written span is not the occurrence's identity: {keys}")
+                refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+                self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                                 f"{label} was not refused as a result no read returns: {refused}")
+                self.assertIn("no output a read appends a result from", refused[0].detail,
+                              f"{refused[0]}")
+
+    def test_a_non_string_identity_member_is_refused_with_a_plan(self) -> None:
+        """A call's recorded input or a result's recorded text written as a non-string member is refused
+        where a plan is compared, because the receipt's own identity members are strings.
+
+        Review round r7's finding: the fixture's call with `arguments` rewritten as a JSON object — the
+        same field, a space after its colon — still matched the receipt, because the oracle serializes a
+        non-string member back to compact JSON and so reconstructs the receipt's own string key, while
+        the carried reader answers the member's own raw bytes (`extractCodexInputJSON`) and this route's
+        writer's calls write `arguments` as a string (`internal/ccc/codex_target.go`'s
+        `codexFunctionCallPayload`). A receipt names the member as written, and a decoded value cannot
+        recover a member's own spelling — a space after a colon, a number's written form — so the shape
+        is refused rather than matched on a spelling neither reader answers. The same holds for the
+        `input` member a custom call records its input in (`extractCodexInputJSON` falls through to it)
+        and for a result's `output` (`parseCodexFunctionOutput` reads a non-string member's raw text).
+        Every arm is structurally green — native files carry non-string outputs (122 list-valued
+        `custom_tool_call_output` outputs measured, §0) — and the explicit-`null` arm's identity is
+        pinned as the string `null`, distinct from the absent member's empty string.
+        """
+        session = oracle_fixture("session.jsonl")
+
+        def replaced_member(match, member: str, written: str) -> str:
+            """The fixture with the matched record's `member` replaced by the raw JSON text `written`.
+
+            `written` is the whole ``"member":…`` span, not the value alone: the `input` arm moves the
+            recorded input to its other member name. A non-string member's *spelling* is this case's
+            subject and `oracle_quote` writes compact JSON, so the member is spliced into the line's own
+            text rather than set on a parsed record.
+            """
+            for index, line in enumerate(session.splitlines()):
+                record = json.loads(line)
+                if not match(record):
+                    continue
+                needle = oracle_quote({member: record["payload"][member]})[1:-1]
+                if needle not in line:
+                    raise AssertionError(f"the fixture's `{member}` is not written as this case assumes")
+                return "\n".join(session.splitlines()[:index]
+                                 + [line.replace(needle, written, 1)]
+                                 + session.splitlines()[index + 1:]) + "\n"
+            raise AssertionError("the fixture holds no record this case edits")
+
+        compact_input = '{"file_path":"/work/oracle-fixture/notes.md"}'
+        list_output = '["# notes", "more"]'
+
+        def receipt_with_result_text(text: str) -> dict:
+            receipt = oracle_receipt("session-receipt.json")
+            oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"),
+                                lambda entry: entry.__setitem__("text", text))
+            return receipt
+
+        for label, artifact, receipt, identity, member in (
+            ("the call's recorded input as a JSON object, spaces after its colons",
+             replaced_member(oracle_item_is("function_call", "call_oracle_0001"), "arguments",
+                             '"arguments":{"file_path": "/work/oracle-fixture/notes.md"}'),
+             oracle_receipt("session-receipt.json"),
+             ("tool_call", "call_oracle_0001", "Read", compact_input), "arguments"),
+            ("the `input` member a custom call records its input in",
+             replaced_member(oracle_item_is("function_call", "call_oracle_0001"), "arguments",
+                             '"input":{"file_path": "/work/oracle-fixture/notes.md"}'),
+             oracle_receipt("session-receipt.json"),
+             ("tool_call", "call_oracle_0001", "Read", compact_input), "input"),
+            ("a result's recorded text as a JSON array",
+             replaced_member(oracle_item_is("function_call_output", "call_oracle_0001"), "output",
+                             f'"output":{list_output}'),
+             receipt_with_result_text('["# notes","more"]'),
+             ("tool_result", "call_oracle_0001", '["# notes","more"]'), "output"),
+            ("a result's recorded text written as `null`",
+             replaced_member(oracle_item_is("function_call_output", "call_oracle_0001"), "output",
+                             '"output":null'),
+             receipt_with_result_text("null"),
+             ("tool_result", "call_oracle_0001", "null"), "output"),
+        ):
+            with self.subTest(arm=label):
+                self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                                 f"{label} is not structurally green")
+                keys = [key for key, _ in NATIVE_CHECK.oracle_occurrences(
+                    NATIVE_CHECK.oracle_records(artifact)[0])]
+                self.assertIn(identity, keys,
+                              f"the non-string member is not the occurrence's identity: {keys}")
+                refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+                self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                                 f"{label} certified the shape against the receipt's own string key: "
+                                 f"{refused}")
+                self.assertIn(f"`{member}`", refused[0].detail,
+                              f"the refusal does not name the member it read: {refused[0]}")
+                self.assertNotIn("notes.md", refused[0].detail,
+                                 f"the refusal echoed the member's text: {refused[0]}")
+
+        # The identity's two absences: the absent member is the empty string, the explicit `null` the
+        # JSON spelling `null` the reader answers for the member's raw bytes — two identities, not one.
+        absent = oracle_edit(session, oracle_item_is("function_call_output", "call_oracle_0001"),
+                             change=lambda record: record["payload"].pop("output"))
+        keys = [key for key, _ in NATIVE_CHECK.oracle_occurrences(
+            NATIVE_CHECK.oracle_records(absent)[0])]
+        self.assertIn(("tool_result", "call_oracle_0001", ""), keys,
+                      f"the absent member is not the empty string: {keys}")
+        self.assertNotEqual(NATIVE_CHECK.oracle_result_text({}),
+                            NATIVE_CHECK.oracle_result_text({"output": None}),
+                            "the absent member and the written `null` are one identity")
+
+    def test_a_moved_turn_context_is_outside_the_receipts_vocabulary(self) -> None:
+        """The receipt names no turns, so `oracle.plan-order` compares order, not turn membership.
+
+        Review round r7's finding: moving the fixture's second `turn_context` to just before its first
+        assistant answer — stamped with the instant of the record it now follows, so the clock stays
+        legal — leaves both flattened sequences, every count and the clock unchanged, while the carried
+        read's active turn id changes with the record (`internal/parser/codex.go`: a `turn_context` line
+        sets the turn the records written after it are read under), so the answer and its tool call read
+        back under the second turn. Neither document holds a statement the placement could be compared
+        against — the receipt's occurrences carry no turn member and the artifact's dialogue records
+        name no turn — so the rule states that scope rather than claiming a comparison it cannot make,
+        and this case pins the scope against the finding's own mutation: the moved artifact validates
+        green, with its receipt. A rule change that starts comparing turn placement has to update the
+        rule's own sentence, the record and this case together.
+        """
+        session = oracle_fixture("session.jsonl")
+        lines = session.splitlines()
+        contexts = [index for index, line in enumerate(lines)
+                    if json.loads(line).get("type") == "turn_context"]
+        self.assertEqual(len(contexts), 2, "the fixture no longer holds exactly two turn contexts")
+        answer = next(index for index, line in enumerate(lines)
+                      if oracle_item_is("message", "The synthetic one.")(json.loads(line)))
+        self.assertLess(answer, contexts[1],
+                        "the fixture's second turn context no longer stands after the first answer")
+        moved_record = json.loads(lines.pop(contexts[1]))
+        moved_record["timestamp"] = json.loads(lines[answer - 1])["timestamp"]
+        lines.insert(answer, oracle_quote(moved_record))
+        moved = "\n".join(lines) + "\n"
+        self.assertEqual(len(lines), len(session.splitlines()), "the move changed the record count")
+        self.assertNotEqual(moved, session, "the case's own edit changed nothing")
+
+        # The finding's own placement: the second turn context now stands before the first assistant
+        # answer, so the records written after it read under the second turn.
+        moved_lines = moved.splitlines()
+        moved_contexts = [index for index, line in enumerate(moved_lines)
+                          if json.loads(line).get("type") == "turn_context"]
+        moved_answer = next(index for index, line in enumerate(moved_lines)
+                            if oracle_item_is("message", "The synthetic one.")(json.loads(line)))
+        self.assertLess(moved_contexts[1], moved_answer,
+                        "the case did not move the second turn context before the answer")
+        counted = len(NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(moved)[0]))
+        self.assertEqual(counted, 7, "the move changed the occurrence count it must preserve")
+
+        self.assertEqual(NATIVE_CHECK.validate_artifact(moved), [],
+                         "the moved artifact is not structurally green: the case changed more than the "
+                         "turn placement")
+        self.assertEqual(
+            NATIVE_CHECK.validate_artifact(moved, receipt=oracle_receipt("session-receipt.json")), [],
+            "the moved turn context was refused although the receipt states no turns")
 
     def test_a_call_without_a_usable_name_is_no_call(self) -> None:
         """A call whose `name` is not a non-empty string is refused, and owns no output.

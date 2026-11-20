@@ -798,7 +798,12 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # in the view, one it emits has to stand in both, a call or one of its outputs substituted under an
 # unchanged `call_id` is not the occurrence the plan named, the turn view's own dialogue order is the
 # receipt's order too (the harness builds its view of the turns from those events), and a compaction
-# boundary moved past later turns is refused although every count is unchanged. A receipt that declares
+# boundary moved past later turns is refused although every count is unchanged. The receipt's vocabulary
+# names no turn, so which `turn_context` record a record stands after is outside what the two documents
+# can state and is not compared: a `turn_context` moved across records — the read's active turn id, and
+# so the turn each later record reads under, changes with it (`internal/parser/codex.go`) — leaves every
+# checked sequence and count unchanged, and the rule states that scope rather than claiming a comparison
+# it cannot make (review round r7's finding). A receipt that declares
 # no occurrences at all is refused rather than compared, because both comparisons would pass vacuously on
 # an artifact that holds none. A `compacted` record is a boundary occurrence whether or not it carries a
 # summary, because the carried reader appends a boundary for every one of them
@@ -813,13 +818,22 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # message to its default branch, and an `image_generation_call` is a tool call whose identity lives in
 # members the receipt does not have — before this refusal, an omitted prompt written into such a shape
 # travelled through receipt validation unnoticed (review round r4's finding). A second class is the shape
-# whose own read this oracle does not model: a call carrying **both** an `arguments` and an `input` member
-# can be named `"{}"` by a receipt while the carried reader's `extractCodexInputJSON` skips that value and
-# continues to `input`, and an object-valued `content` is iterated by the reader's own `ForEach` over its
-# **member values** — `{"block":{"type":"input_text","text":…}}` is read by the carried reader and empty to
-# this oracle's text readers — so both are refused where a plan is compared (review round r5's finding):
-# the identity this oracle computes is not the answer a read gives, and no receipt can account for the
-# difference. A `reasoning` item is not one of these: the reader answers it as a thinking row with an
+# whose own read or identity this oracle does not model: a call carrying **both** an `arguments` and an
+# `input` member can be named `"{}"` by a receipt while the carried reader's `extractCodexInputJSON` skips
+# that value and continues to `input`; a call whose recorded input or result whose recorded text is
+# written as a member that is **not a string** is matched by the identity's JSON spelling while the
+# reader answers the member's own raw bytes (a decoded spelling cannot be recovered, and the receipt's
+# identity members are strings); and an object-valued `content` is iterated by the reader's own `ForEach`
+# over its **member values** — `{"block":{"type":"input_text","text":…}}` is read by the carried reader and
+# empty to this oracle's text readers — so each is refused where a plan is compared (review rounds r5
+# and r7's findings): the identity this oracle computes is not the answer a read gives, and no receipt
+# can account for the difference. A third class is the result whose read the receipt cannot establish at
+# all: an output whose call the read answers elsewhere — `spawn_agent`'s output links a subagent session
+# and appends no result, `wait`/`wait_agent` answer per-agent results from the output's own `status`
+# object (the exec-cell poll, which the read routes as an ordinary result, excepted) — and a record that
+# carries no output a read appends a result from are refused the same way, because a receipt marking such
+# a result emitted would certify evidence no read of the artifact returns (review round r7's finding). A
+# `reasoning` item is not one of these: the reader answers it as a thinking row with an
 # explicitly empty dialogue projection, so it carries no dialogue. The structural half refuses an output
 # written before its owner in either mode: the target's own reader keeps such an event as an unattached
 # update rather than a result on its call (`internal/parser/codex_collecting_sink.go`), and this route's
@@ -878,15 +892,23 @@ ORACLE_RULES: dict[str, str] = {
         "whose `user`/`assistant` role and readable text a read appends as a message, an "
         "`image_generation_call`, a `message` in a role outside the writer's two carrying readable text, "
         "and a `custom_tool_call_output` whose carried read answers the result's outcome — and a shape "
-        "whose own read this oracle does not model — a call "
+        "whose own read or identity this oracle does not model — a call "
         "carrying both `arguments` and `input` (a read skips an empty or `{}`/`[]` `arguments` and "
-        "continues to `input`), and an object-valued `content` a read iterates the member values of "
-        "(`ForEach`) — are equally refused; the plan is total, in both of the target's dialogue channels",
+        "continues to `input`), a call whose recorded input or result whose recorded text is written as "
+        "a member that is not a string (the receipt's identity member is a string, and a non-string "
+        "member's own bytes are what the carried read answers), and an object-valued `content` a read "
+        "iterates the member values of "
+        "(`ForEach`) — are equally refused, and so is a result the carried read does not establish: one "
+        "whose call the read answers elsewhere (`spawn_agent`'s output links a subagent session and "
+        "appends no result; `wait`/`wait_agent` answer per-agent results from the output's own `status` "
+        "object — the exec-cell poll reads as an ordinary result and is exempt) or one that carries no "
+        "output a read appends a result from; the plan is total, in both of the target's dialogue channels",
     "oracle.plan-order":
         "the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, "
         "and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past "
         "later turns, or two prompts in each other's turns, compacts a different history even though "
-        "every count is unchanged",
+        "every count is unchanged; the receipt's vocabulary names no turn, so which `turn_context` "
+        "record a record stands after is outside what a receipt can state and not compared",
     "oracle.plan-pairs":
         "a call and its recorded result carry one disposition: a `call_id` whose call and result the "
         "receipt splits is the pair the closure rule forbids",
@@ -923,6 +945,16 @@ ORACLE_OCCURRENCE_KINDS = ("message", "tool_call", "tool_result", "compaction_bo
 #: itself writes are named, because an artifact may hold either and a pairing defect is the same defect.
 ORACLE_CALL_ITEMS = ("function_call", "custom_tool_call")
 ORACLE_RESULT_ITEMS = ("function_call_output", "custom_tool_call_output")
+
+#: The call names whose output the carried read answers through one of `handleFunctionCallOutput`'s
+#: special arms rather than the ordinary one — `spawn_agent`'s output links the call to the subagent
+#: session it names and appends **no** result, and `wait`/`wait_agent` read the output's own `status`
+#: object and append one result per agent entry (none for an output that carries no status object) — so
+#: the receipt's `call_id`/recorded-text identity is not the result a read answers for them where a plan
+#: is compared (`oracle_result_read_violations`). One `wait` shape is exempt: the exec-cell poll, which
+#: `handleFunctionCall` routes as `code_mode_wait` and the output switch answers through the ordinary
+#: arm; `oracle_exec_cell_wait` mirrors that condition.
+ORACLE_SPECIAL_RESULT_CALLS = ("spawn_agent", "wait", "wait_agent")
 
 #: The `event_msg` payload types that carry one message's text for the harness's own view.
 ORACLE_TURN_EVENTS = ("user_message", "agent_message")
@@ -1429,13 +1461,18 @@ def oracle_result_text(payload: dict) -> str:
     substituted output under an unchanged `call_id` is a different occurrence rather than the same one.
     A non-string output (Codex 0.170.0's own files hold list-valued outputs; this build's writer writes
     none) is kept as its JSON spelling, so two different outputs under one `call_id` stay two
-    occurrences; an absent one is the empty string.
+    occurrences; an **absent** member is the empty string, and a member written as `null` is the string
+    `null` — the raw text the carried reader answers for it (`parseCodexFunctionOutput` reads the
+    member's own bytes) — rather than the absent member's empty string. Where a **plan** is compared, a
+    non-string output is refused instead (`oracle_unmodelled_shape_violations`): the receipt's recorded
+    text is a string and the decoded value cannot recover the member's own bytes (review round r7's
+    finding).
     """
-    output = payload.get("output")
+    if "output" not in payload:
+        return ""
+    output = payload["output"]
     if isinstance(output, str):
         return output
-    if output is None:
-        return ""
     return json.dumps(output, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -1449,6 +1486,23 @@ def oracle_call_name(payload: dict) -> str:
     """
     name = payload.get("name")
     return name if isinstance(name, str) else ""
+
+
+def oracle_call_input_member(payload: dict) -> tuple[str, object] | None:
+    """The member `oracle_call_arguments` reads a call's identity from: the first present
+    `arguments`/`input` member, a blank string skipped, and None where the record carries neither.
+
+    The preference and the blank skip are the read's own (`extractCodexInputJSON`), and naming the
+    member lets the receipt-mode refusal say which one held a value no receipt can name.
+    """
+    for member in ("arguments", "input"):
+        if member not in payload:
+            continue
+        value = payload[member]
+        if isinstance(value, str) and oracle_blank(value):
+            continue
+        return member, value
+    return None
 
 
 def oracle_call_arguments(payload: dict) -> str:
@@ -1468,21 +1522,20 @@ def oracle_call_arguments(payload: dict) -> str:
 
     A non-string member is kept as its JSON spelling, the same convention `oracle_result_text` states: an
     absent one is the empty string, and a member written as `null` is the string `null` the reader
-    answers for it. A record carrying **both** members is refused where a plan is compared
-    (`oracle_unmodelled_shape_violations`): the carried read skips an empty or `{}`/`[]` `arguments` and
-    continues to `input`, so the written identity and the read's answer can be two different invocations
-    and one receipt cannot account for both.
+    answers for it — but where a **plan** is compared that member is refused instead
+    (`oracle_unmodelled_shape_violations`), because the receipt's `arguments` identity is a string and
+    the decoded value cannot recover the member's own bytes, which are what the carried read answers
+    (review round r7's finding). A record carrying **both** members is refused the same way: the carried
+    read skips an empty or `{}`/`[]` `arguments` and continues to `input`, so the written identity and
+    the read's answer can be two different invocations and one receipt cannot account for both.
     """
-    for member in ("arguments", "input"):
-        if member not in payload:
-            continue
-        value = payload[member]
-        if isinstance(value, str):
-            if oracle_blank(value):
-                continue
-            return value
-        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-    return ""
+    read = oracle_call_input_member(payload)
+    if read is None:
+        return ""
+    _, value = read
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
 def oracle_boundary_text(payload: dict) -> str:
@@ -1699,31 +1752,40 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
 
 
 def oracle_unmodelled_shape_violations(records: list[tuple[int, dict]]) -> list[Violation]:
-    """`oracle.plan-accounted`, for the shapes whose own read this oracle does not model.
+    """`oracle.plan-accounted`, for the shapes whose own read or identity this oracle does not model.
 
     The occurrence identity is the member the artifact writes, and the carried reader's answer for these
-    shapes need not be that member (both measured on `tidwall/gjson` v1.20.0, the version this tree
-    carries):
+    shapes need not be that member (the `gjson` behaviour is measured on `tidwall/gjson` v1.20.0, the
+    version this tree carries):
 
     - a call carrying **both** an `arguments` and an `input` member: `extractCodexInputJSON` skips an
       empty or `{}`/`[]` `arguments` and continues to `input`
       (`TestParseCodexSession_InputJSON`'s `string-encoded empty JSON falls through to input` subtest
       pins that read), so a receipt naming the written `"{}"` identity of this route's writer
       (`lossEmptyInputs`) can certify a call whose recorded input a read answers from the other member;
+    - a call whose recorded input, or a result whose recorded text, is written as a member that is not a
+      string: the identity serializes such a member back to its JSON spelling, but the carried reader
+      answers the member's **own bytes** — `extractCodexInputJSON` returns the raw JSON of a non-string
+      `arguments`/`input`, and `parseCodexFunctionOutput` reads a non-string `output`'s raw text — and
+      this oracle holds the decoded value, from which the member's own spelling (a space after a colon,
+      a number's written form) cannot be recovered. The receipt's own identity members are strings, so
+      no receipt can name the invocation or the output exactly (review round r7's finding);
     - an object-valued `content` on a record a read turns into a message: `extractCodexTextBlocks` and
       `extractCodexInboundAgentMessage` run their `ForEach` over `content`, which for an object yields
       its **member values** — `{"block":{"type":"input_text","text":…}}` is read by the carried reader
       and empty to this oracle's own text readers — so the text a read delivers is accounted for by no
       identity the receipt can state.
 
-    Both are refused where a plan is compared and silent without one: a native rollout may legitimately
-    carry them, and the structural rules say nothing about a shape this route's writer does not emit and
-    the occurrence vocabulary does not name (review round r5's finding). The content arm mirrors the
-    read's own gates, because a record the read never turns into an occurrence carries no dialogue to
-    refuse: `handleResponseItem`'s default branch needs a `user`/`assistant` role, and
-    `extractCodexInboundAgentMessage` needs the session's own agent path as the recipient. An
-    object-valued `content` on a `message` item is `oracle.message`'s finding instead — that rule
-    requires a list — and this one leaves it alone.
+    Each is refused where a plan is compared and silent without one: a native rollout may legitimately
+    carry them (Codex 0.170.0's own files hold twelve blank call outputs and 122 list-valued
+    `custom_tool_call_output` outputs, §0 of the evidence record), and the structural rules say nothing
+    about a shape this route's writer does not emit and the occurrence vocabulary does not name (review
+    rounds r5 and r7's findings). The content arm mirrors the read's own gates, because a record the read
+    never turns into an occurrence carries no dialogue to refuse: `handleResponseItem`'s default branch
+    needs a `user`/`assistant` role, and `extractCodexInboundAgentMessage` needs the session's own agent
+    path as the recipient. An object-valued `content` on a `message` item is `oracle.message`'s finding
+    instead — that rule requires a list — and this one leaves it alone. A record a read appends **no**
+    result from is `oracle_result_read_violations`' finding, not this one's.
     """
     agent_path = oracle_agent_path(records)
     violations: list[Violation] = []
@@ -1741,6 +1803,30 @@ def oracle_unmodelled_shape_violations(records: list[tuple[int, dict]]) -> list[
                                         "answers need not be the input the receipt's single identity "
                                         "names — the plan cannot account for that invocation"))
             continue
+        if item in ORACLE_CALL_ITEMS:
+            read = oracle_call_input_member(payload)
+            if read is not None and not isinstance(read[1], str):
+                violations.append(Violation("oracle.plan-accounted", line,
+                                            f"the call's recorded input is written as the non-string "
+                                            f"`{read[0]}` member ({oracle_value_text(read[1])}): the "
+                                            f"receipt's `arguments` identity is a string, and the "
+                                            f"carried reader answers the member's own bytes raw "
+                                            f"(`extractCodexInputJSON`), which the decoded value this "
+                                            f"oracle holds cannot recover — no receipt can name this "
+                                            f"invocation exactly"))
+                continue
+        if item in ORACLE_RESULT_ITEMS:
+            output = payload.get("output")
+            if "output" in payload and not isinstance(output, str):
+                violations.append(Violation("oracle.plan-accounted", line,
+                                            f"the result's recorded text is written as the non-string "
+                                            f"`output` member ({oracle_value_text(output)}): the "
+                                            f"receipt's recorded-text identity is a string, and the "
+                                            f"carried reader answers the member's own bytes raw "
+                                            f"(`parseCodexFunctionOutput`), which the decoded value this "
+                                            f"oracle holds cannot recover — no receipt can name this "
+                                            f"output exactly"))
+                continue
         content = payload.get("content")
         if not isinstance(content, dict):
             continue
@@ -1768,6 +1854,137 @@ def oracle_unmodelled_shape_violations(records: list[tuple[int, dict]]) -> list[
                                         f"(`extractCodexTextBlocks`' `ForEach`), so the message text a "
                                         f"read answers is not one this oracle's identity reads — the "
                                         f"plan cannot account for it"))
+    return violations
+
+
+def oracle_call_input_value(payload: dict) -> object:
+    """The value the carried read parses a call's recorded input into, for the one routing decision this
+    oracle mirrors (`oracle_exec_cell_wait`): the first `arguments`/`input` member that is a non-blank
+    string of valid JSON or a non-empty object/array, and None where the members hold nothing a read
+    parses as args.
+
+    The parse is the read's own (`parseCodexFunctionArgs`) and deliberately strict rather than
+    approximate: a member whose decoded form this parser cannot read exactly — a string that is not
+    JSON, or an object that writes a member name twice, which Python and the reader's `gjson` answer
+    differently (`_oracle_unique_members`) — answers None, which reads as "no args" and so refuses the
+    shape instead of allowing it on a reading the reader may not share. It is **not** the occurrence
+    identity (`oracle_call_arguments` reads the member as written), so only the routing decision reads
+    it, and a string nested past Python's parser answers None the same way rather than escaping as a
+    `RecursionError` (`test_decoded_input_never_aborts_validation`).
+    """
+    for member in ("arguments", "input"):
+        if member not in payload:
+            continue
+        value = payload[member]
+        if isinstance(value, str):
+            trimmed = oracle_go_trim(value)
+            if trimmed == "":
+                continue
+            try:
+                return json.loads(trimmed, parse_constant=_reject_json_constant,
+                                  object_pairs_hook=_oracle_unique_members)
+            except (ValueError, RecursionError):
+                return None
+        if isinstance(value, (dict, list)):
+            if not value:
+                continue
+            return value
+        return None
+    return None
+
+
+def oracle_exec_cell_wait(payload: dict) -> bool:
+    """Whether the carried read routes this `wait` call as an exec-cell poll — `code_mode_wait`, the one
+    `wait` shape whose output the ordinary result arm answers.
+
+    `handleFunctionCall`'s inline condition is mirrored: the call's parsed args carry a non-blank
+    **string** `cell_id` (`gjson`'s `.Str` is empty for every non-string value, measured) and neither an
+    `ids` nor a `targets` member (a member written as `null` is present — `gjson`'s `Exists()` is true
+    for it — and so keeps the call out of this route). Args this oracle cannot read exactly answer None
+    and read as no `cell_id`, so the shape is refused rather than allowed.
+    """
+    args = oracle_call_input_value(payload)
+    if not isinstance(args, dict):
+        return False
+    cell_id = args.get("cell_id")
+    return (isinstance(cell_id, str) and oracle_go_trim(cell_id) != ""
+            and "ids" not in args and "targets" not in args)
+
+
+def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.plan-accounted`, for a result record whose read the receipt cannot establish.
+
+    A result occurrence's identity is its `call_id` and recorded text, and where a plan is compared that
+    identity is a statement about the result a read of the artifact answers. The carried read's
+    `handleFunctionCallOutput` answers two shapes with something other than one ordinary result, and
+    each is refused here (review round r7's finding: the fixture's call renamed `wait_agent` with its
+    output left as plain text validated green against the receipt, although no read of it returns the
+    result):
+
+    - a record that carries no output a read appends a result from — no `output` member at all, or a
+      string one Go's own trim calls blank: `parseCodexFunctionOutput` returns before recording a
+      result. This route's writer refuses both by its own rule (`internal/ccc/codex_target.go`:
+      `lossEmptyResults` for the empty string, `lossWhitespaceResults` for text every byte of which is
+      whitespace — "a written record would be in the file and absent from every read of it, including
+      this conversion's own round-trip check");
+    - an output whose call the read answers from the output's own `status` object: `spawn_agent`'s
+      output links the call to the subagent session it names and appends **no** result, and
+      `wait`/`wait_agent` append one result per agent entry — for the fixture's plain-text output,
+      none — so the receipt's `call_id`/recorded-text identity is not the result a read answers. One
+      `wait` shape is exempt: the exec-cell poll the read routes as an ordinary result
+      (`oracle_exec_cell_wait` mirrors `handleFunctionCall`'s condition).
+
+    Refused only where a plan is compared: a native rollout may legitimately carry these shapes
+    (measured: twelve blank outputs across Codex 0.170.0's own 25 sessions, §0 of the evidence record),
+    and the structural rules say nothing about an output's text or about the arm a read takes for its
+    call. The calls are walked in record order and an output is read against the call written before it,
+    the ownership `oracle.call-pairing` states: an output naming an absent call, or one written before
+    it, is that rule's finding and is left alone here.
+    """
+    owners: dict[str, tuple[str, bool]] = {}
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = oracle_payload(record)
+        item = payload.get("type")
+        if item in ORACLE_CALL_ITEMS:
+            call_id = payload.get("call_id")
+            name = oracle_call_name(payload)
+            if not isinstance(call_id, str) or call_id == "" or name == "":
+                continue  # no call the read registers: the pairing rule's own finding
+            owners[call_id] = (name, name == "wait" and oracle_exec_cell_wait(payload))
+            continue
+        if item not in ORACLE_RESULT_ITEMS:
+            continue
+        call_id = payload.get("call_id")
+        owner = owners.get(call_id) if isinstance(call_id, str) else None
+        if owner is None:
+            continue  # an output before its call, or with none: the pairing rule's own finding
+        name, exec_cell = owner
+        output = payload.get("output")
+        if "output" not in payload or (isinstance(output, str) and oracle_blank(output)):
+            violations.append(Violation("oracle.plan-accounted", line,
+                                        "the record carries no output a read appends a result from — "
+                                        "`parseCodexFunctionOutput` returns before recording one for a "
+                                        "missing or blank output, the same rule this route's writer "
+                                        "counts as `lossEmptyResults`/`lossWhitespaceResults` — so the "
+                                        "receipt's `call_id`/recorded-text identity names no result a "
+                                        "read answers"))
+            continue
+        if name not in ORACLE_SPECIAL_RESULT_CALLS or exec_cell:
+            continue
+        if name == "spawn_agent":
+            found = ("the output belongs to a `spawn_agent` call, and the carried read appends **no** "
+                     "result for one — it links the call to the subagent session the output names "
+                     "(`agent_id`) and reads nothing else")
+        else:
+            found = (f"the output belongs to a `{name}` call, and the carried read answers its output "
+                     f"from the output's own `status` object — one result per agent entry, none for an "
+                     f"output that carries none")
+        violations.append(Violation("oracle.plan-accounted", line,
+                                    f"{found}; the receipt's `call_id`/recorded-text identity is not the "
+                                    f"result a read answers"))
     return violations
 
 
@@ -2102,6 +2319,7 @@ def oracle_reading(text: str, receipt: object = _NO_RECEIPT
             violations += oracle_boundary_history_violations(records)
             violations += oracle_unaccounted_occurrence_violations(records)
             violations += oracle_unmodelled_shape_violations(records)
+            violations += oracle_result_read_violations(records)
     return records, occurrences, sorted(
         violations, key=lambda violation: (violation.line, violation.rule, violation.detail))
 

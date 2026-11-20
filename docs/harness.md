@@ -384,16 +384,24 @@ says so.
   `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside
   the writer's two carrying readable text, and a `custom_tool_call_output` whose carried read answers
   the result's outcome the receipt's identity cannot state among them — refused there
-  too, a shape whose own read the oracle does not model — a call carrying both `arguments` and `input`,
-  an object-valued `content` a read iterates the member values of — refused there too, a line whose
-  object (or a receipt document whose object) writes a member name twice refused before comparison,
+  too, a shape whose own read or identity the oracle does not model — a call carrying both `arguments` and
+  `input`, a call whose recorded input or result whose recorded text is written as a member that is not a
+  string (the receipt's identity members are strings, and a non-string member's own bytes are what the
+  carried read answers), an object-valued `content` a read iterates the member values of — refused there
+  too, and so is a result the carried read does not establish — one whose call the read answers elsewhere
+  (`spawn_agent` appends no result; `wait`/`wait_agent` answer per-agent results from the output's own
+  `status` object, the exec-cell poll excepted) or one carrying no output a read appends a result from —
+  a line whose object (or a receipt document whose object) writes a member name twice refused before
+  comparison,
   because this oracle's decoder and the carried reader's `gjson` answer a repeated name differently,
   every call required to carry the non-empty `name` the carried reader registers a call for and every
   call output to name a call written before it, and a receipt that declares no
   occurrences refused before any comparison). The identity the receipt is matched on is the member the
   artifact **writes** — a call's `arguments` read exactly as written, so this route's writer's deliberate
   `"{}"` is not the carried read's empty answer — and a call or result substituted under an unchanged
-  `call_id` is a different occurrence. It
+  `call_id` is a different occurrence. The receipt's vocabulary names no turn, so which `turn_context`
+  record a record stands after is outside what it can state and is not compared (the placement is not
+  half-checked: the rule's own sentence says so). It
   needs no harness, no source transcript and no selection semantics: its input is the artifact's text, so
   a reduced (selective) artifact is validated with the source absent from the process. Its verdict line is
   the last one printed — `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — …` —
