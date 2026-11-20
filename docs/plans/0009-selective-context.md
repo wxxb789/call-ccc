@@ -798,3 +798,47 @@ measurement that decided it, followed by the review round's own:
       as well; `TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress` pins the finding's arm,
       the id-recorded control (the summary is not written) and the unflagged arms. Three executed mutations
       (an id-less event marking; no event marking; the marking scoped to the reduction) fail it.
+19. **The thirteenth review round's four findings.** The review of `9242e49..3060324` found four items (one
+    P1, two P2, one P3), all fixed, and this round's own section of the evidence record carries the
+    mutations that pin them (`M1`–`M7`).
+    * **the file's own relation reaches the selected tree** (review 1/4, a P1): the writer's
+      `toolResultEntry` stores the most recent result entry for a call's carrier record, so with a second
+      result inserted beside the source file's leaf path and the reply still naming the *first* result, the
+      round-12 guard refused that off-path entry while the record being written stood on the line and the
+      reply fell back to the call — chained past a result the file's own walk holds and the report counted
+      as carried. The read of the source file's own entries now answers each record's `parentId` beside its
+      membership (`sourceFileLineAnswer.parent`), `Select` carries it per reduced position
+      (`Conversation.sourceFileParent`), and `parentPlace` takes the file's place first
+      (`fileParentPlace`): the reply hangs off the first result's entry, the second result is recorded
+      history off the walk, and the file's own relation is not counted
+      (`unresolved_source_parents` = 0 where the projection's place was counted; the round-11 test's
+      assertion and the citation row moved with it). A run without a selection keeps the reconstruction's
+      chain (through the later result, both results on the walk), which D4 measures.
+      `TestContinueKeepsTheFilesOwnResultOnASelectedWalk` pins it; three executed mutations (the step
+      dropped; the relation not carried across `Select`; the file answering no parent) fail it.
+    * **the default path's progress marking is the base revision's** (review 2/4, a P2): the round-11 fix
+      applied the id-only marking rule to both paths, which moved the default path — the base revision
+      marks the call the event names through `callNamedByResult` (the recorded id, or the sole call still
+      awaiting a result), so an id-less event marks the call, the stored summary is not written and the
+      call is counted unanswered. The marking is now two rules: a reduced document marks only an event
+      recording the call's own id, and a document the read returned marks through `callNamedByResult`
+      again. A three-tree probe (retained as `0009-r12-progress-marking-probe.txt`) shows the reviewed
+      head's default answer moving the id-less-progress arm and this tree's back on the pre-0009 tree's,
+      byte for byte. Two executed mutations (the default branch not marking; the reduced document taking
+      the default rule) fail the test.
+    * **the reduced plan reads the reservation's own evidence eligibility** (review 3/4, a P2): a
+      compaction record's writable result was installed into a call's slot although the writer publishes
+      that record as the boundary alone (and `reserveResultSlots` had already skipped it), so the later
+      recorded result the document could state was counted a repeat and the part would have carried the
+      boundary record's wording as the call's outcome. A reduced document now plans no calls and no
+      results for a compaction record, so the later recorded result is written and the boundary's own
+      evidence is disclosed by the call's `unpaired_tool_calls` row where its record is written.
+      `TestSelectionPlansNoEvidenceFromACompactionRecord` pins the compaction-first order and the default
+      path's unchanged answer; one executed mutation (the skip removed) fails it.
+    * **both completion members follow the winning result** (review 4/4, a P3): a displaced unwritable
+      event's `resultCompletionFallback` stayed on the part after a later writable result set `ResultAt`
+      from its own recorded instant, so the report counted a fallback for a result whose instant was used.
+      The flag is now assigned from the result each assignment carries;
+      `TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`'s timestamped arm pins the
+      part's `created`/`completed` beside `result_completion_fallbacks` = 0; one executed mutation (the
+      raise-only shape) fails it.

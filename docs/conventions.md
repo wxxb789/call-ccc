@@ -219,14 +219,21 @@ obligation ships no citations file, rather than an empty one.
   (OpenCode `reserveResultSlots`: a result whose record the conversion publishes evidence from and whose
   text and status the tool states can hold reserves its call occurrence, while one the conversion does not
   write — an off-line, subagent or compaction-boundary record's, one with no spellable status — reserves
-  nothing and a reserved occurrence still counts as unanswered where the id-less result stands; and on a
+  nothing and a reserved occurrence still counts as unanswered where the id-less result stands, and the
+  reduced plan reads the same eligibility: a compaction record's calls and results are not planned at all,
+  because the writer publishes that record as the boundary alone, so the recorded result the document can
+  state is the one written; and on a
   reduced document the same writability rule holds the slot itself, so an event the part cannot state — no
   text, whitespace-only text, a status word the tool states cannot spell — is counted exactly as the
   writer counts the same result and yields the slot to a later recorded outcome the part can state, while a
-  run without a selection keeps the first recorded outcome in it) — and only a progress event that records
-  the call's own id marks the call as one whose recorded events stand in for its archive summary, so an
+  run without a selection keeps the first recorded outcome in it, and both completion members follow the
+  result the slot carries) — and only a progress event that records
+  the call's own id marks the call as one whose recorded events stand in for its archive summary on a
+  document a selection produced, so an
   id-less event — a link only that writer's inference makes — does not suppress the summary the read stored
-  on the call — while a run without a selection keeps the ledger's own answer (the status clears the call's
+  on the call there, while a run without a selection keeps the writer's own marking (the id the event
+  recorded, or the sole call still awaiting a result) and with it the base revision's answer, in which an
+  id-less event stands in for the summary and the call is counted unanswered — while a run without a selection keeps the ledger's own answer (the status clears the call's
   id there) and keeps writing the event. What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
@@ -252,8 +259,12 @@ obligation ships no citations file, rather than an empty one.
   read (a Pi-family read the conversion took from the file itself, whose bytes are the size the read's own
   snapshot recorded), the file's own leaf path — the walk from its last entry back through `parentId`, the
   walk the harness's own loader builds the context from — is that line for every record the read answered
-  an identity for, so the read's lossy tool-result step cannot put a result the file left beside the
-  conversation back on the resumed walk (a record the read gave no identity for, an archive row and a file
+  an identity for, and the same read answers each of those records' own place in the file's tree (the entry
+  its `parentId` names), which a tree target hangs the entry off — so the read's lossy tool-result step
+  cannot put a result the file left beside the conversation back on the resumed walk (and a call whose file
+  holds two results keeps the result the file recorded between the call and the record that follows it,
+  rather than the projection's most recent one), and the relation the file answered is not counted as an
+  unresolved parent because it is the source's own; a record the read gave no identity for, an archive row and a file
   that cannot answer keep the read's own order answer, and a run without a selection keeps the
   reconstruction's line and its projection, which is what D4 measures); an off-line record may keep an off-line ancestor —
   keeping a branch off the active walk is recorded history the writer reproduces — while an on-line record

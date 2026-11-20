@@ -3315,7 +3315,10 @@ supersede it with a newer one and say which it supersedes.
   whitespace-only text, a status word the tool states cannot spell — is counted exactly as `toolPart` counts
   the same result and yields the call's one outcome slot to a later recorded outcome the part can state, on
   a reduced document only; and the progress branch marks a call as having recorded result evidence only
-  where the event records that call's own id, which restores 0007's id-keyed rule on the default path too.)
+  where the event records that call's own id *on a reduced document* — the default path keeps the base
+  revision's own marking (the id the event recorded, or the sole call still awaiting a result), which the
+  thirteenth round's second finding measured and scoped, so an id-less event still stands in for the call's
+  stored summary there (Q-0009-15).)
 - **Question:** may the source file's own answer about the resumed line govern the *unflagged* conversion as
   well (the file's relation is the source's own, and the read's reconstruction is the lossy one), or does
   D4's byte-identity keep the default path on the reconstruction — and may a reduced-only rule (the
@@ -3335,9 +3338,56 @@ supersede it with a newer one and say which it supersedes.
   dropping `resultEntryLeavesTheLine` from `parentPlace`'s tool-result place, by removing
   `displacingOpenCodeOutcome`/`countUnwritableResult` (and the branch that calls them), and by dropping the
   progress branch's id guard — each reopens the failure its mutation records
-  (`docs/evidence/0009-selective-context.md`, twelfth round, `M3`–`M12`).
+  (`docs/evidence/0009-selective-context.md`, twelfth round, `M3`–`M12`). The thirteenth round scoped the
+  guard's last half: the id guard sits on the reduced path alone and the default path keeps the marking the
+  base revision gave, so the default half's reversal is dropping that branch (the round's `M4`, whose
+  pre-fix line is the reviewed head's own — the id guard applied to both paths).
 - **Settled by:** an operator decision between "the file's own leaf path governs a selection's line only,
   an identity-less record keeps the read's order answer, and the OpenCode slot's writability and the
   progress marking are the reduction's own (the default path keeps its reconstruction, its projection and
   its ledger)" and "the file's own answer governs the default path too (or each of those is decided the
   other way)".
+
+## Q-0009-15 — The source file's own relation, the boundary record's evidence and a displaced outcome's completion members answer the reduction's documents
+
+- **Status:** open (defaults taken: the read of a Pi-family source file's own entries answers each record's
+  *place* in the file's tree — the entry its `parentId` names — beside its membership, and a tree target a
+  selection produced chains the entry to the record the file named rather than to the place its projection
+  step reaches; the relation is not counted (`unresolved_source_parents` names the places this conversion
+  resolved, and the file's answer resolves none of them), so a selected whole read of a file-backed
+  Pi-family source reports 0 where it reported the projection's place before, and a call whose file holds
+  two results keeps the *recorded* one between the call and the record that follows it on the resumed walk,
+  with the later sibling written as recorded history off it. A run without a selection keeps the
+  reconstruction's own chain (through the call's most recent result) and its own count, which goal 0009's
+  D4 requires and the round's three-tree probe measures. On a reduced OpenCode document the plan reads the
+  same evidence-eligibility rule the reservation already read: a compaction record — which the writer
+  publishes as the boundary alone — contributes no planned outcome, so the recorded result the document
+  *can* state is written instead of being counted a repeat, while the boundary record's own result has no
+  category of its own (the call it names is counted unanswered where its own record is written, and the
+  record's text travels nowhere). And both completion members of a tool part follow the result its slot
+  carries: the outcome that displaced an unwritable event states its own recorded instant and raises no
+  `result_completion_fallbacks` row, the displaced event's own answer being counted under the category
+  `toolPart` counts the same result under.)
+- **Question:** may the source file's own relation govern the *unflagged* tree conversion as well (the
+  file's answer is the source's own; the reconstruction's chain through the call's most recent result holds
+  every result on the walk but reproduces a relation the file never recorded), and should a compaction
+  record's outcome — evidence the writer deliberately does not publish — carry a loss row of its own, or is
+  the call's own `unpaired_tool_calls` row the disclosure the operator wants?
+- **Default taken:** the file's own relation is carried where the review's first finding measured it — a
+  *selection's* tree — and the default path keeps the reconstruction, its chain and its counts, because
+  carrying the file's answer there would change the unflagged bytes, counts and report that D4 measures
+  (the round's frozen D4 probe re-ran over both trees with the shared diff silent). The compaction record's
+  evidence is omitted under the eligibility rule both passes now share, disclosed by the call's own
+  unanswered row where its record is written; a per-result category for the boundary record would be a new
+  vocabulary row, which the report's rows are the operator's call to extend. The displaced outcome's
+  completion members are set from the result the slot carries, which is what the part states.
+- **Reversal:** the pre-fix behaviour returns by dropping the file-relation step from `parentPlace`
+  (`fileParentPlace`), by not filling `Conversation.sourceFileParent` in `Select` and not answering
+  `sourceFileLineAnswer.parent` in `lineMembership`, by removing the reduced plan's compaction-record skip,
+  and by raising `resultCompletionFallback` without clearing it from the winning result — each reopens the
+  failure its mutation records (`docs/evidence/0009-selective-context.md`, thirteenth round, `M1`–`M3`,
+  `M6`, `M7`).
+- **Settled by:** an operator decision between "the file's own relation, the boundary record's eligibility
+  and the displaced outcome's members answer the reduced documents only, the default path keeping the
+  reconstruction, and a boundary record's outcome is disclosed by its call's own row" and "the file's own
+  relation governs the default path too, or the boundary record's evidence gets a row of its own".

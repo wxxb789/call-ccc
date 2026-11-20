@@ -152,7 +152,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   (`ToolResult.Timestamp`: a result event's own envelope instant, which may be later than the record that
   carried its call) and only where the read holds none is the containing record's instant written — the
   report counts that substitution (`result_completion_fallbacks`) rather than presenting it as recorded,
-  because the call's own instant stated twice turns a recorded span into one the source never recorded; and
+  because the call's own instant stated twice turns a recorded span into one the source never recorded (and
+  both members follow the result the part's slot carries: where a later writable outcome displaces an
+  unwritable one on a reduced document, the displaced event's own instant and count do not stay on the
+  part); and
   where the instant the read answered — the result's own record, or that containing-record fallback —
   precedes the part's own `created` (an out-of-order source, whose result record stands before the record
   that carried the call), `completed` rises to the call's recorded start and the part is counted
@@ -337,7 +340,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   state and whose record the conversion publishes evidence from, reserves its call occurrence, so an
   inference may not fill the slot and leave the recorded result to be counted as a repeat), while a result
   the conversion does not write — an off-line or subagent record's, a compaction boundary's, one whose text
-  or status has no shape — reserves nothing, and a reserved occurrence still counts as unanswered where the
+  or status has no shape — reserves nothing, and the plan reads the same eligibility on a reduced document:
+  a compaction record's calls and results are not planned at all, because the writer publishes that record
+  as the boundary alone (`writeCompaction`), so planning one would fill a call's slot with a result no
+  message states and the recorded result the document *can* state would read as a repeat; and a reserved
+  occurrence still counts as unanswered where the
   id-less result stands, so an ambiguous window omits the event rather than binding it; the same
   writability rule holds the slot itself on a reduced document, where an event the part cannot state (no
   text, whitespace-only text, a status word the tool states cannot spell) is counted exactly as the writer
@@ -367,7 +374,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   the call's own id marks the call as one whose recorded events stand in for its archive summary (OpenCode's
   plan): an id-less event is paired by that writer's own inference, a link the source never made, so the
   summary the read stored on the call is still written rather than suppressed as a view of an event that
-  may belong to another call — and an archive
+  may belong to another call — that reading is the reduction's own, and a run without a selection keeps the
+  writer's long-standing marking (the id the event recorded, or — for an event that recorded none — the
+  sole call still awaiting a result, where the source's own relation leaves no other call it could mean):
+  an id-less progress event still stands in for the call's stored summary there, which is the answer the
+  base revision gave and what goal 0009's D4 requires the default path to keep — and an archive
   read's own summary of an outcome on the call itself (`ToolCall.ResultContent`) is outcome evidence where
   the read holds no recorded result event of the call, so that shape is not counted; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
@@ -376,8 +387,15 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   off it. Where the source's own file stands behind the read (a Pi-family read the conversion took from the
   file itself, whose bytes are the size the read's own snapshot recorded), the read pass reads that file's
   entries once and its own leaf path — the walk from the file's last entry back through `parentId`, the walk
-  the harness's own loader builds the context from — is the line the selection's flags are taken from for
-  every record the read answered an identity for; a record the read gave no identity for keeps the read's
+  harness's own loader builds the context from — is the line the selection's flags are taken from for
+  every record the read answered an identity for, and the same read answers each of those records' own
+  place in the file's tree (its `parentId`), which a tree target writes: the entry hangs off the record
+  the file named rather than the place the read's projection step reaches, so a call whose file holds two
+  results keeps the *recorded* one between the call and the record that follows it on the walk a resumed
+  session makes — the projection step takes the call's most recent result, and a later sibling the file's
+  leaf path leaves off would carry the record past the result the file recorded — and the relation the
+  file answered is not counted (`unresolved_source_parents` names the places this conversion resolved, and
+  the file's answer resolves none of them); a record the read gave no identity for keeps the read's
   own order answer, and the readers of an archive row, or of a file that cannot answer, keep it too. Without
   that answer the read's reconstruction chains a record the file placed under the call through the result
   standing between them (its lossy parent answer) and marks the result on the line, so a window ending there

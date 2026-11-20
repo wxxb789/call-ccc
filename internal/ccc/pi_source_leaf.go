@@ -272,7 +272,15 @@ func (answer piSourceFileAnswer) lineMembership(conversation Conversation) []sou
 		if id == "" {
 			continue
 		}
-		line[index] = sourceFileLineAnswer{holds: onPath[id], answered: true}
+		recordAnswer := sourceFileLineAnswer{holds: onPath[id], answered: true}
+		// The record's own place in the file's tree travels beside its membership: the entry the file's
+		// bytes name as its parent. The read may have answered that relation as a projection (a record
+		// the file placed under a tool result reads as hanging off the message that made the call), and a
+		// tree writer holding this answer chains the entry to the record the file named.
+		if at, ok := answer.byID[id]; ok {
+			recordAnswer.parent = parentOfPiEntry(answer.entries[at])
+		}
+		line[index] = recordAnswer
 	}
 	return line
 }

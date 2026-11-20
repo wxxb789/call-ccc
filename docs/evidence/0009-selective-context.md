@@ -2327,6 +2327,185 @@ GATE: PASS
 exit=0
 ```
 
+### The thirteenth review round's findings (`3060324` + working tree), fixed and re-measured
+
+The review of `9242e49..3060324` found four items (one P1, two P2, one P3), all fixed; the review's
+carried-tree parity section found all 33 changed paths project-owned and every carried blob matching the
+pin, and this round changes no carried file either — the carried tree is untouched and `upstream-parity.py`
+is the gate step that keeps saying so. The round follows the review's systematic close-out: every rule the
+touched surface claims is proved by one executed mutation (`M1`–`M7` below), each mutation's observed
+failure recorded with the test that catches it.
+
+* **Finding 1 (P1) — a selected Pi session could lose an active tool result from its resume path.** The
+  fixture copy's call carries two results: the second inserted between the first result and the reply, hanging
+  off the call itself, while the reply keeps the file's own `parentId` (the first result) — the source file's
+  leaf path is therefore reply → first result → call, with the second result beside the walk. The writer's
+  `toolResultEntry` stores the most recent result entry for a call's *carrier record*, and the twelfth round's
+  guard refuses that off-path entry while the record being written is one the line holds, so the reply fell
+  back to the call and was chained *past* the first result: a resumed session lost an output the file's own
+  walk holds, although the report counted the record as carried. The native parent relation a file-backed
+  Pi-family read already parses now travels with the selection: `lineMembership` answers each record's own
+  `parentId` (`sourceFileLineAnswer.parent`, beside its membership), `Select` carries it in the reduced
+  document's positions (`Conversation.sourceFileParent`), and `parentPlace` takes the place the file's record
+  stands for first (`fileParentPlace` → `writtenAncestor`), before the projection step, the read's own
+  relation, the retained ancestor and the fallback. The relation is the source's own, so it is not counted:
+  the selected whole read's `unresolved_source_parents` is 0 where the projection's place was counted
+  (`S6-file-projection`'s row and
+  `TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath`'s count assertion moved together, and the
+  revision's count is now pinned as the file's own answer rather than as the projection's — the arm's
+  controls, the refusal, the line target's omission and the unflagged projection stay exactly as they were).
+  `TestContinueKeepsTheFilesOwnResultOnASelectedWalk` pins the finding's shape end to end: the selected
+  session's model-visible history equals the source file's own, the reply's entry hangs off the first
+  result's entry, the second result is written as recorded history off the walk, the count is 0, and the
+  unflagged arm keeps the reconstruction (the reply through the later result, both results on the walk).
+  Mutations `M1`–`M3` fail it.
+
+* **Finding 2 (P2) — the unflagged OpenCode writer changed a behaviour D4 requires it to preserve.** The
+  twelfth round's fourth finding measured that an id-less progress event must not suppress a call's stored
+  summary *on a document a selection produced*, and the fix then applied the id-only rule to both paths —
+  which moved the *default* path: on the base revision the progress branch marks the call the event names
+  through `callNamedByResult` (the id it recorded, or the sole call still awaiting a result), so an id-less
+  event marks the call, the stored summary is not written as an outcome and the call is counted
+  unanswered. The marking is now two rules: a reduced document marks only an event that records the call's
+  own id (the twelfth round's rule, unchanged), and a document the read returned marks through
+  `callNamedByResult` again (the base revision's answer). The round measured it with a three-tree probe
+  whose source is retained beside this record
+  ([`0009-r12-progress-marking-probe.txt`](0009-r12-progress-marking-probe.txt)): the pre-0009 tree
+  (`9242e49`), the reviewed head (`3060324`) and this tree each ran the probe, and the fixed tree's output
+  is **byte-identical to the pre-0009 tree's** (the whole file, 0 differing lines) while the reviewed head's
+  differs on the id-less-progress arm alone (10 lines: the call's part and its summary written where the
+  base wrote no tool part, `result_completion_fallbacks`/`tool_name_vocabulary` rows where the base counted
+  `unpaired_tool_calls`). The id-recorded and id-less-terminal arms agree on all three trees.
+  `TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress` now pins the base rule on the default
+  path (no tool evidence, `unpaired_tool_calls` = 1 beside `nonterminal_tool_events` = 1, for the id-less
+  and id-recorded arms alike) and the reduction's own arm and control as before; mutations `M4` (the default
+  path stops marking) and `M5` (the reduced document takes the default path's rule) fail it.
+
+* **Finding 3 (P2) — a compaction record could take an OpenCode outcome slot the reservation pass says it
+  cannot use.** `reserveResultSlots` skipped a compaction boundary record because the writer publishes that
+  record as the boundary alone (`writeCompaction`), but `planToolEvidence` walked it: on a selected window
+  holding a call, a writable result on the compaction record and a later writable result for the same call
+  on an ordinary record, the boundary record's result filled the call's slot (the part is written from the
+  call's own message, so it would have carried that record's wording as the call's outcome), and the later
+  recorded result was counted `repeated_tool_results` although both halves of the recorded pair travelled.
+  A reduced document now plans no calls and no results for a compaction record — the same eligibility the
+  reservation already read — so the recorded result the document *can* state is the one written and the
+  boundary record's evidence is disclosed by the call's own `unpaired_tool_calls` row where its record is
+  written; a run without a selection keeps the plan it has always made (the first recorded outcome in the
+  slot, the later result the repeat).
+  `TestSelectionPlansNoEvidenceFromACompactionRecord` pins the finding's compaction-first order (the
+  selected document's part, the boundary's own summary still written, `repeated_tool_results`/
+  `unpaired_tool_results`/`unpaired_tool_calls` = 0) and the default path's unchanged answer; mutation `M6`
+  fails it.
+
+* **Finding 4 (P3) — replacing an unwritable OpenCode result could leave a false timestamp-fallback count.**
+  When a later writable result displaced an unwritable one, the assignment set `ResultAt` from the winning
+  result but only ever *raised* `resultCompletionFallback`, so a held event without an instant left the flag
+  standing on a part whose `completed` was the winning result's own recorded instant — the report counted
+  `result_completion_fallbacks` for a result whose recorded instant was used. Both members are now set from
+  the result the assignment carries (the flag is `result.Timestamp.IsZero()` on each assignment, the
+  containing record's instant written only where the read holds none).
+  `TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`'s timestamped arm pins the part's
+  `created` (the call's record) and `completed` (the later result's own recorded instant) beside
+  `result_completion_fallbacks` = 0 and the displaced event's own category; mutation `M7` fails it. The
+  unflagged path is unaffected: an entry there is assigned once, so the two spellings are the same bytes and
+  counts (the probe's third arm measures it).
+
+The round's mutations, each run against the round's tree with the named test, every one failing for the
+reason its rule names and restored afterwards (the working tree's `git diff` after the round holds only the
+round's own edits):
+
+```console
+$ # M1: the file's own relation step dropped from parentPlace (the fileParentPlace call commented out)
+$ go test -tags fts5 -count=1 -run TestContinueKeepsTheFilesOwnResultOnASelectedWalk ./internal/ccc/
+--- FAIL: TestContinueKeepsTheFilesOwnResultOnASelectedWalk (0.20s)
+    continue_pi_test.go:2389: pi: the selected session's model-visible history = [... "It is set in internal/retry/config.go." ...], want the source file's own [..., "internal/retry/config.go:41: maxBackoffSeconds = 30", ...]: a resumed session must continue the source's own line, with the result the file holds between the call and the reply
+    continue_pi_test.go:2416: pi: the reply's entry hangs off "9ac4b994", want the first result's entry "22ce7c2b": the file's own relation is the record the reply stands under
+    continue_pi_test.go:2420: pi: --select 0- unresolved_source_parents = 1, want none: the file's own bytes answer every carried record's parent, the reply's included
+exit=1
+
+$ # M2: Select does not carry the file's relation (the sourceFileParent fill commented out)
+$ go test -tags fts5 -count=1 -run TestContinueKeepsTheFilesOwnResultOnASelectedWalk ./internal/ccc/
+--- FAIL: TestContinueKeepsTheFilesOwnResultOnASelectedWalk (0.19s)
+    continue_pi_test.go:2389: pi: the selected session's model-visible history = [...] ... (the same three assertions: the walk, the reply's parent, the count)
+exit=1
+
+$ # M3: lineMembership answers no parent (the byID lookup commented out)
+$ go test -tags fts5 -count=1 -run TestContinueKeepsTheFilesOwnResultOnASelectedWalk ./internal/ccc/
+--- FAIL: TestContinueKeepsTheFilesOwnResultOnASelectedWalk (0.14s)
+    continue_pi_test.go:2389: pi: the selected session's model-visible history = [...] ... (the same three assertions)
+exit=1
+
+$ # M4: the default path does not mark the call (the callNamedByResult branch's assignment replaced by `_ = entry`)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5238: the unflagged document states tool evidence ([call toolu_summary_progress Bash {"command":"a"} result toolu_summary_progress the call's own recorded outcome]): the id-less progress event names the sole call awaiting a result on the default path, so its summary is that event's view and is not written as an outcome
+    selection_test.go:5243: unflagged unpaired_tool_calls = 0, want the call counted: the default path marks it through the event's own pairing and the part is written with no outcome
+    selection_test.go:5261: (the id-recorded control fails the same way: the default path no longer marks the event's call)
+    selection_test.go:5265: unflagged id-recorded unpaired_tool_calls = 0, want the call counted
+exit=1
+
+$ # M5: the reduced document takes the default path's rule (`if c.conv.selectionReduced()` → `if false`)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5196: the selected document does not hold the call's own recorded summary: the id-less progress event suppressed it through a link the source never recorded ([])
+    selection_test.go:5201: unpaired_tool_calls = 1, want 0: the read holds an outcome for the call
+exit=1
+
+$ # M6: the reduced plan walks compaction records again (`&& message.IsCompactBoundary` → `&& false`)
+$ go test -tags fts5 -count=1 -run TestSelectionPlansNoEvidenceFromACompactionRecord ./internal/ccc/
+--- FAIL: TestSelectionPlansNoEvidenceFromACompactionRecord (0.00s)
+    selection_test.go:1948: the written document states no outcome for the call ([call toolu_compaction_record Bash {"command":"slot"} result toolu_compaction_record the outcome the boundary record carries]): the later recorded result is the outcome the document can state, and the boundary record's event is not evidence this document holds
+    selection_test.go:1954: the written document holds the boundary record's event as an outcome ("result toolu_compaction_record the outcome the boundary record carries"): a record the writer publishes as the boundary alone states no tool evidence
+    selection_test.go:1968: selected repeated_tool_results = 1, want 0
+exit=1
+
+$ # M7: the fallback flag raised but never cleared (the assignment's `= result.Timestamp.IsZero()` form → the raise-only shape)
+$ go test -tags fts5 -count=1 -run TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult ./internal/ccc/
+--- FAIL: TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult (0.00s)
+    selection_test.go:5126: result_completion_fallbacks = 1, want 0: the written outcome's own recorded instant was used, so no fallback belongs to it -- a flag raised for the event it displaced is not the written result's answer
+exit=1
+```
+
+The round re-ran §4's frozen probe revision unchanged over the two trees
+(`git worktree add --detach /tmp/ccc-r12-base 9242e49b…`, the retained probe copied into both, no selection
+flag in any run): 1183 / 1308 lines, each tree's two runs byte-identical, and the shared-document diff
+**silent** (1183 lines compared) — the 125 lines only this tree prints are the increment's own selection
+fixture (`claude:c1a74e28…`), which the pre-0009 tree does not hold. So the default path's bytes, reports
+and published artifacts are still what the pre-0009 revision wrote, the second finding's restored marking
+included; the selected documents this round changes are selections, which the probe does not run. The
+round's own probe (retained as `0009-r12-progress-marking-probe.txt`) is the targeted measurement of that
+finding: it converts three default-path shapes on `9242e49`, on `3060324` and on this tree, and shows the
+reviewed head's default answer moving where the base revision's did not (the id-less progress arm) and this
+tree back on the base revision's answer, with the other two arms agreeing throughout.
+
+The round's verification: 466 → **468** top-level `Test…` functions in the two packages' own test files
+(`git ls-tree -r --name-only HEAD | grep -E '^(internal|cmd)/ccc/[^/]*_test\.go$'` for the before number,
+the same file set for the after one), the two new cases named above and none deleted;
+`0009-citations.tsv` grown 60 → **63** rows, the three new rows (`S5-file-parent`, `S7-slot-instant`,
+`S7-boundary-evidence`) each citing a test that exists in `./internal/ccc` and passes, with
+`S6-file-projection` and `S7-progress-link` rewritten to what their tests now assert (the citations step's
+own answer, below). `gofmt -l` names nothing; the round's documentation moves are folded into §7.
+
+```console
+$ go test -tags fts5 -count=1 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	21.156s
+ok  	go.kenn.io/agentsview/cmd/ccc	6.167s
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.391s (rc=0)
+  PASS     parity   … | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5728 | … 
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 63 row(s) verified
+  PASS     secrets  no leaks found in 197 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -2383,7 +2562,14 @@ exit=0
   later recorded outcome the part can state), the id-recorded marking to the progress clause (an id-less
   event, a link only that writer's inference makes, does not suppress the call's stored summary), and the
   whitespace-alone refusal to the refusal list (the flag's absence being the literal empty string with no
-  presence bit).
+  presence bit). The thirteenth fix round extended the file-backed line rule (the same read answers each
+  record's own place in the file's tree, so a tree target hangs the entry off the record the file named —
+  a call whose file holds two results keeps the recorded one on the resumed walk — and the relation the
+  file answered is not counted), named the same evidence-eligibility rule in the reserved-slot sentence
+  (a compaction record's calls and results are not planned on a reduced document, because the writer
+  publishes it as the boundary alone), scoped the id-recorded progress marking to the reduction (the
+  default path keeps the base revision's marking through `callNamedByResult`), and added both completion
+  members following the result the part's slot carries to the `time.completed` sentence.
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -2408,19 +2594,27 @@ exit=0
   and the omitted progress event on the reduced writers' side) folded in beside them, and the twelfth
   round's (the file-backed Pi read's line as the source file's own leaf path with the unreduced
   reconstruction kept, the outcome slot's writability on a reduced document, the id-recorded progress
-  marking, and the whitespace-alone refusal beside the supplied-empty one) folded in as well.
+  marking, and the whitespace-alone refusal beside the supplied-empty one) folded in as well, and the
+  thirteenth round's (the file's own relation as the selected tree's place with the file-answered
+  relations uncounted, the reduced plan's evidence-eligibility rule for a compaction record, the
+  completion members following the slot's winning result, and the id-recorded progress marking scoped to
+  the reduction with the default path's base marking) folded in beside them.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
   measurement behind each (the third round's four in §11.12) and the fourth through eleventh rounds' seven,
   five, six, three, four, five, four and five at its close (the seventh's as item 13, the eighth's as item
   14, the ninth's as item 15, the tenth's as item 16, the eleventh's as item 17, and the twelfth's four as
-  item 18, with the twelve mutations that pin them in this record's round section).
+  item 18, with the twelve mutations that pin them in this record's round section), and the thirteenth
+  round's four as item 19 with this record's `M1`–`M7` behind them.
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
   by the activation increment that landed this plan, and 0010–0013 are provisional while 0014–0017 are
   ready-but-unstarted). The twelfth fix round re-checked the goal files for the same rule and found the
   same answer: 0009 awaits operator acceptance, 0014–0017 are Ready and unstarted, 0010–0013 provisional —
-  nothing accepted was waiting for the archive, so no goal file and no index row moved.
+  nothing accepted was waiting for the archive, so no goal file and no index row moved. The thirteenth fix
+  round re-checked it a third time and found the same answer: no already accepted goal file sits under
+  `docs/goals/` (0009's own file stays until the operator merges it), so nothing moved and no index row
+  changed.
 * `docs/decisions/OPEN-QUESTIONS.md` — Q-0009-01 (the strict refusal's exit code); Q-0009-02 (rewritten:
   the seam pairs a result with the call the read's own ancestry establishes where it does, else the
   nearest prior call of the same id, an id-less record carries no link); Q-0009-03 (rewritten: a supplied
@@ -2468,7 +2662,13 @@ exit=0
   progress marking are the reduction's own, with a run without a selection keeping the reconstruction's
   line, its projection and its ledger's answers — the reversals are the pre-fix lines the round's twelve
   mutations record, while carrying the file's answer to the default path would move its bytes, counts and
-  omissions and break what D4 measures).
+  omissions and break what D4 measures); and Q-0009-15 (this round: the source file's own relation answers
+  a selection's tree — the entry hangs off the record the file named, the relation is not counted, and a
+  call whose file holds two results keeps the recorded one on the resumed walk — the reduced plan plans no
+  evidence from a compaction record, and both completion members of a tool part follow the result its slot
+  carries, while the default path keeps the reconstruction, its chain and its counts and the boundary
+  record's outcome is disclosed by its call's own row; the reversals are the pre-fix lines the round's
+  `M1`–`M3`, `M6` and `M7` record).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the
@@ -2501,6 +2701,13 @@ exit=0
   refusal beside the supplied-empty one, the outcome slot's writability yield on a run that carries a
   selection (an event the part cannot state yields the slot to a later recorded outcome it can state), and
   the id-recorded progress marking (an id-less event does not stand in for the call's stored summary).
+  The thirteenth round extended the file-backed line sentence (the same read answers each record's own
+  place in the file's tree, so the entry hangs off the record the file named — a call whose file holds two
+  results keeps the recorded one on the resumed walk — and the relation is not counted), scoped the
+  id-recorded progress marking to the runs that carry a selection (the default path's own marking, in
+  which an id-less event names the sole call awaiting a result, is stated beside it), and added the
+  boundary record's missing planned outcome to the slot sentence (a record the writer publishes as a
+  boundary alone contributes no state to any message).
 * `docs/harness.md` — unchanged: this increment adds no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest.
 * The throw-away probe file (§4) and the pre-change worktree were removed before the gate run; the probe's
@@ -2516,6 +2723,12 @@ exit=0
   round after the owner assertion was gated on a document stating an owner (the ungated revision had moved
   the off-path Claude arm's already-`not-verified` detail), and the eleventh round re-ran it unchanged a
   third time over both trees (1183 / 1308 lines, the shared diff silent -- §4's numbers, with the ninth
-  round's one disclosed line-group back to the pre-0009 tree's own). The
+  round's one disclosed line-group back to the pre-0009 tree's own), and the thirteenth round re-ran it a
+  fourth time over both trees (1183 / 1308 lines, each tree's two runs byte-identical, the shared diff
+  silent) beside its own targeted probe, whose exact source is retained the same way
+  ([`0009-r12-progress-marking-probe.txt`](0009-r12-progress-marking-probe.txt)): three trees -- the
+  pre-0009 revision, the reviewed head and this one -- converted the same three default-path shapes, and
+  the fixed tree's output is byte-identical to the pre-0009 tree's whole file while the reviewed head's
+  differs on the id-less-progress arm alone. The
   fixture generator (`internal/ccc/fixturegen`) and the committed fixture tree move together, pinned by
   the existing `TestFixturesMatchTheirGenerator`.

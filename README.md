@@ -130,10 +130,13 @@ running, or an id-less progress event — stays as it is and is counted (`calls_
 archive's own summary of an outcome stands on the call itself, and whether the target's own format can
 hold it is that writer's answer, named in the conversion's losses: on a run that carries a selection the
 progress event itself is omitted and counted (`nonterminal_tool_events`) rather than written as the call's
-answer, which is what a file whose format carries an outcome or nothing would read it as, and an event that
+answer, which is what a file whose format carries an outcome or nothing would read it as, and, on a run
+that carries a selection, an event that
 records no call id of its own — a link only the writer's inference makes — does not stand in for the
-summary the read stored on the call, which is still written (only an event recording the call's own id
-suppresses it, because the summary is then that event's view). On a target whose session is a tree, a
+summary the read stored on the call, which is still written (there only an event recording the call's own
+id suppresses it, because the summary is then that event's view; a run without the flag keeps the writer's
+own marking, in which an id-less event names the sole call still awaiting a result, so the summary is not
+written and the call is counted unanswered on the written path). On a target whose session is a tree, a
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
 line (a window whose own end stands off that line is refused by name rather than written under a branch --
@@ -142,9 +145,14 @@ and an on-line record is never chained under an identity-less record the line le
 -- and a window with no retained ancestor at all is refused the same way);
 for a source whose own file stands behind the read (a Pi-family session the conversion read from its file
 itself), that line is the file's own leaf path -- the walk its own loader makes from the file's last entry
--- for every record the read answered an identity for: the read's lossy tool-result step cannot put a
-result the source's file left beside the conversation back on the resumed walk, and a window ending on such
-a result is refused by name rather than written; a record the read gave no identity for, an archive row and
+-- for every record the read answered an identity for, and the same read answers each of those records'
+own place in the file's tree (the entry its `parentId` names), which a tree target writes: the entry hangs
+off the record the file named, so the read's lossy tool-result step cannot put a
+result the source's file left beside the conversation back on the resumed walk -- and a call whose file
+holds two results keeps the result the file recorded between the call and the record that follows it, not
+the projection's most recent one -- while a window ending on a result the file left beside the
+conversation is refused by name rather than written; the relation the file answered is not counted as an
+unresolved parent, because it is the source's own; a record the read gave no identity for, an archive row and
 a file that cannot answer keep the read's own order answer, and a run without the flag keeps it too;
 a line target (a Codex rollout, an OpenCode session) instead omits the records the read's own walk does not
 reach and counts them (`inactive_branch_records`), that membership answering for an identity-less record
@@ -162,7 +170,10 @@ replacing it — and where the target's part holds one outcome per call, a recor
 publishes reserves its call's slot, so an inference may not fill it and leave the recorded result counted
 as a repeat; on a run that carries a selection an event the part cannot state — no text, whitespace-only
 text, a status word the tool states cannot spell — is counted where the writer counts the same result and
-yields that slot to a later recorded outcome the part *can* state, while a run without the flag keeps the
+yields that slot to a later recorded outcome the part *can* state, and a record the writer publishes as a
+boundary alone contributes no planned outcome at all (its evidence is not a state any message of this
+document holds, so the recorded result the document can state is the one written), while a run without the
+flag keeps the
 first recorded outcome in the slot).
 A call occurrence whose recorded id an earlier written occurrence already holds is written under an id
 generated from its own place (counted `colliding_call_ids`), and each result is written under the owning

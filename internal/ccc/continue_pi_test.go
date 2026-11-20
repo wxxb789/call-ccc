@@ -1163,6 +1163,43 @@ func piSourceCopy(t *testing.T, fixtureID string, extra ...string) (config.Confi
 	return cfg, Ref{Provider: "pi", ID: fixtureID}, path
 }
 
+// piSourceCopyWithInsertion writes a copy of one committed Pi fixture with one line inserted after the
+// first line holding marker, and answers the configuration that reads it, the reference that names it and
+// its path. It is piSourceCopy's sibling for a case whose extra record has to stand *between* the
+// fixture's own entries: appending it would put it after the fixture's last entry, where the harness's own
+// leaf walk runs through it.
+func piSourceCopyWithInsertion(t *testing.T, fixtureID, marker, line string) (config.Config, Ref, string) {
+	t.Helper()
+	data, err := os.ReadFile(fixturePath(t, filepath.Join("pi", fixtureID+".jsonl")))
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	inserted := false
+	out := []string{}
+	for _, existing := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		out = append(out, existing)
+		if !inserted && strings.Contains(existing, marker) {
+			out = append(out, line)
+			inserted = true
+		}
+	}
+	if !inserted {
+		t.Fatalf("the fixture holds no line matching %s, so the insertion point is not in it", marker)
+	}
+	root := t.TempDir()
+	dir := filepath.Join(root, "pi", "-home-user-code-copy")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("preparing the provider root: %v", err)
+	}
+	path := filepath.Join(dir, fixtureID+".jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(out, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the fixture copy: %v", err)
+	}
+	cfg := fixtureConfig(t)
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentPi: {filepath.Join(root, "pi")}}
+	return cfg, Ref{Provider: "pi", ID: fixtureID}, path
+}
+
 // TestPiBranchSwitchFixtureEndsOffTheReadsLastRecord pins what the branch-switch fixture holds and what
 // the read answers for it, both read from the fixture's own bytes rather than restated: the file's last
 // entry is the switch's `branch_summary`, hanging off the first branch's tip, and the read's last record
@@ -2275,9 +2312,10 @@ func TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath(t *testing.T) {
 			t.Error("pi: the selected session's walk holds the result the file's leaf path leaves off")
 		}
 	}
-	if got := lossCount(t, selectedRun.Conversion.Losses, "unresolved_source_parents").Count; got != 1 {
-		t.Errorf("pi: --select 0- unresolved_source_parents = %d, want the one off-line record whose own "+
-			"file relation the projection still resolves", got)
+	if got := lossCount(t, selectedRun.Conversion.Losses, "unresolved_source_parents").Count; got != 0 {
+		t.Errorf("pi: --select 0- unresolved_source_parents = %d, want none: the file's own bytes answer "+
+			"every carried record's parent (the off-line reply's included -- the file names the result it "+
+			"stands under), so no place is a relation this conversion resolved", got)
 	}
 	unflaggedRun, err := Continue(context.Background(), ContinueOptions{
 		Ref: ref, Target: TargetPi, Config: cfg,
@@ -2298,6 +2336,111 @@ func TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath(t *testing.T) {
 	if got := lossCount(t, unflaggedRun.Conversion.Losses, "unresolved_source_parents").Count; got != 2 {
 		t.Errorf("pi: unflagged unresolved_source_parents = %d, want the two projected relations a run "+
 			"without a selection has always counted", got)
+	}
+}
+
+// TestContinueKeepsTheFilesOwnResultOnASelectedWalk pins the twelfth round's first finding. The fixture
+// copy's call carries two results -- the second inserted between the first result and the reply, hanging
+// off the call itself, while the reply keeps the file's own `parentId` (the first result). The source
+// file's leaf path is therefore reply → first result → call, with the second result beside the walk. The
+// writer stores the most recent result entry for a call's carrier record, and the round-11 guard refuses
+// that off-path entry while the record being written is one the line holds -- falling back to the call and
+// chaining the reply *past* the first result, so the resumed context lost an output the file's own walk
+// holds although the report counted it as carried (round 12's first finding). The file's own relation
+// settles both places: the reply hangs off the first result's entry, exactly as the file records it, and
+// the second result stands beside the walk as recorded history. A run without a selection is untouched
+// (goal 0009's D4): its reconstruction takes the projection, so the reply follows the *later* result and
+// every result stands on the walk -- the bytes that path has always written.
+func TestContinueKeepsTheFilesOwnResultOnASelectedWalk(t *testing.T) {
+	const (
+		secondResultText = "the second result for the same call"
+		firstResultText  = "internal/retry/config.go:41: maxBackoffSeconds = 30"
+		replyText        = "It is set in internal/retry/config.go."
+		firstResultEntry = "c7d8e9fa"
+	)
+	// The second result: an ordinary toolResult record for the call the fixture's assistant message makes.
+	// Its own parent is that message's entry (b3c4d5e6), so it is a sibling of the first result.
+	const secondResult = `{"id":"f00dbeef","message":{"content":[{"text":"the second result for the same call","type":"text"}],"isError":false,"role":"toolResult","timestamp":1794938106500,"toolCallId":"call_01Example000000000000000000","toolName":"grep"},"parentId":"b3c4d5e6","timestamp":"2026-05-04T09:15:06.500Z","type":"message"}`
+	cfg, ref, sourcePath := piSourceCopyWithInsertion(t, piFixtureRef.ID, `"id":"`+firstResultEntry+`"`, secondResult)
+	sourceBytes, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading the source copy: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, sourceBytes)
+	if !slices.Contains(sourceWalk, firstResultText) || slices.Contains(sourceWalk, secondResultText) {
+		t.Fatalf("the source file's own walk = %q, want the first result in it and the second one beside "+
+			"it: the fixture copy does not hold the shape under test", sourceWalk)
+	}
+	selected, err := Continue(context.Background(), ContinueOptions{
+		Ref: ref, Target: TargetPi, Config: cfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+		Selection: "0-", SelectionSupplied: true,
+	})
+	if err != nil {
+		t.Fatalf("pi: --select 0-: %v", err)
+	}
+	installedBytes, err := os.ReadFile(selected.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	installedWalk := transcriptWalkTexts(t, installedBytes)
+	if !slices.Equal(installedWalk, sourceWalk) {
+		t.Errorf("pi: the selected session's model-visible history = %q, want the source file's own %q: "+
+			"a resumed session must continue the source's own line, with the result the file holds between "+
+			"the call and the reply", installedWalk, sourceWalk)
+	}
+	if !strings.Contains(string(installedBytes), secondResultText) {
+		t.Error("pi: the installed session does not hold the second result's text: the file records it " +
+			"beside the walk, and a conversion writes that record as the history it is")
+	}
+	// The reply's own entry names the entry the file names: the native parent relation, not the call the
+	// read's projection answers and not the later result the projection step reaches. A conversion that
+	// chained the reply elsewhere could still pass a walk comparison if it dropped a result, so the
+	// relation itself is read off the written entries.
+	lines := decodePiSession(t, installedBytes)
+	texts := piEntryTexts(t, lines)
+	entryOf := map[string]string{}
+	for _, line := range lines {
+		if text := texts[line.ID]; text != "" {
+			entryOf[text] = line.ID
+		}
+	}
+	replyParent := ""
+	for _, line := range lines {
+		if texts[line.ID] == replyText && line.ParentID != nil {
+			replyParent = *line.ParentID
+		}
+	}
+	if want := entryOf[firstResultText]; replyParent != want {
+		t.Errorf("pi: the reply's entry hangs off %q, want the first result's entry %q: the file's own "+
+			"relation is the record the reply stands under", replyParent, want)
+	}
+	if got := lossCount(t, selected.Conversion.Losses, "unresolved_source_parents").Count; got != 0 {
+		t.Errorf("pi: --select 0- unresolved_source_parents = %d, want none: the file's own bytes answer "+
+			"every carried record's parent, the reply's included", got)
+	}
+	// The default path keeps the reconstruction's own answer: unselected, the reply follows the later
+	// result (the projection step's last write for the call) and both results stand on the walk -- the
+	// bytes a run without a selection has always written (goal 0009's D4).
+	unflagged, err := Continue(context.Background(), ContinueOptions{
+		Ref: ref, Target: TargetPi, Config: cfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("pi: unflagged: %v", err)
+	}
+	unflaggedBytes, err := os.ReadFile(unflagged.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the unflagged session: %v", err)
+	}
+	unflaggedWalk := transcriptWalkTexts(t, unflaggedBytes)
+	if slices.Equal(unflaggedWalk, sourceWalk) {
+		t.Error("pi: the unflagged session's walk equals the source's own: the default path's " +
+			"reconstruction is what a run without a selection has always written and must stay untouched")
+	}
+	if !slices.Contains(unflaggedWalk, secondResultText) {
+		t.Errorf("pi: the unflagged session's walk = %q, want the later result on it: the reconstruction "+
+			"chains the reply through the last result written for the call", unflaggedWalk)
 	}
 }
 

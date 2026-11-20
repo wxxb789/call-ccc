@@ -243,6 +243,10 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	messages := make([]Message, 0, selectedCount+len(necessities))
 	lineInactive := make([]bool, 0, selectedCount+len(necessities))
 	lineHolds := make([]bool, 0, selectedCount+len(necessities))
+	// fileParents carries the file's own relation per kept record, in the reduced document's positions,
+	// for the tree writers: the entry the file's bytes name as the record's parent, or the empty string
+	// where no file answered for it (Conversation.sourceFileParent).
+	fileParents := make([]string, 0, selectedCount+len(necessities))
 	// reducedOf maps a read record's index to its position in the reduced document, -1 for a record the
 	// selection left out; readIndexes is the reverse, one entry per carried record.
 	reducedOf := make([]int, len(conversation.Messages))
@@ -264,6 +268,11 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		messages = append(messages, message)
 		lineInactive = append(lineInactive, readLineInactive[index])
 		lineHolds = append(lineHolds, readLineHolds[index])
+		fileParent := ""
+		if index < len(conversation.sourceFileLine) {
+			fileParent = strings.TrimSpace(conversation.sourceFileLine[index].parent)
+		}
+		fileParents = append(fileParents, fileParent)
 	}
 	// The ancestry answers are the read's own indices (selectionKeptAncestors), and the writers consult
 	// the *reduced* document's own positions, so each answer is carried across: the ancestor is carried
@@ -323,6 +332,7 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		sourceLineHolds:    lineHolds,
 		sourceKeptAncestor: keptAncestor,
 		sourceResultPairs:  resultPairs,
+		sourceFileParent:   fileParents,
 	}
 	return selectedConversation, report, nil
 }

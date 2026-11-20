@@ -1,0 +1,109 @@
+package ccc
+
+// THROWAWAY PROBE (the thirteenth review round, finding 2): the *default* path's answer for an OpenCode
+// call whose only recorded outcome is its archive summary beside a progress event. It compiles on the
+// pre-0009 tree (9242e49) and on the reviewed and fixed trees, and prints the document and the loss list
+// with minted identities folded, so the trees' answers can be diffed.
+//
+// The finding: on the base revision the progress branch marked the call the event names through
+// `callNamedByResult` (the recorded id, or the sole call still awaiting a result), so an id-less progress
+// event marked the call, the stored summary was not written as an outcome and the call was counted
+// unanswered (`unpaired_tool_calls`). The reviewed head (3060324) marked only an id-recorded event on both
+// paths, so its default path wrote the summary -- a default-path answer the base revision never gave.
+// This probe is what measured that, and what shows the fixed tree's default path back at the base's own
+// answer.
+//
+// Run one tree with:
+//
+//	cp docs/evidence/0009-r12-progress-marking-probe.txt <tree>/internal/ccc/zz_r12_probe_test.go
+//	CCC_R12_PROBE_OUT=/tmp/ccc-r12/<tree>.txt go test -tags fts5 -count=1 \
+//	    -run TestZZR12DefaultProgressMarking ./internal/ccc/
+//
+// It carries no selection flag: every arm is a run of the writer's default path.
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// TestZZR12DefaultProgressMarking converts three hand-built conversations -- a call whose only recorded
+// outcome is its `ResultContent` summary, followed by an id-less progress event, an id-recorded progress
+// event, and an id-less terminal event -- and writes the document plus every non-zero loss row to
+// CCC_R12_PROBE_OUT.
+func TestZZR12DefaultProgressMarking(t *testing.T) {
+	out := os.Getenv("CCC_R12_PROBE_OUT")
+	if out == "" {
+		t.Skip("CCC_R12_PROBE_OUT is not set")
+	}
+	const (
+		callID       = "toolu_summary_progress"
+		summary      = "the call's own recorded outcome"
+		progressText = "Still working"
+	)
+	var report strings.Builder
+	for _, arm := range []struct {
+		name  string
+		event ToolResult
+	}{
+		{"id-less progress", ToolResult{Status: "running", ContentRaw: progressText,
+			ContentSize: len(progressText)}},
+		{"id-recorded progress", ToolResult{ToolUseID: callID, Status: "running", ContentRaw: progressText,
+			ContentSize: len(progressText)}},
+		{"id-less terminal event", ToolResult{ContentRaw: progressText, ContentSize: len(progressText)}},
+	} {
+		conversation := testConversation(
+			Message{Ordinal: 0, Role: "assistant", Content: "call", Dialogue: "call",
+				ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: `{"command":"a"}`,
+					ResultContent: summary, ResultContentSize: len(summary)}}},
+			Message{Ordinal: 1, Role: "user", Content: progressText, Dialogue: progressText,
+				ToolResults: []ToolResult{arm.event}},
+		)
+		session, err := ConvertToOpenCodeSession(conversation, openCodeTargetTestOptions())
+		if err != nil {
+			t.Fatalf("%s: %v", arm.name, err)
+		}
+		fmt.Fprintf(&report, "=== %s ===\n", arm.name)
+		fmt.Fprintf(&report, "document: %s\n", foldProbeIdentities(t, session.Data))
+		losses := append([]Loss(nil), session.Losses...)
+		sort.Slice(losses, func(i, j int) bool { return losses[i].Category < losses[j].Category })
+		for _, loss := range losses {
+			if loss.Count == 0 {
+				continue
+			}
+			fmt.Fprintf(&report, "loss %s=%d (%s)\n", loss.Category, loss.Count, loss.Disposition)
+		}
+	}
+	if err := os.WriteFile(out, []byte(report.String()), 0o600); err != nil {
+		t.Fatalf("writing the probe output: %v", err)
+	}
+	t.Logf("wrote %s", out)
+}
+
+// foldProbeIdentities replaces every minted identity in one document with a first-appearance token, so two
+// conversions of the same conversation print the same bytes.
+func foldProbeIdentities(t *testing.T, data []byte) string {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatalf("decoding the document: %v", err)
+	}
+	folded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("re-encoding the document: %v", err)
+	}
+	seen := map[string]string{}
+	re := regexp.MustCompile(`(msg|prt|ses|ses_[0-9a-z]+)_[A-Za-z0-9]+|[0-9a-f]{8,}`)
+	return re.ReplaceAllStringFunc(string(folded), func(match string) string {
+		if token, ok := seen[match]; ok {
+			return token
+		}
+		token := fmt.Sprintf("ID%d", len(seen))
+		seen[match] = token
+		return token
+	})
+}

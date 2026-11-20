@@ -271,16 +271,32 @@ type Conversation struct {
 	// whole line: the writers of a read the caller did not select from keep the reconstruction's own
 	// answer (inactiveSourceRecords), which is the line a run without a selection has always written.
 	sourceFileLine []sourceFileLineAnswer
+	// sourceFileParent carries, per message of Messages, the entry the source file's own bytes record as
+	// that record's parent (sourceFileLineAnswer.parent), and the empty string where no file answered for
+	// the record or the file names none. Select fills it from the read's own sourceFileLine answers, in
+	// the reduced document's positions, so a tree writer can chain an entry to the record the file named
+	// where the read's answer for the record is the projection a file-backed Pi-family read makes (a
+	// record the file placed under a tool result reads as hanging off the message that made the call, and
+	// the writer's projection step takes the *last* result of that call -- a later sibling the file's own
+	// leaf path leaves off would carry the record past the result the file recorded, and an earlier
+	// result the file recorded would fall off the walk). nil means no file answered, and the writers keep
+	// the projection's own answer, exactly as a run without a selection does (goal 0009's D4).
+	sourceFileParent []string
 }
 
 // sourceFileLineAnswer is the source file's own answer about one record's place on the read's line: the
 // walk the harness's own loader makes from the file's last entry (its leaf path) reaches the record
-// (holds), and the file's entries answered for the record at all (answered: the read recorded an
-// identity for it, so the file's walk can place it by identity -- a record the read gave no identity
-// for is answered by the read's own order instead, and the conversion keeps that answer).
+// (holds), the file's entries answered for the record at all (answered: the read recorded an identity
+// for it, so the file's walk can place it by identity -- a record the read gave no identity for is
+// answered by the read's own order instead, and the conversion keeps that answer), and the entry the
+// file's own bytes record as the record's parent (parent: its `parentId`, the relation the read may have
+// answered as a projection -- a record the file placed under a tool result reads as hanging off the
+// message that made the call -- so a tree writer holding the file's own bytes chains the entry to the
+// record the file named rather than to the place its projection step reaches).
 type sourceFileLineAnswer struct {
 	holds    bool
 	answered bool
+	parent   string
 }
 
 // selectionReduced answers whether this conversation is a document a selection produced rather than the

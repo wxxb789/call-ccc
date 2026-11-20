@@ -319,6 +319,18 @@ type sourceTree struct {
 	// long-standing answer for a relation the read cannot place.
 	keptAncestor []keptAncestorAnswer
 	reduced      bool
+	// fileParent carries the source file's own relation, per record of the document this conversion
+	// walks: the entry the file's own bytes name as the record's parent, or the empty string where no
+	// file answered for the record (Conversation.sourceFileParent, filled by Select alone). Where it
+	// answers, the entry is chained to the record the file named rather than to the place the read's own
+	// answer resolves -- the read answers a record the file placed under a tool result as hanging off the
+	// message that made the call, and this writer's projection step takes the *last* result of that call:
+	// a later sibling the file's own leaf path leaves off would carry the record past the result the file
+	// recorded, and an earlier result the file recorded would fall off the walk a resumed session makes.
+	// The relation the place follows is the source's own, so it is not counted (unresolved_source_parents
+	// names the places this conversion resolved), and the empty answer keeps every other place below,
+	// counted as before.
+	fileParent []string
 	// offLineEntry maps each entry written for a record the read's line leaves off it to that record's own
 	// position in the document this conversion walks, and revivedChild/revivedParent name the first
 	// relation the fallback resolved from a record on the line onto such an entry: the child whose entry
@@ -365,6 +377,7 @@ func newSourceTree(conversation Conversation) sourceTree {
 		recordPlace:          map[int]string{},
 		inactive:             sourceLineFlags(conversation),
 		keptAncestor:         conversation.sourceKeptAncestor,
+		fileParent:           conversation.sourceFileParent,
 		projectedParents:     projectedParentProvider(conversation.Source.Provider),
 		reduced:              conversation.sourceKeptAncestor != nil,
 		record:               -1,
@@ -560,6 +573,15 @@ func (t *sourceTree) wrote(id string) {
 //     the guard asks by the record's own position -- and where that entry stands for an off-line record
 //     the relation is noted as the revived branch the guard refuses (fallbackPlace).
 func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
+	// The source file's own relation first, where one stands behind this document: the file's bytes name
+	// the record's parent themselves, and the read's own answer for such a record may be the projection a
+	// file-backed Pi-family read makes (a record the file placed under a tool result reads as hanging off
+	// the message that made the call). Following the file is the source's own place, so nothing is
+	// counted; an answer that does not resolve -- the file's record was excluded by the window, or the
+	// read holds no record for that identity -- leaves every place below untouched.
+	if entry, ok := t.fileParentPlace(); ok {
+		return &entry, false
+	}
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
 		// The record named no parent: the entry written before it is the read's own order, and the
@@ -667,6 +689,25 @@ func (t *sourceTree) fallbackPlace() *string {
 		t.revivedChild, t.revivedParent = t.record, offLineRecord
 	}
 	return entry
+}
+
+// fileParentPlace answers the place the record the source file's own bytes name as the parent of the
+// record being walked stands for, and whether the file answered at all. It resolves the file's relation
+// through the entries this conversion wrote (writtenAncestor), so a file parent the target *omitted*
+// answers with the place its own walk resolved, and a file parent nothing answers for -- the window left
+// it out, or the read holds no record carrying that identity -- leaves the caller's other places to
+// decide. Only a document a selection produced carries the answer (Conversation.sourceFileParent is
+// filled by Select alone), so a run without a selection keeps the writers' long-standing answer for a
+// relation the read's projection could not place (goal 0009's D4).
+func (t *sourceTree) fileParentPlace() (string, bool) {
+	if t.record < 0 || t.record >= len(t.fileParent) {
+		return "", false
+	}
+	parent := strings.TrimSpace(t.fileParent[t.record])
+	if parent == "" {
+		return "", false
+	}
+	return t.writtenAncestor(parent)
 }
 
 // writtenAncestor answers the place the nearest record a walk from sourceID stands for, and whether it

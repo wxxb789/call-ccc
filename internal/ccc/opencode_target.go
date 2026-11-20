@@ -643,6 +643,20 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 		if inactive[index] || message.IsSidechain {
 			continue
 		}
+		if c.conv.selectionReduced() && message.IsCompactBoundary {
+			// A document a selection produced plans no evidence for a compaction record: the writer
+			// publishes that record as the boundary alone (writeCompaction), so neither a call nor a
+			// result it carries is evidence this document states. Planning them would fill a call's one
+			// outcome slot with a result nothing writes -- and the reservation pass, which skips the same
+			// record for the same reason (reserveResultSlots), would have left that slot to the recorded
+			// result the document *can* state, which would then read as a repeat although both halves of
+			// the recorded pair travelled (round 12's third finding). The call such a result answers is
+			// then unanswered on the written path -- counted unpaired_tool_calls where its own record is
+			// written, or omitted with the record the line leaves off -- rather than answered by an
+			// outcome no message holds. A run without a selection keeps the plan it has always made (goal
+			// 0009's D4).
+			continue
+		}
 		calls := distinctCalls(message, func(callIndex int, call ToolCall) openCodePlannedCall {
 			return openCodePlannedCall{index: callIndex, call: call}
 		}, &c.lossCoalesced)
@@ -683,18 +697,31 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				// arrives). The harness's tool states are `completed` and `error`, so a progress event is
 				// no outcome this target may write -- and it must not consume the call's pending slot
 				// either, or the terminal event that follows would read as a repeat of an outcome that
-				// was never recorded. It is still marked on the call it names, but only where the event
-				// records that call's own id: the archive's derived summary of a call is a view of the
-				// events the read recorded for it, and an event the read recorded no id for is paired by
-				// this writer's own inference (pairedCallEntry) -- a link the source never made may not
-				// suppress the call's own recorded summary evidence, because the summary would then be
-				// read as a view of an event that may belong to another call, the part is left with no
-				// outcome at all and the call is counted unanswered although the read holds one (round
-				// 11's fourth finding; 0007's id-keyed marking read the same rule).
-				if strings.TrimSpace(result.ToolUseID) != "" {
-					if entry, ok := c.pairedCallEntry(result, place); ok {
-						entry.recordedEvents = true
+				// was never recorded. It is still marked on the call it names, because the archive's
+				// derived summary of a call is a view of the events the read recorded for it, and the two
+				// documents answer that marking by their own rules (below).
+				if c.conv.selectionReduced() {
+					// A document a selection produced marks the call only where the event records that
+					// call's own id: an id-less event is paired by this writer's own inference
+					// (pairedCallEntry), a link the source never made, and an inferred link may not
+					// suppress the call's own recorded summary evidence -- the summary would then be
+					// read as a view of an event that may belong to another call, the part is left with
+					// no outcome at all and the call is counted unanswered although the read holds one
+					// (round 11's fourth finding).
+					if strings.TrimSpace(result.ToolUseID) != "" {
+						if entry, ok := c.pairedCallEntry(result, place); ok {
+							entry.recordedEvents = true
+						}
 					}
+				} else if entry, ok := c.calls[c.callNamedByResult(result)]; ok {
+					// A run without a selection keeps the writer's long-standing rule, which the twelfth
+					// round's second finding measured on the base revision: the call the event names --
+					// the id it recorded, or the sole call still awaiting a result, where the source's
+					// own relation leaves no other call it could mean -- is marked as one whose recorded
+					// events stand in for its archive summary, an id-less event included, and the summary
+					// is not written as an outcome. Scoping the id-only rule to the reduction is what
+					// keeps goal 0009's D4 on the default path's bytes and its whole report.
+					entry.recordedEvents = true
 				}
 				c.lossNonterminal++
 				continue
@@ -772,12 +799,15 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			// containing message's instant for both would state a zero-length span the source never
 			// recorded (round 12's finding). The containing record's instant is written only where the
 			// read holds no instant of the result's own record, and the report counts that fallback
-			// (result_completion_fallbacks) rather than presenting it as the recorded one.
+			// (result_completion_fallbacks) rather than presenting it as the recorded one. Both members
+			// are set from the result this assignment carries, not only raised here: a displaced event's
+			// answer must not stay on the entry, or the report would count a fallback for a result whose
+			// own recorded instant was written (round 12's fourth finding).
 			entry.ResultAt = message.Timestamp
+			entry.resultCompletionFallback = true
 			if !result.Timestamp.IsZero() {
 				entry.ResultAt = result.Timestamp
-			} else {
-				entry.resultCompletionFallback = true
+				entry.resultCompletionFallback = false
 			}
 			entry.inferredResultID = inferred
 			delete(c.ledger.pendingCalls, id)
@@ -985,6 +1015,22 @@ func (c *openCodeConverter) countUnwritableResult(result ToolResult) {
 		return
 	}
 	c.lossStatuses++
+}
+
+// callNamedByResult answers the id of the carried call one recorded result event names, through the
+// pairing the writer's own plan has always used on a document the read returned: the id the event
+// recorded, or -- for an event that recorded none -- the sole call still awaiting a result, where the
+// source's own relation leaves no other call it could mean. An event naming a call this conversion does
+// not carry answers an id the caller's own map lookup will not hold, which is the same answer the plan
+// gives such an event. It is the default path's rule alone: a document a selection produced asks the
+// seam's own pairing (pairedCallEntry), where an id-less event's link is this writer's inference and may
+// not suppress the call's own recorded summary evidence (round 11's fourth finding).
+func (c *openCodeConverter) callNamedByResult(result ToolResult) string {
+	if id := strings.TrimSpace(result.ToolUseID); id != "" {
+		return id
+	}
+	id, _ := c.solePendingCall()
+	return id
 }
 
 // pairedCallEntry answers the planned call one recorded result event names, through the seam's own

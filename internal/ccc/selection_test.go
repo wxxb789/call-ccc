@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1360,6 +1361,26 @@ func selectionCallAndResultLines(t *testing.T, target string, data []byte) []str
 	return lines
 }
 
+// openCodeToolPartTimes answers one written import document's tool parts' own `time` members, in the
+// document's order: what a case reads to assert the exact instant a part's outcome was written at, rather
+// than only the text it carries.
+func openCodeToolPartTimes(t *testing.T, data []byte) []*openCodeTimeSpan {
+	t.Helper()
+	var document openCodeDocument
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decoding the import document: %v", err)
+	}
+	var times []*openCodeTimeSpan
+	for _, message := range document.Messages {
+		for _, part := range message.Content {
+			if part.Type == openCodePartTool {
+				times = append(times, part.Time)
+			}
+		}
+	}
+	return times
+}
+
 // TestSelectionAnswersOnlyForTheOutcomesItWrites pins the eighth round's second finding: a recorded
 // result the conversion omits does not answer its call on the written path. Two calls on the selected
 // path, a linked terminal result for the first whose text is whitespace only (the target's output field
@@ -1877,6 +1898,96 @@ func TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite(t *testing.T) {
 			t.Errorf("%s: unpaired_tool_results = %d, want 0: the id-less result was written under the "+
 				"call it could mean", arm.name, got)
 		}
+	}
+}
+
+// TestSelectionPlansNoEvidenceFromACompactionRecord pins the twelfth round's third finding: on a document
+// a selection produced, the plan installs no outcome from a record the writer publishes as a boundary
+// alone (writeCompaction), so the one outcome slot a call holds is left to the recorded result the
+// document *can* state. The shape is the finding's own order: a call, a writable result on a compaction
+// boundary record, and a later writable result for the same call on an ordinary record. The reservation
+// pass skipped the compaction record because the writer publishes no evidence from it, but the plan
+// installed that record's result into the call's slot -- and the part, written from the call's own
+// message, would have carried the boundary record's wording as the call's outcome although no message
+// holds that state, while the later recorded result read as `repeated_tool_results` although both halves
+// of the recorded pair travelled. Both passes read the same eligibility now. A run without a selection
+// keeps the plan it has always made (goal 0009's D4): the call's part carries the first recorded outcome
+// and the later result is the repeat it was.
+func TestSelectionPlansNoEvidenceFromACompactionRecord(t *testing.T) {
+	const (
+		callID      = "toolu_compaction_record"
+		callInput   = `{"command":"slot"}`
+		boundaryOut = "the outcome the boundary record carries"
+		laterOut    = "the later recorded outcome"
+		boundaryTxt = "the history before the boundary, summarised"
+	)
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call", Dialogue: "call",
+			ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: callInput}}},
+		Message{Ordinal: 1, Role: "user", Content: boundaryTxt, Dialogue: boundaryTxt,
+			IsCompactBoundary: true,
+			ToolResults: []ToolResult{{ToolUseID: callID, ContentRaw: boundaryOut,
+				ContentSize: len(boundaryOut)}}},
+		Message{Ordinal: 2, Role: "user", Content: laterOut, Dialogue: laterOut,
+			ToolResults: []ToolResult{{ToolUseID: callID, ContentRaw: laterOut, ContentSize: len(laterOut)}}},
+	)
+	route, err := targetRouteFor(TargetOpenCode)
+	if err != nil {
+		t.Fatalf("route %s: %v", TargetOpenCode, err)
+	}
+	selected, _, err := Select(conversation, "0-2", false)
+	if err != nil {
+		t.Fatalf("selecting the window: %v", err)
+	}
+	converted, err := route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	lines := selectionCallAndResultLines(t, TargetOpenCode, converted.Data)
+	if !slices.Contains(lines, "result "+callID+" "+laterOut) {
+		t.Errorf("the written document states no outcome for the call (%v): the later recorded result is "+
+			"the outcome the document can state, and the boundary record's event is not evidence this "+
+			"document holds", lines)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, boundaryOut) {
+			t.Errorf("the written document holds the boundary record's event as an outcome (%q): a record "+
+				"the writer publishes as the boundary alone states no tool evidence", line)
+		}
+	}
+	if !strings.Contains(string(converted.Data), boundaryTxt) {
+		t.Error("the written document does not hold the boundary's own summary: the compaction record is " +
+			"still published as the boundary it is")
+	}
+	for category, want := range map[string]int{
+		"repeated_tool_results": 0, // the later recorded result is the outcome, not a repeat
+		"unpaired_tool_results": 0, // and the boundary record's event is not counted as an outcome either
+		"unpaired_tool_calls":   0, // the call's part is written with that outcome
+	} {
+		if got := lossCount(t, converted.Losses, category).Count; got != want {
+			t.Errorf("selected %s = %d, want %d", category, got, want)
+		}
+	}
+
+	// The default path: the plan installs the compaction record's result into the call's slot as it always
+	// has, so the part carries that record's wording and the later recorded result is the repeat -- the
+	// bytes and counts a run without a selection has always had (goal 0009's D4).
+	unflagged, err := route.Convert(conversation, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the read without a selection: %v", err)
+	}
+	unflaggedLines := selectionCallAndResultLines(t, TargetOpenCode, unflagged.Data)
+	if !slices.Contains(unflaggedLines, "result "+callID+" "+boundaryOut) {
+		t.Errorf("the unflagged document states no outcome for the call (%v): the default path's plan "+
+			"carries the first recorded outcome it always has", unflaggedLines)
+	}
+	if slices.Contains(unflaggedLines, "result "+callID+" "+laterOut) {
+		t.Errorf("the unflagged document holds the later recorded result (%v): the first recorded outcome "+
+			"keeps the slot on the default path", unflaggedLines)
+	}
+	if got := lossCount(t, unflagged.Losses, "repeated_tool_results").Count; got != 1 {
+		t.Errorf("unflagged repeated_tool_results = %d, want the one extra outcome after the first "+
+			"recorded one", got)
 	}
 }
 
@@ -4980,18 +5091,65 @@ func TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult(t *testin
 		t.Errorf("unflagged two-result whitespace_only_tool_results = %d, want the held result counted "+
 			"as the writer counts it", got)
 	}
+
+	// The completion instant travels with the result that won the slot, not with the event it displaced:
+	// the held event records no instant of its own (its `completed` would fall back to the containing
+	// record's, counted), and the later writable result records one -- the part must state *that* instant
+	// and the report must count no fallback, because a flag left standing from the displaced event would
+	// name a fallback for a result whose own recorded instant was written (round 12's fourth finding).
+	at := func(second int) time.Time { return time.Date(2026, 5, 8, 8, 0, second, 0, time.UTC) }
+	timed := testConversation(
+		Message{Ordinal: 0, Role: "assistant", Content: "call", Dialogue: "call", Timestamp: at(0),
+			ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: callInput}}},
+		Message{Ordinal: 1, Role: "user", Content: "held", Dialogue: "held", Timestamp: at(1),
+			ToolResults: []ToolResult{{ToolUseID: callID, ContentRaw: "   ", ContentSize: 3}}},
+		Message{Ordinal: 2, Role: "user", Content: laterOnly, Dialogue: laterOnly, Timestamp: at(2),
+			ToolResults: []ToolResult{{ToolUseID: callID, ContentRaw: laterOnly,
+				ContentSize: len(laterOnly), Timestamp: at(3)}}},
+	)
+	selectedTimed, _, err := Select(timed, "0-2", false)
+	if err != nil {
+		t.Fatalf("selecting the timestamped window: %v", err)
+	}
+	timedSession, err := route.Convert(selectedTimed, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the timestamped window: %v", err)
+	}
+	times := openCodeToolPartTimes(t, timedSession.Data)
+	if len(times) != 1 || times[0] == nil || times[0].Created != at(0).UnixMilli() ||
+		times[0].Completed != at(3).UnixMilli() {
+		t.Errorf("the displaced slot's part times = %+v, want created %d (the call's record) and "+
+			"completed %d (the later result's own recorded instant)", times, at(0).UnixMilli(),
+			at(3).UnixMilli())
+	}
+	if got := lossCount(t, timedSession.Losses, "result_completion_fallbacks").Count; got != 0 {
+		t.Errorf("result_completion_fallbacks = %d, want 0: the written outcome's own recorded instant "+
+			"was used, so no fallback belongs to it -- a flag raised for the event it displaced is not "+
+			"the written result's answer", got)
+	}
+	if got := lossCount(t, timedSession.Losses, "whitespace_only_tool_results").Count; got != 1 {
+		t.Errorf("whitespace_only_tool_results = %d, want the displaced event still counted as the writer "+
+			"counts the same result", got)
+	}
 }
 
 // TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress pins the eleventh round's fourth
-// finding: the OpenCode progress branch marks a call as one whose recorded events stand in for its
+// finding, and the twelfth round's second finding's scope. The finding: on a document a selection
+// produced, the OpenCode progress branch marks a call as one whose recorded events stand in for its
 // archive summary only where the event *records that call's own id*. An id-less progress event is paired
 // by this writer's own inference (pairedCallEntry), a link the source never made, and an inferred link
-// may not suppress the call's own recorded summary evidence: the summary is then read as a view of an
-// event that may belong to another call, the part is left with no outcome and the call is counted
+// may not suppress the call's own recorded summary evidence: the summary would then be read as a view of
+// an event that may belong to another call, the part is left with no outcome and the call is counted
 // unanswered although the read holds one. The id-recorded control arm keeps the marking: the read's own
 // event for that call says the call is still running, so the summary is that event's view and the writers
-// refuse to present it as an outcome. The default path is pinned beside the reduced one: the marking is
-// the source's own link there too (0007's id-keyed rule), so a run without a selection writes the summary.
+// refuse to present it as an outcome.
+//
+// The rule is the reduction's alone. The default path keeps the writer's long-standing answer, measured
+// on the base revision for the twelfth round's second finding: an id-less event names the sole call still
+// awaiting a result there (callNamedByResult), so the call is marked, the summary is *not* written as an
+// outcome and the call is counted unanswered -- the bytes, counts and whole report a run without a
+// selection has always had (goal 0009's D4). The unflagged arm below pins that answer, and it is what a
+// mutation scoping the reduction's rule no further than the reduction leaves untouched.
 func TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress(t *testing.T) {
 	const (
 		callID       = "toolu_summary_progress"
@@ -5065,33 +5223,35 @@ func TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress(t *testing.
 		t.Errorf("unpaired_tool_calls = %d, want the call counted: its only recorded event is progress", got)
 	}
 
-	// The default path: the same id-less event, and the summary is written -- the marking is the source's
-	// own link there too (0007's id-keyed rule), which is what a run without a selection has always had
-	// (goal 0009's D4).
+	// The default path keeps the writer's long-standing rule, which the twelfth round's second finding
+	// measured on the base revision: the call the event names -- the id it recorded, or the sole call
+	// still awaiting a result -- is marked as one whose recorded events stand in for its archive summary.
+	// An id-less event names that sole call there, so the summary is *not* written as an outcome and the
+	// call is counted unanswered on the written path: the bytes and counts a run without a selection has
+	// always had (goal 0009's D4), which scoping the id-only rule to the reduction is what preserves.
 	unflagged, err := route.Convert(conversation(ToolResult{Status: "running", ContentRaw: progressText,
 		ContentSize: len(progressText)}), selectionProbeOptions())
 	if err != nil {
 		t.Fatalf("converting the read without a selection: %v", err)
 	}
-	found = false
-	for _, line := range outcomeLines(t, unflagged.Data) {
-		if line == "result "+callID+" "+summary {
-			found = true
-		}
+	if lines := outcomeLines(t, unflagged.Data); len(lines) != 0 {
+		t.Errorf("the unflagged document states tool evidence (%v): the id-less progress event names the "+
+			"sole call awaiting a result on the default path, so its summary is that event's view and is "+
+			"not written as an outcome", lines)
 	}
-	if !found {
-		t.Errorf("the unflagged document does not hold the call's own recorded summary: an id-less "+
-			"progress event suppressed it through a link the source never recorded (%v)",
-			outcomeLines(t, unflagged.Data))
+	if got := lossCount(t, unflagged.Losses, "unpaired_tool_calls").Count; got != 1 {
+		t.Errorf("unflagged unpaired_tool_calls = %d, want the call counted: the default path marks it "+
+			"through the event's own pairing and the part is written with no outcome", got)
 	}
-	if got := lossCount(t, unflagged.Losses, "unpaired_tool_calls").Count; got != 0 {
-		t.Errorf("unflagged unpaired_tool_calls = %d, want 0: the read holds an outcome for the call", got)
+	if got := lossCount(t, unflagged.Losses, "nonterminal_tool_events").Count; got != 1 {
+		t.Errorf("unflagged nonterminal_tool_events = %d, want the one progress event counted as what it is",
+			got)
 	}
 
-	// The id-recorded control on the default path too: the read's own event for the call says it is still
-	// running there as well, so the summary is that event's view and the writers refuse to present it.
-	// The marking is the source's own link whether or not a selection ran (0007's id-keyed rule), and a
-	// mutation scoping it to reduced documents is what this arm exists to refuse.
+	// The id-recorded control on the default path: the read's own event for the call says it is still
+	// running there too, so the summary is that event's view and the writers refuse to present it --
+	// the same answer whether or not a selection ran, and the arm that made the default path's answer
+	// visible when the reduction's id-only rule was scoped to reduced documents.
 	unflaggedControl, err := route.Convert(conversation(ToolResult{ToolUseID: callID, Status: "running",
 		ContentRaw: progressText, ContentSize: len(progressText)}), selectionProbeOptions())
 	if err != nil {
