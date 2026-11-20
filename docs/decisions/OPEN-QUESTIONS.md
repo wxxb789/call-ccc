@@ -2868,3 +2868,35 @@ supersede it with a newer one and say which it supersedes.
   remember to run it.
 - **Settled by:** an operator instruction, or a CI change that adds (or deliberately refuses) a floor leg --
   the pin itself needs no decision.
+
+## Q-0009-01 — The increment is narrowed to one reference route, and the review loop is contractively bounded
+
+**Question (operator, 2026-11-20).** The wider goal-0009 attempt (PR #14) ran 19 machine-review rounds with
+zero clean findings and the reviewed diff grew 191 KB → 1.47 MB. Two blind cross-family consults
+(`gpt-6.2-sol` and `gemini-4-carbon`) converged: selection is a lossy pass over a stateful event log, so a
+disposition the read→selection seam does not carry is re-derived by each target writer from the punctured
+stream (an M×N matrix the per-round patches only widen); the obligation-citation ledger is an existential
+traceability index, not a universal soundness proof, so an attentive audit always finds an unexercised
+dimension; and the fix operator's gain is > 1, so a zero-finding fixed point is unreachable at any cap. Both
+rejected all three pure forks (shrink / accept a disclosed residual / raise the bound).
+
+**Decision (owner, 2026-11-20).** Fork **A**: supersede PR #14; **narrow the increment to one reference route
+— Claude Code → Codex**; make the seam's carried dispositions the contract (D6); add a **contractive
+breaker** to the review loop. After it lands, the other four routes fan out as their own increments before
+0010–0013.
+**Alternatives put to the owner:** B — keep PR #14 and refactor it in place (rejected: a 1.47 MB reactive
+branch reviewed as one PR); C — accept a disclosed residual and merge (rejected by both consults: the
+residual contains an active P1 semantic falsification); D — raise the round cap (rejected: gain ≥ 1).
+
+**Why the seam, not a new IR layer.** The adjudication was verified against the tree: `Conversation`
+*already* carries the seam's answers for several dispositions (`internal/ccc/conversation.go` —
+`sourceResultPairs` "to keep a writer from re-reading the pairing over the window", `sourceKeptAncestor`,
+`sourceLineInactive`/`sourceLineHolds`, `sourceFileLine`). The root cause is therefore the **coverage** of
+that carried set, not its absence — so the increment completes the set for one route instead of introducing a
+second parser or a persistent index.
+
+**Reversal:** re-open the wider scope by adding a carrying disposition set for all five routes at once (the
+cost is the M×N matrix this decision exists to avoid), or retire the breaker by setting
+`CONTRACTIVE_MAX_ORDINARY_ROUNDS` above the series' historical maximum (the cost is the 19-round/1.47 MB
+failure mode returning silently).
+**Settled by:** an operator instruction; nothing downstream needs to re-decide it.

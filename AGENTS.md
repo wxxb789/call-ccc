@@ -258,6 +258,22 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   from a provider's silence, and the record offsets are claimed only where the provider's own declarations
   say its source is a transcript of appended lines *and* the file's own bytes can be one — a compressed
   container of records is reported by its digest and size with no offset claimed for it.
+- **A selection carries its dispositions across the read→selection seam, once** (goal 0009, owner fork A,
+  2026-11-20). A selection deletes the positional context a writer needs, so the seam must carry, per kept
+  record, the answers the reduced stream can no longer supply: call↔result identity (including ID-less),
+  operation lifecycle finality, *omitted by selection* versus *absent in source*, the calls **and** results a
+  compaction boundary accounts for, and retained-versus-already-written ancestry. **No target writer and no
+  read-back verifier may infer a cross-record fact from the reduced stream** — an inference reconstructed
+  after the cut is the defect class this rule exists to keep out, not a local bug to patch.
+- **Goal 0009's increment is one reference route: Claude Code → Codex.** The other four target routes (Pi,
+  OMP, OpenCode, Codex-as-source) are **separate later increments**, each of which must prove the same seam
+  end to end before the next starts (owner decision 2026-11-20). ID-less ownership inference on a selected
+  run is refused or explicitly omitted, never inferred.
+- **Review is contractively bounded** (owner fork A, 2026-11-20). The driver blocks a goal the moment the
+  reviewed diff grows more than 25% in a fix round, findings fail to decrease strictly across three rounds,
+  or the ordinary rounds pass six. A trip is an **abstraction-boundary failure** to report and re-decompose,
+  never a budget to raise: the increment that motivated the rule ran 19 rounds with zero clean and grew its
+  diff 191 KB → 1.47 MB.
 - Out of scope by design: Git/worktree management, process or environment migration, credentials,
   fleet orchestration, and any second session index for the existing archive.
 
