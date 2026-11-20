@@ -812,11 +812,18 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # the reader's switch does not take but which carries a `user`/`assistant` role and readable text is a
 # message to its default branch, and an `image_generation_call` is a tool call whose identity lives in
 # members the receipt does not have — before this refusal, an omitted prompt written into such a shape
-# travelled through receipt validation unnoticed (review round r4's finding). A `reasoning` item is not
-# one of these: the reader answers it as a thinking row with an explicitly empty dialogue projection, so
-# it carries no dialogue. The structural half refuses an output written before its owner in either mode:
-# the target's own reader keeps such an event as an unattached update rather than a result on its call
-# (`internal/parser/codex_collecting_sink.go`), and this route's writer never emits one there.
+# travelled through receipt validation unnoticed (review round r4's finding). A second class is the shape
+# whose own read this oracle does not model: a call carrying **both** an `arguments` and an `input` member
+# can be named `"{}"` by a receipt while the carried reader's `extractCodexInputJSON` skips that value and
+# continues to `input`, and an object-valued `content` is iterated by the reader's own `ForEach` over its
+# **member values** — `{"block":{"type":"input_text","text":…}}` is read by the carried reader and empty to
+# this oracle's text readers — so both are refused where a plan is compared (review round r5's finding):
+# the identity this oracle computes is not the answer a read gives, and no receipt can account for the
+# difference. A `reasoning` item is not one of these: the reader answers it as a thinking row with an
+# explicitly empty dialogue projection, so it carries no dialogue. The structural half refuses an output
+# written before its owner in either mode: the target's own reader keeps such an event as an unattached
+# update rather than a result on its call (`internal/parser/codex_collecting_sink.go`), and this route's
+# writer never emits one there.
 # ===================================================================================================
 
 #: Every rule the oracle states: rule id → the sentence it states. The ids are this report's own
@@ -824,7 +831,10 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 #: table, so a rule cannot be added without a fixture that turns it red and vice versa.
 ORACLE_RULES: dict[str, str] = {
     "oracle.jsonl-objects":
-        "every non-empty line of the artifact is exactly one JSON object",
+        "every non-empty line of the artifact is exactly one JSON object, every member name written once "
+        "inside it — a repeated name is a line two JSON readers answer differently for (this oracle's "
+        "decoder keeps the last value, the carried reader's `gjson` the first), so such a line is refused "
+        "rather than read as either answer",
     "oracle.envelope":
         "every record carries a parseable `timestamp`, a non-empty `type` and an object `payload`",
     "oracle.record-type":
@@ -860,12 +870,14 @@ ORACLE_RULES: dict[str, str] = {
         "`response_item` and the turn-view `event_msg`",
     "oracle.plan-accounted":
         "the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks "
-        "`omitted`, one it names nowhere, a compaction boundary's `replacement_history`, and a "
+        "`omitted`, one it names nowhere, a compaction boundary's `replacement_history`, a "
         "`response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the "
         "inter-agent `agent_message` addressed to the session's own agent path, any other payload type "
         "whose `user`/`assistant` role and readable text a read appends as a message, and an "
-        "`image_generation_call` — are equally refused; the plan is total, in both of the target's "
-        "dialogue channels",
+        "`image_generation_call` — and a shape whose own read this oracle does not model — a call "
+        "carrying both `arguments` and `input` (a read skips an empty or `{}`/`[]` `arguments` and "
+        "continues to `input`), and an object-valued `content` a read iterates the member values of "
+        "(`ForEach`) — are equally refused; the plan is total, in both of the target's dialogue channels",
     "oracle.plan-order":
         "the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, "
         "and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past "
@@ -990,6 +1002,38 @@ def _reject_json_constant(name: str) -> None:
     raise ValueError(f"{name} is not a JSON constant")
 
 
+class _OracleMemberNameRepeated(ValueError):
+    """One JSON document's object writes a member name twice — no reader's single answer to compare.
+
+    The message is fixed and names neither the member nor its value: a member name is a string an
+    artifact or receipt controls, and this report is printed by default, so the refusal is one line the
+    document cannot put text into (the boundary `oracle_value_text` and `oracle_digest` hold elsewhere).
+    """
+
+    def __init__(self) -> None:
+        super().__init__("one member name is written twice")
+
+
+def _oracle_unique_members(pairs: list[tuple[str, object]]) -> dict:
+    """One JSON object, refused where a member name is written twice — anywhere in the document.
+
+    Python's decoder keeps the **last** value for a repeated name and the carried reader's `gjson`
+    answers the **first** (measured on `tidwall/gjson` v1.20.0: `{"text":"a","text":"b"}` reads `a`
+    there), so a line whose object repeats a name is one the oracle and the read answer differently for
+    — a receipt comparison over Python's reading could certify dialogue a read of the same bytes does not
+    hold (review round r5's finding). The oracle therefore refuses such a line rather than comparing
+    either reading, the same fail-closed stance the non-object and non-JSON arms of `oracle_records`
+    take; `oracle_report` reads the receipt through this same hook, because a plan whose members collide
+    is no more one plan than such a line is one record.
+    """
+    members: dict[str, object] = {}
+    for name, value in pairs:
+        if name in members:
+            raise _OracleMemberNameRepeated()
+        members[name] = value
+    return members
+
+
 #: The Latin-1 characters the writer's own blank test strips: `strings.TrimSpace` reads Go's
 #: `unicode.IsSpace`, which holds the ASCII whitespace, NEL (U+0085) and NBSP (U+00A0). Python's
 #: `str.isspace` is a wider set in Latin-1 alone — measured: the two agree on every code point outside
@@ -1083,7 +1127,10 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
     not Python's wider `str.strip`), because a line of U+001C alone is one the target's reader tries as a
     record. Everything else must be one object per line — a line that parses as
     an array, a number or a string is a violation exactly as a line that does not parse is, because the
-    target's own reader reads lines as objects. The split is on the line feed alone, never on the further
+    target's own reader reads lines as objects, and a line whose object writes a member name twice is one
+    too, because the oracle's decoder and the carried reader's `gjson` answer a repeated name differently
+    (`_oracle_unique_members`) — so no line is ever compared through one reader's reading of a name a
+    read of the same bytes resolves another way. The split is on the line feed alone, never on the further
     line boundaries `str.splitlines` treats as separators (`U+0085`, `U+2028`, …): a JSON string may hold
     one of those, and a reader that split there would misread a valid line as two broken ones. Parsing
     refuses the non-JSON constants Python's decoder would accept, for the same reason.
@@ -1094,7 +1141,13 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
         if oracle_blank(line):
             continue
         try:
-            value = json.loads(line, parse_constant=_reject_json_constant)
+            value = json.loads(line, parse_constant=_reject_json_constant,
+                               object_pairs_hook=_oracle_unique_members)
+        except _OracleMemberNameRepeated:
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        "one member name is written twice in one object, so two JSON "
+                                        "readers answer different records for the line"))
+            continue
         except json.JSONDecodeError as broken:
             violations.append(Violation("oracle.jsonl-objects", number,
                                         f"not JSON ({broken.msg} at column {broken.colno})"))
@@ -1333,7 +1386,9 @@ def oracle_message_text(payload: dict) -> str:
     an empty string beside `hi` joins a leading newline where a read of it answers `hi`. This build's
     writer emits one message as one non-empty block, so the two rules agree on every artifact this route
     produces; the difference is stated, not silently filtered, because this text is the occurrence
-    identity a receipt's counts are matched by.
+    identity a receipt's counts are matched by. An object-valued `content` is not read here at all — the
+    carried reader's `ForEach` iterates its member values — so that shape is refused where a plan is
+    compared (`oracle_unmodelled_shape_violations`) instead of being read as empty.
     """
     blocks = payload.get("content")
     if not isinstance(blocks, list):
@@ -1392,7 +1447,10 @@ def oracle_call_arguments(payload: dict) -> str:
 
     A non-string member is kept as its JSON spelling, the same convention `oracle_result_text` states: an
     absent one is the empty string, and a member written as `null` is the string `null` the reader
-    answers for it.
+    answers for it. A record carrying **both** members is refused where a plan is compared
+    (`oracle_unmodelled_shape_violations`): the carried read skips an empty or `{}`/`[]` `arguments` and
+    continues to `input`, so the written identity and the read's answer can be two different invocations
+    and one receipt cannot account for both.
     """
     for member in ("arguments", "input"):
         if member not in payload:
@@ -1488,7 +1546,10 @@ def oracle_agent_message_text(payload: dict) -> str:
     The reader's own display test for an opaque Fernet envelope (`isCodexEncryptedToolContent`) is
     deliberately **not** mirrored here: it decides what that reader chooses to show, not what the
     record's bytes can carry, and a plan that names nothing for the record cannot account for its
-    delivered text either way (see `oracle_unaccounted_occurrence_violations`).
+    delivered text either way (see `oracle_unaccounted_occurrence_violations`). An object-valued
+    `content` is not read here at all — the reader's `ForEach` iterates its member values — so that shape
+    is refused where a plan is compared (`oracle_unmodelled_shape_violations`) instead of being read as
+    empty.
     """
     blocks = payload.get("content")
     if not isinstance(blocks, list):
@@ -1577,6 +1638,79 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
                                     f"{found}; the receipt's vocabulary cannot name that occurrence, so "
                                     f"the plan cannot account for it — this route's writer writes no such "
                                     f"record"))
+    return violations
+
+
+def oracle_unmodelled_shape_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.plan-accounted`, for the shapes whose own read this oracle does not model.
+
+    The occurrence identity is the member the artifact writes, and the carried reader's answer for these
+    shapes need not be that member (both measured on `tidwall/gjson` v1.20.0, the version this tree
+    carries):
+
+    - a call carrying **both** an `arguments` and an `input` member: `extractCodexInputJSON` skips an
+      empty or `{}`/`[]` `arguments` and continues to `input`
+      (`TestParseCodexSession_InputJSON`'s `string-encoded empty JSON falls through to input` subtest
+      pins that read), so a receipt naming the written `"{}"` identity of this route's writer
+      (`lossEmptyInputs`) can certify a call whose recorded input a read answers from the other member;
+    - an object-valued `content` on a record a read turns into a message: `extractCodexTextBlocks` and
+      `extractCodexInboundAgentMessage` run their `ForEach` over `content`, which for an object yields
+      its **member values** — `{"block":{"type":"input_text","text":…}}` is read by the carried reader
+      and empty to this oracle's own text readers — so the text a read delivers is accounted for by no
+      identity the receipt can state.
+
+    Both are refused where a plan is compared and silent without one: a native rollout may legitimately
+    carry them, and the structural rules say nothing about a shape this route's writer does not emit and
+    the occurrence vocabulary does not name (review round r5's finding). The content arm mirrors the
+    read's own gates, because a record the read never turns into an occurrence carries no dialogue to
+    refuse: `handleResponseItem`'s default branch needs a `user`/`assistant` role, and
+    `extractCodexInboundAgentMessage` needs the session's own agent path as the recipient. An
+    object-valued `content` on a `message` item is `oracle.message`'s finding instead — that rule
+    requires a list — and this one leaves it alone.
+    """
+    agent_path = oracle_agent_path(records)
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = oracle_payload(record)
+        item = payload.get("type")
+        if item in ORACLE_CALL_ITEMS and "arguments" in payload and "input" in payload:
+            violations.append(Violation("oracle.plan-accounted", line,
+                                        "the artifact holds a tool call carrying both `arguments` and "
+                                        "`input`: the carried reader skips an empty or `{}`/`[]` "
+                                        "`arguments` and continues to `input` "
+                                        "(`extractCodexInputJSON`), so the recorded input a read "
+                                        "answers need not be the input the receipt's single identity "
+                                        "names — the plan cannot account for that invocation"))
+            continue
+        content = payload.get("content")
+        if not isinstance(content, dict):
+            continue
+        if item == "agent_message":
+            recipient = payload.get("recipient")
+            if (agent_path == "" or not isinstance(recipient, str)
+                    or oracle_go_trim(recipient) != agent_path):
+                continue
+            violations.append(Violation("oracle.plan-accounted", line,
+                                        f"the artifact holds an inter-agent `agent_message` whose "
+                                        f"`content` is {oracle_value_text(content)}; the carried reader "
+                                        f"iterates an object's **member values** "
+                                        f"(`extractCodexInboundAgentMessage`'s `ForEach`), so the "
+                                        f"delivered text a read answers is not one this oracle's "
+                                        f"identity reads — the plan cannot account for it"))
+        elif item != "message" and item not in ORACLE_INTERCEPTED_ITEMS:
+            role = payload.get("role")
+            if role not in ORACLE_MESSAGE_ROLES:
+                continue
+            violations.append(Violation("oracle.plan-accounted", line,
+                                        f"the artifact holds a `response_item` whose payload type is "
+                                        f"{oracle_value_text(item)} with a `{role}` role and a "
+                                        f"`content` that is {oracle_value_text(content)}; the carried "
+                                        f"reader iterates an object's **member values** "
+                                        f"(`extractCodexTextBlocks`' `ForEach`), so the message text a "
+                                        f"read answers is not one this oracle's identity reads — the "
+                                        f"plan cannot account for it"))
     return violations
 
 
@@ -1910,6 +2044,7 @@ def oracle_reading(text: str, receipt: object = _NO_RECEIPT
             violations += oracle_plan_order_violations(plan, occurrences, view_occurrences)
             violations += oracle_boundary_history_violations(records)
             violations += oracle_unaccounted_occurrence_violations(records)
+            violations += oracle_unmodelled_shape_violations(records)
     return records, occurrences, sorted(
         violations, key=lambda violation: (violation.line, violation.rule, violation.detail))
 
@@ -1935,7 +2070,9 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool) -> int:
     Bytes that are not UTF-8 text are such an input, not something to repair with replacement
     characters, because this oracle judges the artifact's own bytes. A receipt that parses to a
     non-object (a file holding `null`) is a *supplied* document that is not a plan and is refused by
-    `oracle.receipt`, not silently read as an absent receipt. The verdict line is the last one printed,
+    `oracle.receipt`, not silently read as an absent receipt; a receipt whose object writes a member name
+    twice is not read as *one* plan at all (`_oracle_unique_members`), so it is an unreadable document
+    like any other and ends `INCOMPLETE`. The verdict line is the last one printed,
     `oracle: PASS` or `oracle: FAIL — <n> violation(s)`, and each violation is one line above it
     (`--json` adds the machine-readable document instead of them).
     """
@@ -1959,7 +2096,8 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool) -> int:
                   file=sys.stderr)
             return 2
         try:
-            document = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+            document = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant,
+                                  object_pairs_hook=_oracle_unique_members)
         except UnicodeDecodeError as failure:
             print(f"oracle: INCOMPLETE — the receipt {receipt} is not UTF-8 text: {failure}",
                   file=sys.stderr)

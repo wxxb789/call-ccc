@@ -46,7 +46,16 @@
 #         `test_a_malformed_member_is_named_without_echoing_its_text` pin three more refusals the mutation
 #         table also holds (a boundary's `replacement_history` refused where a plan is compared; an
 #         unnameable occurrence refused; a
-#         string `call_id` named by digest and never echoed).
+#         string `call_id` named by digest and never echoed). Review round r5's refusals are pinned by
+#         `test_a_line_with_a_duplicate_member_is_refused` (a line whose object writes a member name
+#         twice — and a receipt whose object does — is refused before comparison; its rule is the
+#         `oracle.jsonl-objects` row above, and it carries its own mutation in the `selftest` table), by
+#         the object-valued-`content` arms of
+#         `test_receipt_validation_refuses_the_occurrences_it_cannot_name` and by
+#         `test_a_written_empty_object_input_is_part_of_the_identity`'s both-members arm (a shape whose
+#         read this oracle does not model is refused where a plan is compared); the latter two are
+#         refusals under `oracle.plan-accounted`, whose executed reverts stand in
+#         docs/evidence/0009a-native-oracle.md §10.
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`, and
 #         `test_decoded_input_never_aborts_validation`: a decoded string strict UTF-8 cannot encode and a
@@ -67,7 +76,7 @@
 #         docs/harness.md and AGENTS.md; the oracle-lock signal that enforces it is the conductor's, not a
 #         command in this tree.
 rule_id	test	package	artifact
-oracle.jsonl-objects	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the writer's own bytes: every line decodes as one JSON object — the case decodes every line and fails one that is not, a `null` included, because the emptied line then carries no type)
+oracle.jsonl-objects	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the writer's own bytes: every line decodes as one JSON object — the case decodes every line and fails one that is not, a `null` included, because the emptied line then carries no type; the member-name-uniqueness clause of the rule is pinned by the `selftest` mutation `a line holding a member name twice` and `test_a_line_with_a_duplicate_member_is_refused`, not by this Go test)
 oracle.envelope	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the same decode: every record carries a `type` and a `timestamp`, and a payload read for a member decodes as an object)
 oracle.record-type	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the record types are the carried reader's own literals, asserted as the file's exact sequence)
 oracle.session-meta	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the exact sequence opens with one `session_meta` and carries no second)

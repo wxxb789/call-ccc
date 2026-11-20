@@ -1616,6 +1616,28 @@ def _mutation_line_nested_past_reading(text: str, receipt: dict | None) -> tuple
                        replacement="[" * 200000 + "]" * 200000), receipt
 
 
+def _mutation_line_duplicate_member(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One record's line with a member name written twice, spliced into the JSON text itself.
+
+    The duplication is a text edit and not a record edit on purpose: `json.dumps` of a parsed dict cannot
+    write a repeated name, and the two readers disagree only about text no single dict holds — this
+    oracle's decoder keeps the *last* value and the carried reader's `gjson` the *first* (review round
+    r5's finding). The repeated pair's values are equal, so the record's own parsed value is unchanged
+    and the line is refused by the uniqueness clause alone; the `world_state` record carries no rule but
+    its own envelope, so dropping it from the reading leaves every other rule as it was.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if json.loads(line).get("type") != "world_state":
+            continue
+        needle = '"full":true'
+        if needle not in line:
+            raise AssertionError("the fixture's world_state no longer holds the member this mutation copies")
+        lines[index] = line.replace(needle, needle + "," + needle, 1)
+        return "\n".join(lines) + "\n", receipt
+    raise AssertionError("the fixture no longer holds its world_state record")
+
+
 def _mutation_envelope_without_timestamp(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     return oracle_edit(text, oracle_event_is("user_message"), change=_drop_timestamp), receipt
 
@@ -1841,11 +1863,16 @@ def _with_agent_path(text: str, path: str) -> str:
                        change=lambda record: record["payload"].__setitem__("agent_path", path))
 
 
-def _append_agent_message(text: str, delivered: str, recipient: str) -> str:
+def _append_agent_message(text: str, delivered: str, recipient: str,
+                          content: object | None = None) -> str:
     """One fixture's text with an inter-agent message appended, stamped at the last record's instant so
-    the clock stays legal (a record equal to its predecessor is not after it)."""
+    the clock stays legal (a record equal to its predecessor is not after it). `content`, where given,
+    replaces the record's own block list — the object-valued `content` shape review round r5's finding
+    names is written through it."""
     lines = text.splitlines()
     record = _agent_message_record(delivered, recipient)
+    if content is not None:
+        record["payload"]["content"] = content
     record["timestamp"] = json.loads(lines[-1])["timestamp"]
     return "\n".join(lines + [oracle_quote(record)]) + "\n"
 
@@ -2072,6 +2099,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_line_non_json_constant),
         OracleMutation("a line nested past reading", "session.jsonl", None,
                        _mutation_line_nested_past_reading),
+        OracleMutation("a line holding a member name twice", "session.jsonl", None,
+                       _mutation_line_duplicate_member),
     ),
     "oracle.envelope": (
         OracleMutation("a record without its timestamp", "session.jsonl", None,
@@ -2466,7 +2495,9 @@ class CodexArtifactOracle(unittest.TestCase):
         r4's finding). The identity is the written member here, so the receipt naming `"{}"` matches, the
         read's empty projection is a different occurrence (refused in both accounting rules), and the
         mutation the finding names — the member removed, the call id and its recorded result untouched —
-        is refused too.
+        is refused too. A call carrying **both** members is refused where a plan is compared (review
+        round r5's finding): the written identity stands, but the carried read skips it and continues to
+        `input`, so the receipt's single identity is not a statement about the invocation a read answers.
         """
         session = oracle_fixture("session.jsonl")
         written = oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),
@@ -2531,6 +2562,29 @@ class CodexArtifactOracle(unittest.TestCase):
                          [line for line in written.splitlines() if '"function_call_output"' in line],
                          "the removed member changed the call's recorded result")
 
+        # A call carrying **both** members (review round r5's finding): the written identity stays the
+        # `"{}"` the arms above pin — that identity is what the receipt names — while the carried
+        # reader's `extractCodexInputJSON` skips it and continues to `input`
+        # (`TestParseCodexSession_InputJSON`'s `string-encoded empty JSON falls through to input` subtest
+        # pins that read), so a receipt naming the written member is no longer a statement about the
+        # invocation a read answers. Receipt mode refuses the shape rather than certifying either
+        # member; without a plan the artifact is green, because a native rollout may carry the pair.
+        both = oracle_edit(written, oracle_item_is("function_call", "call_oracle_0001"),
+                           change=lambda record: record["payload"].__setitem__(
+                               "input", '{"file_path":"/work/oracle-fixture/other.md"}'))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(both), [],
+                         "the two-member call is not structurally green")
+        keys = [key for key, _ in
+                NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(both)[0])]
+        self.assertIn(("tool_call", "call_oracle_0001", "Read", "{}"), keys,
+                      f"the written member is no longer the call's identity: {keys}")
+        refused = NATIVE_CHECK.validate_artifact(both, receipt=receipt_for("{}"))
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"a receipt naming the written `{{}}` certified the two-member call: {refused}")
+        self.assertIn("both `arguments` and `input`", refused[0].detail, f"{refused}")
+        self.assertNotIn("other.md", refused[0].detail,
+                         f"the refusal echoed the second member's value: {refused}")
+
     def test_a_boundarys_replacement_history_is_refused_with_a_plan(self) -> None:
         """The omitted prompt written into a boundary's `replacement_history` is refused in receipt mode.
 
@@ -2574,7 +2628,12 @@ class CodexArtifactOracle(unittest.TestCase):
         The refusal is stated over the class, not the one shape: the reader also appends a message from a
         payload type its switch does not take when the record carries a `user`/`assistant` role and
         readable text, and appends a tool call from an `image_generation_call` whose identity lives in
-        members the receipt's `call_id`/`name`/`arguments` identity does not have. Each shape is refused
+        members the receipt's `call_id`/`name`/`arguments` identity does not have. A second class is the
+        shape whose own read this oracle does not model (review round r5's finding): an object-valued
+        `content` is iterated by the reader's own `ForEach` over its **member values**, so the omitted
+        prompt written into one is delivered by a read while this oracle's text readers answer nothing —
+        refused wherever the read would enter its loop (the fallback branch's role and the inter-agent
+        address are the two gates pinned here), and silent where it would not. Each shape is refused
         here — asserted to turn exactly its own rule red — and silent without a plan: a native rollout may
         carry them, so the structural rules say nothing. The controls pin the read's own gates: an address
         that is not the session's own, delivered text Go's own trim calls blank, a session that names no
@@ -2596,8 +2655,11 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertIn("And now?", planted,
                       "the planted artifact no longer holds the dialogue the attack writes")
 
-        # The positive arms: every shape a read turns into an occurrence the vocabulary cannot name. Go's
-        # own trimming on both sides and the fallback member a subagent session names its agent path in
+        # The positive arms: every shape a read turns into an occurrence the vocabulary cannot name, and
+        # every shape whose own read this oracle does not model (review round r5's finding: an
+        # object-valued `content` is iterated by the reader's `ForEach` over its member values, so a
+        # prompt written into one is read while this oracle's text readers see nothing). Go's own
+        # trimming on both sides and the fallback member a subagent session names its agent path in
         # (`handleSessionMeta`) are pinned with the inter-agent shape, because both are paths the read
         # really takes.
         trimmed = _with_agent_path(reduced, " /root ")
@@ -2610,13 +2672,18 @@ class CodexArtifactOracle(unittest.TestCase):
              _append_agent_message(trimmed, "And now?", " /root ")),
             ("the agent path's own fallback member",
              _append_agent_message(nested, "And now?", "/root")),
-            ("an item type the receipt cannot name, user role",
+            ("an item type the receipt cannot name, object-valued content",
              _append_item(reduced, {"type": "compat_message", "role": "user",
-                                    "content": [{"type": "input_text", "text": "And now?"}]})),
+                                    "content": {"block": {"type": "input_text",
+                                                          "text": "And now?"}}})),
             ("an item type the receipt cannot name, assistant role",
              _append_item(reduced, {"type": "compat_message", "role": "assistant",
                                     "content": [{"type": "output_text",
                                                  "text": "Still the synthetic one."}]})),
+            ("an inter-agent message whose delivered content is an object",
+             _append_agent_message(_with_agent_path(reduced, "/root"), "And now?", "/root",
+                                   content={"delivered": {"type": "encrypted_content",
+                                                          "encrypted_content": "And now?"}})),
             ("an image-generation call",
              _append_item(reduced, {"type": "image_generation_call", "id": "call_oracle_0002",
                                     "status": "generating"})),
@@ -2648,6 +2715,16 @@ class CodexArtifactOracle(unittest.TestCase):
             ("a reasoning item carrying a role and text",
              _append_item(reduced, {"type": "reasoning", "role": "user",
                                     "content": [{"type": "input_text", "text": "And now?"}]})),
+            # The object-valued shapes are refused by the read's own gates, not by their being objects:
+            # a role the reader's fallback branch does not take, and an address that is not the
+            # session's own, both leave the reader's loop unentered and stay green.
+            ("an object-valued content on a role outside the reader's two",
+             _append_item(reduced, {"type": "compat_message", "role": "developer",
+                                    "content": {"block": {"type": "input_text", "text": "And now?"}}})),
+            ("an object-valued delivered content addressed elsewhere",
+             _append_agent_message(_with_agent_path(reduced, "/root"), "And now?", "/root/other",
+                                   content={"delivered": {"type": "encrypted_content",
+                                                          "encrypted_content": "And now?"}})),
         )
         for label, artifact in controls:
             with self.subTest(control=label):
@@ -2706,11 +2783,12 @@ class CodexArtifactOracle(unittest.TestCase):
         """Default diagnostics name a malformed value by its place and kind, never by its contents.
 
         A malformed record can put the conversation's own words where any member belongs — an object
-        holding a prompt written into `timestamp`, a `call_id` or a receipt entry's `disposition` — and
-        a *string* can hold them just as well (review round r3's finding: the unmatched-output
-        diagnostic echoed a string `call_id` verbatim). The case plants one marker per shape and reads
-        `--validate`'s own output for every document: the field is named, the value's kind or digest
-        stands where the value would, and the marker is nowhere in either the default or the JSON
+        holding a prompt written into `timestamp`, a `call_id` or a receipt entry's `disposition`; a
+        *string* can hold them just as well (review round r3's finding: the unmatched-output diagnostic
+        echoed a string `call_id` verbatim); and so can a member **name**, which the uniqueness refusal
+        reads without echoing (review round r5's finding). The case plants one marker per shape and
+        reads `--validate`'s own output for every document: the field is named, the value's kind or
+        digest stands where the value would, and the marker is nowhere in either the default or the JSON
         report.
         """
         marker = "SECRET-PROMPT-ALPHA"
@@ -2780,6 +2858,25 @@ class CodexArtifactOracle(unittest.TestCase):
                       printed)
         self.assertNotIn(marker, printed, f"a diagnostic echoed the planted text: {printed}")
 
+        # A member *name* is a string an artifact controls, too: the refusal of a repeated name (review
+        # round r5's finding) must not echo the name it read any more than the other refusals echo their
+        # values.
+        lines = session.splitlines()
+        for index, line in enumerate(lines):
+            if json.loads(line).get("type") != "world_state":
+                continue
+            needle = '"full":true'
+            self.assertIn(needle, line,
+                          "the fixture's world_state no longer holds the member this arm duplicates")
+            lines[index] = line.replace(needle, needle + f',"{marker}":1,"{marker}":1', 1)
+            break
+        else:
+            self.fail("the fixture no longer holds its world_state record")
+        printed = report("\n".join(lines) + "\n", None)
+        self.assertIn("oracle.jsonl-objects", printed,
+                      f"the repeated member name was not refused: {printed}")
+        self.assertNotIn(marker, printed, f"a diagnostic echoed the planted name: {printed}")
+
     def test_the_oracle_reads_the_artifacts_own_bytes(self) -> None:
         """The JSONL framing is the line feed and the parsing is JSON's, not Python's lenient half.
 
@@ -2806,6 +2903,60 @@ class CodexArtifactOracle(unittest.TestCase):
             self.assertIn("oracle: INCOMPLETE", errors.getvalue(),
                           f"invalid encoding was not reported: {errors.getvalue()}")
             self.assertIn("is not UTF-8 text", errors.getvalue(), errors.getvalue())
+
+    def test_a_line_with_a_duplicate_member_is_refused(self) -> None:
+        """A line whose object writes a member name twice is refused before any comparison, in both modes.
+
+        Python's decoder keeps the *last* value for a repeated name and the carried reader's `gjson` the
+        *first* (measured on the carried v1.20.0): the reduced plan's omitted prompt planted before the
+        first user block's own `text` member is the planned one to a Python read of the line and the
+        omitted one to a `gjson` read of the same bytes, so a plan comparison over the former could
+        certify dialogue a read of the artifact does not hold — review round r5's finding. The line is
+        spliced as raw JSONL rather than written from a dict (`json.dumps` cannot write a repeated name),
+        refused structurally and with a plan, and a receipt whose members collide is refused the same way
+        through the CLI: a plan that does not read as one object is not compared, exactly as such a line
+        is not compared.
+        """
+        reduced = oracle_fixture("reduced.jsonl")
+        needle = '{"type":"input_text","text":"Which fixture is this?"}'
+        self.assertIn(needle, reduced, "the fixture no longer holds the first user block this case edits")
+        planted_block = '{"type":"input_text","text":"And now?","text":"Which fixture is this?"}'
+        armed = reduced.replace(needle, planted_block, 1)
+        self.assertNotEqual(armed, reduced, "the case's splice changed nothing")
+        # The premise: Python's decoder answers the plan's own prompt for the armed line (the last
+        # value), so nothing but the uniqueness clause can see the omitted prompt the carried reader's
+        # `gjson` answers from the same bytes (the first value).
+        decoy = [json.loads(line) for line in armed.splitlines() if planted_block in line]
+        self.assertEqual(len(decoy), 1, "the armed line is not one record")
+        self.assertEqual(decoy[0]["payload"]["content"][0]["text"], "Which fixture is this?",
+                         "the armed line no longer reads as the plan's own prompt through Python")
+
+        structural = NATIVE_CHECK.validate_artifact(armed)
+        self.assertEqual([violation.rule for violation in structural], ["oracle.jsonl-objects"],
+                         f"the armed line was not refused for its repeated member: {structural}")
+        self.assertIn("written twice", structural[0].detail, f"{structural}")
+        refused = NATIVE_CHECK.validate_artifact(armed, receipt=oracle_receipt("reduced-receipt.json"))
+        # The refused line's own emitted message is gone from the model-visible channel alone (the
+        # turn-view event stands and matches), so the only further rule is the dialogue the reading can
+        # no longer see — the armed line never passes, with or without its plan.
+        self.assertEqual(sorted({violation.rule for violation in refused}),
+                         ["oracle.jsonl-objects", "oracle.plan-emitted"],
+                         f"the armed line's plan reading: {refused}")
+
+        with tempfile.TemporaryDirectory() as scratch:
+            artifact = Path(scratch) / "armed.jsonl"
+            artifact.write_text(armed, encoding="utf-8")
+            plan = Path(scratch) / "collided-receipt.json"
+            plan.write_text(oracle_fixture("reduced-receipt.json").replace(
+                '"disposition": "emitted"', '"disposition": "emitted","disposition": "emitted"', 1),
+                encoding="utf-8")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(plan)])
+            self.assertEqual(code, 2,
+                             f"exit {code} for a receipt with a repeated member: {errors.getvalue()}")
+            self.assertIn("cannot be read: one member name is written twice", errors.getvalue(),
+                          f"the collided receipt is not reported unreadable: {errors.getvalue()}")
 
     def test_a_receipt_that_declares_nothing_cannot_pass(self) -> None:
         """A plan that declares no occurrences, and one that cannot be read, both refuse the artifact.

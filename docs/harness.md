@@ -382,7 +382,11 @@ says so.
   a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent
   `agent_message` addressed to the session's own agent path, another payload type carrying a
   `user`/`assistant` role and readable text, and an `image_generation_call` among them — refused there
-  too, every call output required to name a call written before it, and a receipt that declares no
+  too, a shape whose own read the oracle does not model — a call carrying both `arguments` and `input`,
+  an object-valued `content` a read iterates the member values of — refused there too, a line whose
+  object (or a receipt document whose object) writes a member name twice refused before comparison,
+  because this oracle's decoder and the carried reader's `gjson` answer a repeated name differently,
+  every call output required to name a call written before it, and a receipt that declares no
   occurrences refused before any comparison). The identity the receipt is matched on is the member the
   artifact **writes** — a call's `arguments` read exactly as written, so this route's writer's deliberate
   `"{}"` is not the carried read's empty answer — and a call or result substituted under an unchanged
