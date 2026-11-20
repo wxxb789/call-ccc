@@ -2871,6 +2871,8 @@ supersede it with a newer one and say which it supersedes.
 
 ## Q-0009-01 — The increment is narrowed to one reference route, and the review loop is contractively bounded
 
+- **Status:** resolved (owner, 2026-11-20 — fork A taken).
+
 **Question (operator, 2026-11-20).** The wider goal-0009 attempt (PR #14) ran 19 machine-review rounds with
 zero clean findings and the reviewed diff grew 191 KB → 1.47 MB. Two blind cross-family consults
 (`gpt-6.2-sol` and `gemini-4-carbon`) converged: selection is a lossy pass over a stateful event log, so a
@@ -2888,15 +2890,37 @@ breaker** to the review loop. After it lands, the other four routes fan out as t
 branch reviewed as one PR); C — accept a disclosed residual and merge (rejected by both consults: the
 residual contains an active P1 semantic falsification); D — raise the round cap (rejected: gain ≥ 1).
 
-**Why the seam, not a new IR layer.** The adjudication was verified against the tree: `Conversation`
-*already* carries the seam's answers for several dispositions (`internal/ccc/conversation.go` —
-`sourceResultPairs` "to keep a writer from re-reading the pairing over the window", `sourceKeptAncestor`,
-`sourceLineInactive`/`sourceLineHolds`, `sourceFileLine`). The root cause is therefore the **coverage** of
-that carried set, not its absence — so the increment completes the set for one route instead of introducing a
-second parser or a persistent index.
+**Why the seam, not a new IR layer.** The seam's shape was verified on the superseded attempt's tree:
+`Conversation` there *already* carried the seam's answers for several dispositions
+(`internal/ccc/conversation.go` on `archive/0009-pr14-pre-forkA`, added by PR #14's round 4 —
+`sourceResultPairs` "It is what keeps a writer from re-reading the pairing over the window",
+`sourceKeptAncestor`, `sourceLineInactive`/`sourceLineHolds`, `sourceFileLine`). This increment's base tree
+carries none of them (`Conversation` is `Source`, `Messages` and `Fidelity` only), so the increment **adds** —
+drawing on the tag where it fits — the set the reference route needs. The root cause is therefore the
+**coverage** of the carried set, not the seam's absence — so the increment completes the set for one route
+instead of introducing a second parser or a persistent index.
 
 **Reversal:** re-open the wider scope by adding a carrying disposition set for all five routes at once (the
 cost is the M×N matrix this decision exists to avoid), or retire the breaker by setting
 `CONTRACTIVE_MAX_ORDINARY_ROUNDS` above the series' historical maximum (the cost is the 19-round/1.47 MB
 failure mode returning silently).
 **Settled by:** an operator instruction; nothing downstream needs to re-decide it.
+
+## Q-0009-02 — Which four routes "the other four target routes" are
+
+- **Status:** open (default taken: the recorded wording stands, and the four later increments are unchanged
+  in count).
+- **Question:** the goal's non-scope and `AGENTS.md` list the four later increments as "the other four target
+  routes (Pi, OMP, OpenCode, Codex-as-source)". Three entries name targets and the fourth names a source, so
+  the list reads either as the four remaining target formats (Claude, Pi, OMP and OpenCode — the target
+  writers the superseded attempt touched beside the reference route's Codex target) or as route families
+  named from mixed sides. Which enumeration does the deferral mean?
+- **Options:** (a) name the four target formats; (b) name four source→target pairs; (c) leave the wording as
+  recorded.
+- **Default taken:** (c). The apply stage's findings pass flagged the mixing and left the contract text
+  untouched: which routes the non-scope defers is the owner's to state, and rewording it would change scope
+  text on a guess.
+- **Reversal:** one line in `docs/goals/0009-selective-context.md`, `AGENTS.md` and
+  `docs/plans/0009-selective-context.md` replaces the parenthesis with the chosen enumeration; nothing
+  downstream changes.
+- **Settled by:** an owner sentence naming the four routes/increments.

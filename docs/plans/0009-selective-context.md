@@ -28,7 +28,8 @@ compaction, summaries, redaction or reasoning-trace editing (0010–0013).
 - The read supplies `Message.Ordinal`, and it is the source's own numbering as the read preserved it — not a
   position. Most routes assign a 0-based serial counter (`internal/parser/codex.go:2118`'s
   `NewCodexCollectingSink(0)`; `internal/parser/opencode.go:1373`'s `ordinal := 0`; Pi's own counter,
-  `internal/parser/pi.go:146`), but Shelley's assigns the source's own `sequence_id`
+  `internal/parser/pi.go:146`; and Claude Code, this route's own source, `extractMessagesContext`'s
+  ordinal — `internal/parser/claude.go:2790,2818`), but Shelley's assigns the source's own `sequence_id`
   (`internal/parser/shelley.go:612` — `Ordinal: int(r.sequenceID)` — and its reader test expects ordinals
   1..5 for five records, `internal/parser/shelley_test.go:210-212`). Both read paths carry the value
   through unchanged (`internal/ccc/reader.go:782`, `internal/ccc/archive.go:580`), so on a Shelley-shaped
@@ -92,17 +93,18 @@ no clock, no globals, so its whole matrix is unit-testable.
 
 ### 3.3 The carried dispositions (D6 — the fork-A addition)
 
-The `Conversation` document already carries the read→selection seam's own answers for some dispositions
-(`internal/ccc/conversation.go` — `sourceResultPairs`, `sourceKeptAncestor`, `sourceLineInactive`,
-`sourceLineHolds`, `sourceFileLine`). This increment completes the set for the reference route so that the
-Codex writer and the read-back verifier consume the seam's decisions rather than re-deriving them from the
-punctured stream:
+The read→selection seam's answers for some dispositions exist on the superseded attempt's tree, not on this
+increment's base tree: `internal/ccc/conversation.go` on `archive/0009-pr14-pre-forkA` carries
+`sourceResultPairs`, `sourceKeptAncestor`, `sourceLineInactive`, `sourceLineHolds` and `sourceFileLine`,
+while this tree's `Conversation` is `Source`, `Messages` and `Fidelity` only. This increment **adds** —
+drawing on the tag where it fits — the set for the reference route so that the Codex writer and the
+read-back verifier consume the seam's decisions rather than re-deriving them from the punctured stream:
 
-1. **call↔result identity**, including ID-less occurrences (`sourceResultPairs`, present);
+1. **call↔result identity**, including ID-less occurrences (`sourceResultPairs`; **new** on this tree);
 2. **operation lifecycle finality** — completed / failed / in-progress / interrupted (**new**);
 3. **omitted-by-selection vs absent-in-source** (**new**);
 4. **compaction ledger** — the calls *and* results a boundary accounts for (**new**);
-5. **retained-vs-already-written ancestry** (`sourceKeptAncestor`, present).
+5. **retained-vs-already-written ancestry** (`sourceKeptAncestor`; **new** on this tree).
 
 ID-less ownership inference on a selected run is **not** performed: an ambiguous shape is refused or
 explicitly omitted (goal's non-scope).

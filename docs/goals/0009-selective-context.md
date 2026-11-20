@@ -65,10 +65,12 @@ selection". The dispositions the seam carries are named in D6.
 
 ## Acceptance surface
 
-`docs/evidence/0009-citations.tsv` — one row per **discrete decision** this increment makes, plus the
-per-harness **native-load check** for the reference route. The ledger does not attempt to prove universal
-soundness by example: a row is one gate-runnable Go test that discharges a named decision, and a `∀`-shaped
-claim is discharged by a machine check, not by an LLM reading a citation table (the fork-A consult's finding).
+`docs/evidence/0009-citations.tsv` — one row per **discrete decision** this increment makes; the
+per-harness **native-load check** for the reference route is a separate machine half, named in the manifest
+header as deliberately not covered rather than carried as a row (the citations gate verifies Go tests only).
+The ledger does not attempt to prove universal soundness by example: a row is one gate-runnable Go test that
+discharges a named decision, and a `∀`-shaped claim is discharged by a machine check, not by an LLM reading a
+citation table (the fork-A consult's finding).
 D4's evidence is the throw-away before/after probe 0007 and 0008 used — a test file added, run, quoted in the
 record, then removed — so the record's verbatim output is the evidence and the manifest header names D4 with
 that reason instead of carrying a row (a row is one gate-runnable Go test, so evidence a gate step does not
