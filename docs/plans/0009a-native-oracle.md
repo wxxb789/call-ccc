@@ -113,8 +113,9 @@ existing check's); the writer's own adoption of the rules (0009d).
 
 The record (`docs/evidence/0009a-native-oracle.md`) carries, with verbatim output and exit codes: the
 measurements the rules rest on (§0); the oracle's positive fixtures and the mutation run over all 13 rules
-(§1–§2); D2's reduced-artifact validation with the source absent (§3); the unflagged Codex acceptance run
-taken **before and after** this increment (§4); and `--validate` runs over a real converted artifact (§5).
+(§1–§2); D2's reduced-artifact validation with the source absent (§2, the reduced-fixture run); the
+unflagged Codex acceptance run taken **before and after** this increment (§3); and `--validate` runs over a
+real converted artifact (§5).
 
 **The manifest's own rows — an ambiguity, decided.** `docs/conventions.md` holds a citations row to be one
 gate-runnable **Go** test, while this increment makes no Go change at all; the goal's acceptance surface names

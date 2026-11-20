@@ -48,6 +48,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -1464,6 +1465,13 @@ def _drop_timestamp(record: dict) -> None:
     record.pop("timestamp")
 
 
+def _timestamp_zone_out_of_range(record: dict) -> None:
+    stamp = record["timestamp"]
+    if not stamp.endswith("Z"):
+        raise AssertionError("the fixture's instant is no longer Z-spelled")
+    record["timestamp"] = stamp[:-1] + "+99:99"
+
+
 def _payload_becomes_a_list(record: dict) -> None:
     record["payload"] = ["not", "an", "object"]
 
@@ -1526,6 +1534,18 @@ def _mutation_envelope_without_timestamp(text: str, receipt: dict | None) -> tup
 
 def _mutation_envelope_payload_not_an_object(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     return oracle_edit(text, oracle_record_is("world_state"), change=_payload_becomes_a_list), receipt
+
+
+def _mutation_envelope_offset_out_of_range(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One record's numeric offset leaves the range RFC 3339 bounds: `+99:99` dates no instant.
+
+    The offset changes and the instant around it does not, so the record is `oracle.envelope`'s alone:
+    `oracle.clock` skips a stamp it cannot read rather than comparing it, and no other rule reads the
+    stamp — the two mechanisms that let an out-of-range offset through while every other case stayed
+    green.
+    """
+    return oracle_edit(text, oracle_record_is("turn_context"),
+                       change=_timestamp_zone_out_of_range), receipt
 
 
 def _mutation_record_type_unknown(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -1677,6 +1697,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_envelope_without_timestamp),
         OracleMutation("a payload that is not an object", "session.jsonl", None,
                        _mutation_envelope_payload_not_an_object),
+        OracleMutation("an offset the format forbids", "session.jsonl", None,
+                       _mutation_envelope_offset_out_of_range),
     ),
     "oracle.record-type": (
         OracleMutation("a record type the format does not define", "session.jsonl", None,
@@ -1781,12 +1803,14 @@ class CodexArtifactOracle(unittest.TestCase):
     def test_a_reduced_artifact_is_validated_from_the_artifact_alone(self) -> None:
         """A reduced artifact and its plan are validated with nothing but the two documents in hand.
 
-        The validator is driven with `open` refusing to hand out any file at all, so a reading that
-        reached for a source transcript, the fixture on disk or any other document could not have
-        answered: the oracle's input is the artifact's text and, at most, a plan (goal 0009a, D2). The
-        full artifact against the reduced plan is the other direction — the two occurrences the plan
-        marks omitted are present there — which is what keeps "reduced" a statement about the artifact
-        rather than about an oracle that ignores plans.
+        The validator is driven with the three Python-level names a file read goes through —
+        `builtins.open`, `io.open` (which `pathlib`'s `read_text`/`open` resolve at call time) and
+        `os.open` — all refusing to hand out any file, and the case first shows each refusal fires, so a
+        reading that reached for a source transcript, the fixture on disk or any other document through
+        any of them could not have answered: the oracle's input is the artifact's text and, at most, a
+        plan (goal 0009a, D2). The full artifact against the reduced plan is the other direction — the
+        two occurrences the plan marks omitted are present there — which is what keeps "reduced" a
+        statement about the artifact rather than about an oracle that ignores plans.
         """
         reduced = oracle_fixture("reduced.jsonl")
         receipt = oracle_receipt("reduced-receipt.json")
@@ -1794,7 +1818,14 @@ class CodexArtifactOracle(unittest.TestCase):
         def refuse(*args, **kwargs):
             raise AssertionError("the oracle opened a file: its input is the artifact, not a path")
 
-        with mock.patch("builtins.open", refuse):
+        with mock.patch("builtins.open", refuse), mock.patch("io.open", refuse), \
+                mock.patch("os.open", refuse):
+            for open_a_file in (lambda: open(__file__),
+                                lambda: io.open(__file__),
+                                lambda: os.open(__file__, os.O_RDONLY),
+                                lambda: Path(__file__).read_text(encoding="utf-8")):
+                with self.assertRaises(AssertionError, msg="a file read was not refused"):
+                    open_a_file()
             self.assertEqual(NATIVE_CHECK.validate_artifact(reduced, receipt=receipt), [],
                              "the reduced artifact and its plan are not green from their own texts")
         present = NATIVE_CHECK.validate_artifact(oracle_fixture("session.jsonl"), receipt=receipt)

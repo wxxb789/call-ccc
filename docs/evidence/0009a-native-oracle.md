@@ -183,17 +183,18 @@ Ran 8 tests in 0.032s
 OK
 ```
 
-The quote is the apply stage's re-run over the accepted tree: the class moved from six cases to eight,
-the two added ones pinning what the mutation table cannot see — a numeric offset's sign
-(`test_the_instant_reader_dates_an_offset_by_its_sign`) and occurrence multiplicity
+The quote is the fix stage's re-run after the review findings (which moved the D2 case's guard to the
+three `open` names and added the envelope offset mutation), over a tree whose class still holds the
+apply stage's eight cases: the two added then pinning what the mutation table cannot see — a numeric
+offset's sign (`test_the_instant_reader_dates_an_offset_by_its_sign`) and occurrence multiplicity
 (`test_occurrence_identity_is_counted_not_deduplicated`).
 
-The mutations number 24 for the 13 rules: `oracle.jsonl-objects`, `oracle.session-meta` and
-`oracle.message` carry three each, `oracle.envelope`, `oracle.session-meta-members`,
-`oracle.call-pairing`, `oracle.receipt` and `oracle.plan-accounted` two each, and the remaining five one
-each. Two of them, run through the shipped command rather than in-process, show what the report reads
-like — the first a structural rule, the second the plan/pair rule that is the reason the receipt exists
-at all (a call whose recorded result is left out while the call travels):
+The mutations number 25 for the 13 rules: `oracle.jsonl-objects`, `oracle.envelope`, `oracle.session-meta`
+and `oracle.message` carry three each, `oracle.session-meta-members`, `oracle.call-pairing`,
+`oracle.receipt` and `oracle.plan-accounted` two each, and the remaining five one each. Two of them, run
+through the shipped command rather than in-process, show what the report reads like — the first a
+structural rule, the second the plan/pair rule that is the reason the receipt exists at all (a call
+whose recorded result is left out while the call travels):
 
 ```
 $ python3 scripts/codex-native-check.py --validate /tmp/ccc-0009a-evidence/cli-version-dropped.jsonl
@@ -242,7 +243,9 @@ $ echo $?
 
 Two mechanical statements, one structural and one behavioural. **Structurally**, the oracle's input is
 the artifact's text and, at most, a parsed receipt: `validate_artifact(text, receipt=None)` takes no
-path, and the case drives it with `builtins.open` refusing to hand out any file at all
+path, and the case drives it with `builtins.open`, `io.open` and `os.open` — the three Python-level
+names a file read goes through, `pathlib`'s `read_text`/`open` resolving the middle one at call time —
+all refusing to hand out any file, with the case first showing each refusal fires
 (`test_a_reduced_artifact_is_validated_from_the_artifact_alone` — a reading that reached for a source
 transcript, the fixture on disk or any other document could not have answered). **Behaviourally**, a
 reduced artifact is validated against its plan from a directory that holds nothing else:
@@ -315,10 +318,10 @@ PASS: no pre-existing session in the target home changed — 0 pre-existing sess
 26 check(s) passed, 0 failed, 2 skipped
 ```
 
-After the apply stage's simplify findings (which touched the oracle section alone), the same unflagged
-command was run once more over the accepted tree: exit 0, its 28 check lines' names and states identical
-to the after-run's, and the same closing count (`26 check(s) passed, 0 failed, 2 skipped`) — so D3's
-claim holds for the increment's final bytes.
+After the fix stage's review findings (which moved the oracle section's instant reader and its tests
+alone), the same unflagged command was run once more over the accepted tree: exit 0, its 28 check lines'
+names and states identical to the before- and apply-stage after-run's, and the same closing count
+(`26 check(s) passed, 0 failed, 2 skipped`) — so D3's claim holds for the increment's final bytes.
 
 ## 4. D4 — the freeze, stated where a later lane reads it
 
@@ -422,7 +425,7 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 450 tests in 9.155s (rc=0)
+  PASS     selftest Ran 450 tests in 8.917s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 9 row(s) verified
   PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -436,12 +439,12 @@ in it (§1) — six as implemented, two more from the apply stage's coverage fin
 step's 9 rows are §6's manifest. The `gofmt`, `build`, `vet` and `test` steps answer about an unchanged
 Go tree: this increment's diff holds no Go file.
 
-The gate was re-run after this record's own last prose edits (no gate step refuses on this file's prose:
-the `selftest` cases that read `docs/evidence/` read the answer claims of a §5 table — this record's §5
-holds no table — and the quoted `parity` lines of the records that state that checker's own elision rule,
-which this record does not state), and the re-run printed the same step states with `Ran 450 tests` and
-`GATE: PASS`, exit 0; the `selftest` timing differs between runs, which is why the transcript above is
-one run's own line rather than a rounded one.
+The gate was re-run after the fix stage's findings and this record's own last prose edits (no gate step
+refuses on this file's prose: the `selftest` cases that read `docs/evidence/` read the answer claims of a
+§5 table — this record's §5 holds no table — and the quoted `parity` lines of the records that state that
+checker's own elision rule, which this record does not state), and the re-run printed the same step states
+with `Ran 450 tests` and `GATE: PASS`, exit 0; the `selftest` timing differs between runs, which is why
+the transcript above is one run's own line rather than a rounded one.
 
 ## 8. What this record does not claim
 

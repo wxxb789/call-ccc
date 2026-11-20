@@ -873,7 +873,8 @@ ORACLE_TURN_EVENTS = ("user_message", "agent_message")
 
 #: One RFC3339 instant, as strict as the format is: `T` (or the lowercase `t`, or the space the format
 #: allows by agreement), a fraction of up to nanosecond precision — Go's own `RFC3339Nano` writes one —
-#: and `Z` or a numeric offset.
+#: and `Z` or a numeric offset whose own hour and minute `oracle_instant` bounds the way the format
+#: bounds them (`00`–`23` hours, `00`–`59` minutes; `+99:99` is no offset).
 ORACLE_INSTANT = re.compile(
     r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:\d{2})$")
 
@@ -901,7 +902,10 @@ def oracle_instant(value: object) -> tuple[int, int] | None:
     epoch = int(base.timestamp()) + (1 if second == 60 else 0)  # a leap second is its second's end
     zone = match.group(8)
     if zone not in ("Z", "z"):
-        offset = int(zone[1:3]) * 3600 + int(zone[4:6]) * 60
+        offset_hour, offset_minute = int(zone[1:3]), int(zone[4:6])
+        if offset_hour > 23 or offset_minute > 59:
+            return None  # the format bounds an offset's own clock as it bounds the time's
+        offset = offset_hour * 3600 + offset_minute * 60
         epoch -= offset if zone[0] == "+" else -offset
     return epoch, int((match.group(7) or "").ljust(9, "0"))
 
