@@ -92,6 +92,12 @@ no clock, no globals, so its whole matrix is unit-testable.
 
 - Default: a selection that separates a recorded call from its recorded result **carries the counterpart**
   and lists it as a necessity (`necessities_added`), with the ordinal that pulled it in.
+- **Closure eligibility (D3):** a counterpart is carried only where the route can represent it **without
+  changing the disposition the source gave it**. A counterpart the source's line leaves *inactive* is never
+  activated to satisfy closure — the exact-parent sibling shape §4 already pins is the case: selecting the
+  call and the active reply would otherwise require publishing an inactive result. Where the route cannot
+  carry the counterpart truthfully, the **whole selection is refused by name** (the pick, the pair and both
+  ordinals) by default as well as under `--strict-selection`, before anything is installed.
 - `--strict-selection`: the same selection is **refused by name** before anything is installed.
 - A call the source itself left undischarged stays as it is and is reported (`calls_undischarged`).
 - Nothing is renumbered: the selection matches the ordinal values the read supplied (§2;
@@ -109,9 +115,16 @@ drawing on the tag where it fits — the set for the reference route so that the
 read-back verifier consume the seam's decisions rather than re-deriving them from the punctured stream:
 
 1. **call↔result identity**, including ID-less occurrences (`sourceResultPairs`; **new** on this tree);
-2. **operation lifecycle finality** — completed / failed / in-progress / interrupted (**new**);
+2. **operation lifecycle finality** — completed / failed / in-progress / interrupted, and **unknown /
+   undischarged** where the read cannot establish an outcome (**new**). Unknown is a value, not a synonym
+   for *omitted by selection*: the reference route's Claude projection cannot in general distinguish
+   pending, interrupted and unobserved when no result is present, and neither unknown nor omitted may become
+   a `completed` output;
 3. **omitted-by-selection vs absent-in-source** (**new**);
-4. **compaction ledger** — the calls *and* results a boundary accounts for (**new**);
+4. **compaction ledger** — the calls *and* results a boundary accounts for (**new**), and **unknown** where
+   the read cannot establish which calls a boundary replaced (the Codex reader explicitly skips
+   `replacement_history`), kept distinct from **none**; a fixture that *does* carry the relationship is
+   labelled **synthetic** and may not be cited as source-established evidence;
 5. **retained-vs-already-written ancestry** (`sourceKeptAncestor`; **new** on this tree) — the nearest
    ancestor the read holds that the selection also carries, per retained record: what a tree writer chains
    to when the record's own parent was cut;
@@ -192,13 +205,20 @@ route: the same spec on the reference pair converts, and a pair with no route at
   default arm red by writing a call without its recorded counterpart.
 - **The pair gate (§3.4):** one named case over at least two unsupported pairs — a supported target with a
   non-Claude source, and the Claude source with another supported target — asserts the same refused-by-name
-  sentence, the usage exit code and that nothing was installed; the mutation removes the gate and the arms
-  turn red by installing instead of refusing. The same selection on the reference pair converts, so the
-  case cannot pass by refusing the flag everywhere.
+  sentence, the usage exit code, and that **the source was never opened**, asserted as **zero reader calls**
+  (a distinguishable read failure, not merely "nothing was installed"), so a gate that runs *after* source
+  access cannot pass as the refusal. `--strict-selection`'s refusal is covered independently of the default
+  path. The mutation removes the gate and the arms turn red by installing instead of refusing. The same
+  selection on the reference pair converts, so the case cannot pass by refusing the flag everywhere.
 - **Native load is a separate, two-tier claim** (the fork-A consult's finding): the offline gate asserts the
   per-route wire schema and the structural invariants against committed fixtures; the real loader
   (`scripts/codex-native-check.py`) asserts the marker/kept-record expectations against the installed
   artifact. A mirror-image local reader is never the proof of a writer's contract.
+- **The native arm must exercise selection.** The script today converts only **unflagged** documents and
+  checks only user/assistant item kinds, so it cannot see a selection at all. The increment adds a
+  **re-runnable selected arm**: one flagged conversion over the same fixture whose native view independently
+  asserts the kept record's marker is present and the excluded record's marker is absent, and a second
+  invocation with the same flag proves it re-runs.
 
 ## 5. CLI and machine-readable output
 
@@ -271,5 +291,18 @@ abstraction-boundary failure to report, not a budget to raise.
 
 ## 11. Where the implementation departed from this plan, and why
 
-None yet. This plan was rewritten for fork A before any implementation, and each departure is recorded here
-rather than in a rewritten section (0007 §6.1's habit).
+- **Fork A (2026-11-20) rewrote this plan before any implementation.** The increment is narrowed to the
+  **Claude Code → Codex reference route**; the seam's carried dispositions (§3.3) are the addition; the other
+  four target routes and ID-less ownership inference are explicitly out of scope; the superseded wider
+  attempt's review log is the negative-case corpus.
+- **The first two machine-review rounds edited §3/§4 in place** instead of recording departures here — this
+  file's own habit, broken by the fix lane. The edits themselves were accepted (they added §3.4's pair gate,
+  disposition 6's pre-cut line, and D7); this entry is the bookkeeping that habit owed.
+- **Round 2's five findings were dispositioned by the operator, not a third fix round** (2026-11-20). All
+  five accepted and folded: **D3 / §3.2** closure eligibility for a counterpart the source's line leaves
+  inactive; **§3.3(2)** *unknown / undischarged* as a lifecycle value distinct from omitted-by-selection;
+  **§3.3(4)** the compaction ledger's *unknown* vs *none* plus the synthetic-fixture label; **§4** the
+  re-runnable **selected** native-load arm; **§4** the pair gate asserting **zero reader calls**. Rationale
+  for the operator pass: this is a documents-only **prep** increment, not the artifact that ships; its design
+  findings are the operator's to adjudicate; and the contractive breaker had already established that the
+  fix loop was not contracting on it (30 270 → 46 420 bytes in one round).

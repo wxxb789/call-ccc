@@ -48,7 +48,11 @@ selection". The dispositions the seam carries are named in D6.
   report and `--json`; the counts agree with the conversion's own `losses` vocabulary.
 - **D3 — The seam has a defined behaviour, and it is provable in both directions.** A selection that
   splits a recorded call/result pair carries the counterpart by default and discloses it; the same
-  selection with `--strict-selection` is refused by name before anything is installed.
+  selection with `--strict-selection` is refused by name before anything is installed. **Closure
+  eligibility:** a counterpart is carried only where the route can represent it **without changing the
+  disposition the source gave it** — a counterpart the source's line leaves *inactive* is never activated to
+  satisfy closure; where the route cannot carry it truthfully the **whole selection is refused by name**
+  (the pair and both ordinals), by default as well as under `--strict-selection`.
 - **D4 — The default path is untouched.** A run without a selection flag is byte-identical to the same run
   before the change, proven by a before/after probe over the existing fixtures. The frozen unflagged
   behaviour is **preserved**, not promoted into a requirement of the new path.
@@ -57,7 +61,9 @@ selection". The dispositions the seam carries are named in D6.
   before any install.
 - **D6 — No writer, and no read-back verifier, infers a cross-record fact from the reduced stream.** The seam
   carries, once, the dispositions a writer needs: (a) call↔result identity, including ID-less; (b) operation
-  lifecycle finality — completed / failed / in-progress / interrupted; (c) omitted-by-selection vs
+  lifecycle finality — completed / failed / in-progress / interrupted / **unknown-undischarged** (the read
+  cannot establish an outcome; kept distinct from *omitted by selection*, and never published as
+  `completed`); (c) omitted-by-selection vs
   absent-in-source; (d) the calls **and** results a compaction boundary accounts for; (e) retained-vs-already-
   written ancestry; (f) the record's own membership on the source's active line, answered before the cut — a
   selection that removes the record the source's line ended at must not move the line. Negative cases from
