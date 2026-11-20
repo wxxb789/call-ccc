@@ -393,12 +393,15 @@ type openCodeConverter struct {
 	reservedSlots map[callOccurrence]bool
 	// plannedUnwrittenEvents names the planned call occurrences whose read-wide pairing holds a recorded
 	// event the document will not state as a written outcome: a progress event, or a result whose text or
-	// status the part refuses (openCodeResultWritable). It is the walk's own marking of `recordedEvents`
-	// resolved before the walk from the read's own pairing (reservePlannedEvents), so a call whose event
-	// stands *after* an id-less result is read exactly as one whose event stands before it: the summary
-	// pass refuses the archive's summary as that event's view on either path, and the inference must not
-	// count the call answered by a summary the pass is going to refuse. The map is empty on a run without
-	// a selection, which keeps the walk's long-standing marking (callNamedByResult): goal 0009's D4.
+	// status the part refuses (openCodeResultWritable), wherever the event's record sits -- the read's own
+	// pairing answers the summary question wherever it sits -- or an event whose record the plan does not
+	// publish (off the read's line, a subagent's, a compaction boundary's), because the walk writes no
+	// evidence from it. It is the walk's own marking of `recordedEvents` resolved before the walk from the
+	// read's own pairing (reservePlannedEvents), so a call whose event stands *after* an id-less result is
+	// read exactly as one whose event stands before it: the summary pass refuses the archive's summary as
+	// that event's view on either path, and the inference must not count the call answered by a summary
+	// the pass is going to refuse. The map is empty on a run without a selection, which keeps the walk's
+	// long-standing marking (callNamedByResult): goal 0009's D4.
 	plannedUnwrittenEvents map[callOccurrence]bool
 	// usedCallIDs is the namespace a minted id must stay out of: every tool-use id the read recorded
 	// (each call's and each result's, reserved by reserveRecordedCallIDs before the plan mints anything)
@@ -454,6 +457,13 @@ type openCodeConverter struct {
 	lossGeneratedAgent              int
 	lossCompactionReason            int
 	lossCompletion                  int
+	// lossCompactionCalls counts the recorded tool calls a compaction record carries on a document a
+	// selection produced: the plan installs no evidence from such a record (the writer publishes it as
+	// the boundary alone, writeCompaction), so a call recorded there -- the inherited Crush reader can
+	// append one to the same record it marks as a boundary (internal/parser/crush.go) -- is a call no
+	// written message states, and nothing else in the report names it. Counted rather than dropped
+	// unnamed (round 20's second finding).
+	lossCompactionCalls int
 	// lossCompactionEvidence counts the recorded tool results a compaction record carries on a document a
 	// selection produced: the plan installs no evidence from such a record (the writer publishes it as the
 	// boundary alone, writeCompaction), and nothing else names those results -- the reservation pass skips
@@ -669,10 +679,19 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			// the recorded pair travelled (round 12's third finding). The call such a result answers is
 			// then unanswered on the written path -- counted unpaired_tool_calls where its own record is
 			// written, or omitted with the record the line leaves off -- rather than answered by an
-			// outcome no message holds. The record's own recorded results are counted here all the same:
-			// no written message states them, and a report that left them unnamed would drop evidence the
-			// source recorded under a category nothing else can hold (round 15's finding 4).
+			// outcome no message holds. The record's own recorded call units and results are counted here
+			// all the same: no written message states them, and a report that left them unnamed would
+			// drop evidence the source recorded under a category nothing else can hold (round 15's
+			// finding 4 for the results; round 20's second finding for the calls -- the inherited Crush
+			// reader can append a `tool_call` to the same record it marks as a boundary, and a call with
+			// no separate result would otherwise disappear unnamed). The call count reads the plan's own
+			// unit rule (distinctCalls): a record's calls sharing a non-empty id are one invocation the
+			// reader projected into several rows, and none of these rows is written at all, so nothing
+			// here is a coalesced projection of a written unit.
 			c.lossCompactionEvidence += len(message.ToolResults)
+			folded := 0
+			c.lossCompactionCalls += len(distinctCalls(message,
+				func(int, ToolCall) struct{} { return struct{}{} }, &folded))
 			// A run without a selection keeps the plan it has always made (goal 0009's D4).
 			continue
 		}
@@ -918,24 +937,33 @@ func (c *openCodeConverter) reserveResultSlots(inactive []bool) {
 }
 
 // reservePlannedEvents answers, per planned call occurrence, whether the read's own pairing holds a
-// recorded event for it that the document will not state as a written outcome: a progress event, or a
-// result whose text or status the part refuses (openCodeResultWritable). The answer is the walk's own
-// marking of `recordedEvents` read from the read-wide pairing before the walk, so the summary pass and
-// the id-less inference agree about a call whose event the walk has not reached yet: the marking the
+// recorded event for it that the document will not state as a written outcome. The answer is the walk's
+// own marking of `recordedEvents` read from the read-wide pairing before the walk, so the summary pass
+// and the id-less inference agree about a call whose event the walk has not reached yet: the marking the
 // walk used to make when it happened to reach the event let a call whose event stands after an id-less
 // result look answered by its summary, and the inference then bound the id-less result to another call
 // although the summary pass went on to refuse that summary -- the call had no written outcome at all and
 // the result the source never wrote beside either call was written as one of their outcomes (round 16's
 // second finding).
 //
-// The answer is asked only where the event's record stands on the plan's own line: the walk skips an
-// off-line record, so its event is no evidence the written document states, and the summary the read
-// stored on the call stays the call's outcome evidence there. An event that records no id of its own is
-// no marking either way: an id-less event is paired by the writer's own inference (pairedCallEntry), a
-// link the source never made, and an inferred link may not suppress the call's own recorded summary
-// evidence (round 11's fourth finding) -- the read-wide pairing holds id-bearing results alone, which
-// is that rule's own answer. A run without a selection keeps the walk's long-standing marking
-// (callNamedByResult), which is goal 0009's D4.
+// An event is "not the outcome the document states" in two shapes, and the question is the read's own
+// pairing's in both. (1) The part cannot state it (openCodeResultWritable: a progress word, a text the
+// output field cannot carry), wherever its record sits: the summary question is answered wherever the
+// event's record sits (undischargedCalls's summaryDischarges asks the same pairing the same way, and the
+// family writers' callHasPairedRecordedEvent does too), so an event the plan omits -- a subagent record's,
+// a record the read's line leaves off -- still makes the archive's summary that event's view. Omitting the
+// event must not turn the summary into outcome evidence of its own (round 20's first finding: an
+// id-recorded progress event on a sidechain record left the stored summary publishable as a `completed`
+// outcome). (2) Its record is one the plan does not publish (off the read's line, a subagent's, a
+// compaction boundary's): the walk writes no evidence from it, so the document states no outcome through
+// the event and the summary is the call's only remaining evidence only where the pairing holds no event
+// at all. A published writable event is no marking either way: the walk writes it as the slot's outcome
+// (displacing an event it refuses), so the document does state an outcome for the call. An event that
+// records no id of its own is no marking either way: an id-less event is paired by the writer's own
+// inference (pairedCallEntry), a link the source never made, and an inferred link may not suppress the
+// call's own recorded summary evidence (round 11's fourth finding) -- the read-wide pairing holds
+// id-bearing results alone, which is that rule's own answer. A run without a selection keeps the walk's
+// long-standing marking (callNamedByResult), which is goal 0009's D4.
 func (c *openCodeConverter) reservePlannedEvents(inactive []bool) {
 	c.plannedUnwrittenEvents = map[callOccurrence]bool{}
 	if !c.conv.selectionReduced() {
@@ -946,21 +974,21 @@ func (c *openCodeConverter) reservePlannedEvents(inactive []bool) {
 	}
 	for place, call := range c.pairings {
 		message := c.conv.Messages[place.message]
-		if inactive[place.message] || message.IsSidechain || message.IsCompactBoundary {
-			continue
-		}
-		if openCodeResultWritable(message.ToolResults[place.result]) {
+		published := !inactive[place.message] && !message.IsSidechain && !message.IsCompactBoundary
+		if published && openCodeResultWritable(message.ToolResults[place.result]) {
 			// An event the part can state as a written outcome is no marking: the walk writes it as the
 			// slot's outcome (displacing an event it refuses), so the document does state an outcome for
 			// the call. A writable event and a refused one for the same call both mark nothing and write
 			// the slot's outcome: the refused event is the one the writer counts and yields.
 			continue
 		}
-		// openCodeResultWritable's refusal is the whole answer about the event, for the reason the
+		// openCodeResultWritable's refusal is the whole answer about a refused event, for the reason the
 		// reservation's own comment states: every word resultStatesAnOutcome reads as progress is one
 		// the tool states cannot spell, and a terminal result the part refuses is one the walk stores in
 		// the slot and the summary pass skips the call over -- a recorded event that suppresses the
-		// summary whichever way it stands.
+		// summary whichever way it stands. The same marking covers an event the plan does not publish:
+		// the walk writes no evidence from its record, so the written document states no outcome through
+		// it either.
 		c.plannedUnwrittenEvents[call] = true
 	}
 }
@@ -2276,6 +2304,19 @@ func (c *openCodeConverter) losses() []Loss {
 				"place, and the file does not state the id the source recorded for it",
 		})
 		losses = append(losses, Loss{
+			Category:    "compaction_record_tool_calls",
+			Disposition: DispositionOmitted,
+			Count:       c.lossCompactionCalls,
+			Detail: "these recorded calls sit on a compaction record, which this conversion publishes " +
+				"as the boundary alone (writeCompaction): no written message states them, and the plan " +
+				"installs no evidence from that record. A boundary record can carry a call of its own " +
+				"(the inherited Crush reader appends a `tool_call` to the record it marks as a summary), " +
+				"and leaving it unnamed would drop a recorded invocation from the report; where the " +
+				"record's own result answers it, that result is named beside it " +
+				"(`compaction_record_tool_results`), and a call the source never answered is counted " +
+				"undischarged by the selection's own report",
+		})
+		losses = append(losses, Loss{
 			Category:    "compaction_record_tool_results",
 			Disposition: DispositionOmitted,
 			Count:       c.lossCompactionEvidence,
@@ -2283,7 +2324,8 @@ func (c *openCodeConverter) losses() []Loss {
 				"as the boundary alone (writeCompaction): no written message states them, and the plan " +
 				"installs no evidence from that record. A later recorded outcome for the same call is " +
 				"the outcome its part carries; these are the boundary record's own events, named here " +
-				"rather than dropped",
+				"rather than dropped, and the record's own calls are named beside them " +
+				"(`compaction_record_tool_calls`)",
 		})
 	}
 	return losses

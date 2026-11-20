@@ -105,6 +105,34 @@ Nothing else of the read is in the file: ordinals 0, 1 and 4–10 (nine records,
 own id and path (§1's block), so the selection's target is not merely well-formed — it is one Codex's own
 `thread/resume` loads.
 
+**The negative control beside that load (round 20's third finding).** A load verdict is evidence only if
+the loader can *refuse*. The control is one executed run with both arms on the same installed file: the
+conversion above (the `--select 2` window, a throw-away driver through the internal `Continue` and
+`VerifyCodexLoad` APIs), its load reported `verified`, then the installed rollout rewritten with its
+recorded session identity replaced by another uuid and the load asked again — the harness's own loader
+refuses, and the refusal is the harness's own sentence, not this build's:
+
+```console
+$ go test -tags fts5 -count=1 -v -run '^TestZZNativeLoadNegativeControl$' ./internal/ccc/
+POSITIVE state=verified detail=the harness's loader answered with this session's own id and path; opening a session
+  makes the harness record its own settings in it (measured: one thread_settings_applied record), and no session
+  other than the one it opened is touched
+NEGATIVE state=not-verified detail=the target harness could not load the installed session: failed to read thread:
+  thread-store internal error: session metadata …/sessions/2026/05/08/rollout-2026-05-08T08-00-04-01a1f771-9016-7068-a3c6-5e9d2a8363a5.jsonl
+  belongs to thread 00000000-0000-4000-8000-000000000000, expected 01a1f771-9016-7068-a3c6-5e9d2a8363a5
+--- PASS: TestZZNativeLoadNegativeControl (1.04s)
+exit=0
+```
+
+(The driver was `internal/ccc/zz_native_control_test.go`, a throw-away file: `Continue` with `Selection:
+"2"`, `Verify: "load"` into a scratch home, `VerifyCodexLoad` for the positive, then `bytes.ReplaceAll`
+of the session id in the installed file — asserted to have changed the bytes — and `VerifyCodexLoad`
+again for the negative. It was deleted before the gate; the transcript is the run's own, elided only in
+the middle of the loader's sentence.) A first control attempt is recorded here too because it did *not*
+discriminate: the same file truncated mid-record still loaded `verified` (the loader skips an unterminated
+trailing line), so the identity, not the byte count, is what this control tampers with — the same
+distinction goal 0009's `read_coverage` boundary draws for its own read.
+
 ## 2. The report's classes, on a window that holds the awkward shapes
 
 `--select 5-10 --dry-run --json` (the window holds the undischarged call, the compaction summary, the cap
@@ -3859,3 +3887,306 @@ exit=0
 the throw-away probe removed (the detached D4-probe worktree lives outside this checkout); a further run,
 taken after this section's edits were folded in, printed the same steps, counts and verdict (`selftest
 Ran 444 tests in 8.442s`), so the tree this record describes is the tree the gate passed twice.)
+
+### The twentieth review round's findings (`b7e263f` + working tree), fixed and re-measured
+
+The review of `9242e49..b7e263f` returned six findings (one P1, five P2) and the operator's addendum
+scoped the round: fix the six in existing code, sweep the manifest in place, and answer the
+"one writer per round" class writer by writer instead of growing the surface. All six are fixed; the
+between-writers answer is the B1-B3 table below, the manifest's sweep is its own section, and the tree
+after every restore is the one the gate at the end measured.
+
+1. **P1 — an omitted progress event left the OpenCode summary publishable as the call's outcome
+   (S2-summary-paired), fixed.** `reservePlannedEvents` asked its question only where the event's record
+   stood on the plan's own line, so an id-recorded `running` event on a sidechain record marked nothing:
+   the plan omitted the event and the walk counted the record as a subagent's, and the summary pass then
+   wrote the archive's stored summary as the call's `completed` outcome — although the read's own pairing
+   names that event for the call occurrence (`undischargedCalls`'s `summaryDischarges` asks the same
+   pairing the same way, and the four family writers' `callHasPairedRecordedEvent` has no position filter)
+   and the selection's own report counts the call undischarged. The marking is now the read-wide
+   pairing's answer wherever the event's record sits, and the two questions are separate: `reservedSlots`
+   (the id-less inference's reservation) stays scoped to what the plan writes, while
+   `plannedUnwrittenEvents` (the summary question and the inference's eligibility) covers every paired
+   event the written document does not state as an outcome — refused anywhere, or carried by a record the
+   plan does not publish. The case's new sidechain arm pins the selection's undischarged count, the
+   absence of the stored summary on all five routes, `unpaired_tool_calls` and the subagent's own count;
+   `M1` fails it.
+2. **P2 — the reduced compaction plan dropped the record's own calls unnamed (S7-boundary-evidence),
+   fixed.** The plan's reduced branch counted the boundary record's results only, so a `tool_call` on a
+   record the writer publishes as the boundary alone — the shape the inherited Crush reader can return,
+   which keeps `tool_call` parts on the record it marks `is_summary_message`, `internal/parser/crush.go:535`
+   and `:561` — disappeared from the report entirely. The branch now counts the record's call *units*
+   (`distinctCalls`' own rule: a record's calls sharing a non-empty id are one projected invocation),
+   reported under their own row, `compaction_record_tool_calls`, beside the results row; the row is the
+   reduction's own (the unflagged plan installs the record's evidence as it always has, and the
+   unflagged report carries neither row — asserted in the same case). The case's call-only arm pins the
+   row, the absent call, the boundary's own summary, the selection's `calls_undischarged` at the record's
+   ordinal and the absence of `unpaired_tool_*` counts; `M2` fails it.
+3. **P2 — D1 proved no dialogue and no negative native control, fixed.** The five-route exact-output
+   case now carries a window of ordinary dialogue, the follow-up question and the final answer, and its
+   OpenCode arm reads the user message's own `text` member (an oracle that read only assistant parts
+   could not tell whether the user's words crossed at all); `M3` (the Codex writer's reduced assistant
+   text dropped) and `M4` (the user-text read removed) each fail the case at that window. The native
+   half is §1's new **negative control**: the same installed `--select 2` rollout with its recorded
+   session identity replaced by another uuid is refused by Codex's own loader (`not-verified`, the
+   harness's own sentence), while the untouched file loads `verified` — both arms executed in one run
+   (transcript in §1), and the control recorded there deliberately tampers the identity rather than the
+   bytes because a mid-record truncation was measured to still load.
+4. **P2 — the no-reservation companion was named only in prose, fixed.** `S7-reserved-slot` named
+   `TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite` in its `artifact` cell while the checker
+   schedules the `test` cell alone, so deleting the companion would have left the required citation
+   green. The companion is registered as its own row, `S7-reservation-scope` (the one-test-per-row form
+   is the checker's; `M5a` — the companion renamed — fails the citations step naming that row).
+5. **P2 — the slot-writability row over-claimed its case's arms, fixed.** `S7-slot-writability`'s prose
+   claimed the empty-text, refused-status and unflagged arms its cited case never reaches. The row's
+   prose now says which arms its case asserts, and the sibling test that pins the others
+   (`TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`) is registered as its own row,
+   `S7-slot-yield` (`M5b` — that test renamed — fails the citations step naming both rows that cite it).
+6. **P2 — the D4 row's witness failed a bystander, fixed.** `D4-omitted-later-result`'s recorded witness
+   was round 19's `M1`, under which the cited case printed nothing (an unreduced read cannot reach that
+   refusal). The row now records its own executed witness, `M6`: the writer's whitespace-only result
+   guard removed, under which `TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath` itself fails at
+   its own count assertion.
+
+#### The class: B1-B3, writer by writer
+
+**B1 — classification before inference.** The progress-vs-outcome classification runs before any owner
+is resolved in every writer, and the classification is asserted on all five routes by the same case
+(`TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress`'s two-id-less-call arm: two eligible
+id-less occurrences make the event ownerless, and the event is still counted as progress,
+`nonterminal_tool_events` 1, not as `unpaired_tool_results`).
+
+| writer | site | holds | evidence |
+|---|---|---|---|
+| Codex | `internal/ccc/codex_target.go:977` (the first arm of the result switch) | yes | round 19's `M3a` fails the case at `codex: nonterminal_tool_events = 0, want the one id-less progress event …` |
+| Claude | `internal/ccc/claude_target.go:925` | yes | round 19's `M3b`, the same lines for `claude` |
+| Pi / OMP | `internal/ccc/pi_target.go:1329` (the family's shared writer) | yes | round 19's `M3c`, the same lines for `pi` and `omp` |
+| OpenCode | `internal/ccc/opencode_target.go:732` (the walk's result loop, before the id/owner resolution) | yes | the same case's OpenCode arms: `nonterminal_tool_events` 1, `unpaired_tool_results` 0 |
+
+**B2 — summary suppression separate from slot reservation.** Each writer's summary question is the
+read's own pairing's alone, and its omission of an event does not turn the stored summary into outcome
+evidence; the reservation, where the format holds one outcome per call, is a different question with
+its own scope.
+
+| writer | the summary question | the reservation | holds | evidence |
+|---|---|---|---|---|
+| Codex | `callHasPairedRecordedEvent(b.pairings, place)`, `internal/ccc/codex_target.go:670` — the read-wide pairing, no position filter | none (a second output is counted `repeated_tool_results`) | yes | the new sidechain arm's family loop: the stored summary is absent from the Codex document although the only event stands on a sidechain record |
+| Claude | `internal/ccc/claude_target.go:666` | none | yes | the same loop |
+| Pi / OMP | `internal/ccc/pi_target.go:1105` | none | yes | the same loop |
+| OpenCode | `plannedUnwrittenEvents`, `internal/ccc/opencode_target.go:975`–`:993` — every paired event the document does not state | `reservedSlots`, `reserveResultSlots`: a *published, writable* paired result only | yes | `M1` (the question narrowed back to the plan's line) fails the sidechain arm; `TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite` (`S7-reservation-scope`) pins the reservation's scope |
+
+**B3 — a reduced plan that publishes a compaction boundary as the boundary alone counts the calls it
+omits.** The OpenCode plan (the only writer with a plan pass, and the only branch the reduction owns)
+now does; the three family writers publish a boundary record as the boundary alone on *both* paths, and
+their omission of the record's call units is the writers' long-standing both-path answer rather than
+something the reduction introduced:
+
+| writer | site | holds | evidence |
+|---|---|---|---|
+| OpenCode | `internal/ccc/opencode_target.go:672`–`:695` (the reduced plan branch) and the report row at `:2306` | yes (fixed) | `M2` fails the call-only arm; `TestSelectionPlansNoEvidenceFromACompactionRecord`'s call-only arm pins the row and the absent call |
+| Codex | `internal/ccc/codex_target.go:504` (the boundary branch writes `compacted` and returns) | differs — named | probed 2026-11-20 (throw-away `zz_b3_probe_test.go`): a reduced document whose boundary record carries one `tool_call` and no result converts with no call row at all (`data` holds the `compacted` record only; no non-zero loss names the call), and the unflagged run is the same; the report is D4-frozen on that path, so a reduced-only counter would name the same omission on one path and not the other inside one writer |
+| Claude | `internal/ccc/claude_target.go:399` | differs — named | the same probe: the boundary pair only, no call row, both paths |
+| Pi / OMP | `internal/ccc/pi_target.go:739` | differs — named | the same probe: the `compaction` entry only, no call row, both paths |
+
+The probe's own output, verbatim (`go test -tags fts5 -count=1 -v -run '^TestZZB3Probe$' ./internal/ccc/`,
+the throw-away file deleted after the run; the reduced and unflagged arms are the same for the three
+family writers, so the elision is only of repeated shape):
+
+```console
+=== codex reduced
+data: {"timestamp":"2026-05-08T08:00:00Z","type":"session_meta",…}
+        …{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"the question"}]}}
+        …{"type":"compacted","payload":{"message":"the history before the boundary"}}
+  loss provider_binding count=1
+  loss pre_compaction_history count=1
+--- codex unflagged
+  loss provider_binding count=1
+  loss pre_compaction_history count=1
+=== claude reduced
+data: …"subtype":"compact_boundary"…{"isCompactSummary":true,…"content":"the history before the boundary"}…
+  loss pre_compaction_history count=1
+=== claude unflagged
+  loss pre_compaction_history count=1
+=== pi reduced / omp reduced / pi unflagged / omp unflagged
+data: …"type":"compaction",…"summary":"the history before the boundary"…
+  loss pre_compaction_history count=1 (plus, on omp, target_model_binding and title_slot_written)
+=== opencode reduced
+data: …{"type":"user","text":"the question",…},{"type":"compaction","summary":"the history before the boundary",…}
+  loss compaction_record_tool_calls count=1
+--- opencode unflagged
+  (no compaction_record_* row)
+```
+
+#### The round's mutations, each one executed
+
+One line (or one block) changed per rule, the test run immediately, the failure recorded, the line
+restored. The line numbers are the run's own; the tree after every restore is the revision the gate
+below measured.
+
+| # | rule | file | the mutation | command | observed failure |
+|---|---|---|---|---|---|
+| M1 | this round's first finding (the summary question's read-wide scope) | `internal/ccc/opencode_target.go` | the marking narrowed back to the plan's line (`published := …` → `if inactive[place.message] \|\| message.IsSidechain \|\| message.IsCompactBoundary { continue }`) | `go test -tags fts5 -count=1 -run '^TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress$' ./internal/ccc/` | `selection_test.go:5778: the selected document states tool evidence ([… result toolu_summary_progress the call's own recorded outcome]): the read's own event for the call is progress and its record is not carried, so the summary is that event's view …`; `:5789: sidechain-event unpaired_tool_calls = 0, want 1` |
+| M2 | this round's second finding (the omitted call units) | `internal/ccc/opencode_target.go` | the increment replaced by a no-op (`c.lossCompactionCalls += len(distinctCalls(…))` → `c.lossCompactionCalls -= c.lossCompactionCalls`) | `go test -tags fts5 -count=1 -run '^TestSelectionPlansNoEvidenceFromACompactionRecord$' ./internal/ccc/` | `selection_test.go:2476: call-only boundary compaction_record_tool_calls = 0, want 1` |
+| M3 | this round's third finding (the dialogue half of the oracle) | `internal/ccc/codex_target.go` | the reduced assistant text dropped (`case text != "":` → `case text != "" && !b.selectionReduced:`) | `go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/` | `selection_test.go:956: codex: selecting "9-10" wrote the evidence` — `got: ["text And the cap?"]` `want: ["text And the cap?" "text The cap is maxBackoffSeconds = 30, in internal/retry/config.go."]` |
+| M4 | the same finding (the oracle's own user-text read) | `internal/ccc/selection_test.go` | the OpenCode arm's user-`text` read disabled (`if message.Text != "" {` → `if false && message.Text != "" {`) | same case as `M3` | `selection_test.go:956: opencode: selecting "9-10" wrote the evidence` — `got: ["text The cap is maxBackoffSeconds = 30, in internal/retry/config.go."]`, the user's words missing |
+| M5a | this round's fourth finding (the companion registration) | `internal/ccc/selection_test.go` | the companion renamed (`func TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite` → `…WriteMUTATED`) | `python3 scripts/obligation-citations.py` | `docs/evidence/0009-citations.tsv:413: rule S7-reservation-scope: test TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite is not declared by any _test.go in ./internal/ccc`; `citations: FAIL — 1 violation(s)` |
+| M5b | the same finding (the sibling registration) | `internal/ccc/selection_test.go` | the sibling renamed (`func TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult` → `…ResultMUTATED`) | `python3 scripts/obligation-citations.py` | `0009-citations.tsv:408: rule S7-slot-instant: … is not declared …`; `:414: rule S7-slot-yield: …`; `citations: FAIL — 2 violation(s)` |
+| M6 | this round's sixth finding (the D4 row's own witness) | `internal/ccc/pi_target.go` | the writer's whitespace-only result guard's count removed (`b.lossWhitespaceRes++` dropped) | `go test -tags fts5 -count=1 -run '^TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath$' ./internal/ccc/` | `continue_pi_test.go:2512: pi: whitespace_only_tool_results = 0, want the one omitted later result: the writer cannot state a text the reader would read back as no text` |
+
+```console
+$ # M1: the summary question narrowed back to the plan's line (this round's first finding)
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress$' ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5778: the selected document states tool evidence ([call toolu_summary_progress Bash
+    {"command":"a"} result toolu_summary_progress the call's own recorded outcome]): the read's own event
+    for the call is progress and its record is not carried, so the summary is that event's view rather
+    than an outcome the document may state
+    selection_test.go:5789: sidechain-event unpaired_tool_calls = 0, want 1
+exit=1
+$ # M2: the omitted call units not counted (this round's second finding)
+$ go test -tags fts5 -count=1 -run '^TestSelectionPlansNoEvidenceFromACompactionRecord$' ./internal/ccc/
+--- FAIL: TestSelectionPlansNoEvidenceFromACompactionRecord (0.00s)
+    selection_test.go:2476: call-only boundary compaction_record_tool_calls = 0, want 1
+exit=1
+$ # M3: the reduced assistant text dropped (this round's third finding, the dialogue half)
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    selection_test.go:956: codex: selecting "9-10" wrote the evidence
+         got: ["text And the cap?"]
+        want: ["text And the cap?" "text The cap is maxBackoffSeconds = 30, in internal/retry/config.go."]
+exit=1
+$ # M4: the oracle's own user-text read removed (the same finding's oracle half)
+$ go test -tags fts5 -count=1 -run '^TestSelectionWritesExactlyTheSelectedOrdinals$' ./internal/ccc/
+--- FAIL: TestSelectionWritesExactlyTheSelectedOrdinals (0.00s)
+    selection_test.go:956: opencode: selecting "9-10" wrote the evidence
+         got: ["text The cap is maxBackoffSeconds = 30, in internal/retry/config.go."]
+        want: ["text And the cap?" "text The cap is maxBackoffSeconds = 30, in internal/retry/config.go."]
+exit=1
+$ # M5a: the companion test renamed (this round's fourth finding)
+$ python3 scripts/obligation-citations.py
+docs/evidence/0009-citations.tsv: 0 row(s) verified
+  docs/evidence/0009-citations.tsv:413: rule S7-reservation-scope: test
+  TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite is not declared by any _test.go in ./internal/ccc
+citations: FAIL — 1 violation(s)
+exit=1
+$ # M5b: the sibling test renamed (the same finding's second half)
+$ python3 scripts/obligation-citations.py
+  docs/evidence/0009-citations.tsv:408: rule S7-slot-instant: test
+  TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult is not declared by any _test.go in ./internal/ccc
+  docs/evidence/0009-citations.tsv:414: rule S7-slot-yield: test
+  TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult is not declared by any _test.go in ./internal/ccc
+citations: FAIL — 2 violation(s)
+exit=1
+$ # M6: the whitespace-only result's own count removed (this round's sixth finding)
+$ go test -tags fts5 -count=1 -run '^TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath$' ./internal/ccc/
+--- FAIL: TestContinueKeepsTheOmittedLaterResultOnTheUnflaggedPath (0.32s)
+    continue_pi_test.go:2512: pi: whitespace_only_tool_results = 0, want the one omitted later result: the
+    writer cannot state a text the reader would read back as no text
+exit=1
+```
+
+(The run's own output, laid out to one screen; `…` elides a line's tail inside a message, and the
+generated identities differ per run. The checker runs' row numbers are the manifest's at the time of the
+run; the [M5b] run's first violation line is elided to its head, the second shown whole.)
+
+#### The matrix sweep (`0009-citations.tsv`, 71 → 73 rows)
+
+The operator's sweep rules, applied to every row in place (no rule statement, row, test or disclosed
+limit deleted):
+
+- **every test a row's claim needs is registered in some row's `test` cell.** A prose scan of all 71
+  rows' `artifact` cells for `Test…` names found exactly one companion named only in prose
+  (`TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite`, in `S7-reserved-slot`) — fixed by its own
+  row, `S7-reservation-scope`, and the *other* companion this round's findings named
+  (`TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult`, the arms of `S7-slot-writability`
+  the cited case does not reach) likewise by `S7-slot-yield`. Rows that cite a test jointly keep their
+  cells; a companion another increment's record registers (`TestCodexRoundTripReportNamesDifferencesWithoutTheirText`,
+  goal 0002's) is named as that record's, not this manifest's.
+- **a row's prose claims only arms its `test` cell's tests assert.** The read-only sweep returned 6
+  over-claims and 3 ambiguous attributions; all 9 are fixed by restating the row to what its case
+  asserts and pointing the other half at the row that registers it: `D5-syntax` (the duplicate's
+  no-read half → `D5-space`), `D5-space` (the CLI half → `D5-duplicate`), `S2-ancestry` (the unflagged
+  arm is Codex's; the trees' → `S2-default`), `S2-owning-call` (the owner-less comparison is goal 0002's
+  own case and §4's probe), `S7-summary-outcome` (the before-the-result arms → `S7-writers` and
+  `S7-written-outcomes`), `S7-reserved-slot` (the refused-status arm → `S7-slot-yield`; the plan-writes
+  conditions → `S7-reservation-scope`), `S7-slot-writability` (the empty-text/refused-status/unflagged
+  arms → `S7-slot-yield`), `S2-idless-path` (the entry id is asserted on Claude and Pi; OMP runs the
+  shared writer), `S2-owner-merged-entry` (the broken chain and the reparenting control →
+  `S2-owner-ancestry`).
+- **every row's recorded mutation witness fails that row's own cited test.** A read-only audit of all 71
+  rows against every mutation recorded in this document (rounds 1–19, tables and transcripts) found 70
+  rows whose cited test is shown failing under a named mutation and one that was not:
+  `D4-omitted-later-result` (round 19's `M1` recorded the case printing nothing) — now `M6` above, with
+  the case itself failing. Four mutations recorded for a row's *neighbour* also show the row's test not
+  failing (R14 M2 for `D2`, R8 M2/M3 for `S6-identity`/`S6-inactive`, R17 M1 for `S6-file-excluded*`); each
+  of those rows is witnessed by another recorded mutation that does fail it.
+
+#### The D4 probe, re-run as this round's before/after
+
+The default path is forbidden to move (goal 0009's `Bounds`), and this round's code change does sit in
+a function both paths run (`planToolEvidence`), so §4's retained probe was re-run as a base/head pair
+exactly as round 19 ran it: `docs/evidence/0009-d4-probe.txt` copied in as a throw-away
+`zz_d4_probe_test.go` into a detached worktree of `b7e263f` and into this tree, each run twice with
+`CCC_D4_PROBE_OUT=…`, outputs diffed:
+
+```console
+$ git worktree add --detach /tmp/ccc-d4-r20 b7e263f
+$ cp docs/evidence/0009-d4-probe.txt /tmp/ccc-d4-r20/internal/ccc/zz_d4_probe_test.go
+$ cp docs/evidence/0009-d4-probe.txt internal/ccc/zz_d4_probe_test.go
+$ (cd /tmp/ccc-d4-r20 && CCC_D4_PROBE_OUT=/tmp/ccc-d4-r20-out/base1.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/)
+--- PASS: TestZZD4Probe (6.42s)
+$ CCC_D4_PROBE_OUT=/tmp/ccc-d4-r20-out/head1.txt go test -tags fts5 -count=1 -run TestZZD4Probe ./internal/ccc/
+--- PASS: TestZZD4Probe (…)
+$ wc -l /tmp/ccc-d4-r20-out/base1.txt /tmp/ccc-d4-r20-out/head1.txt
+    1312 /tmp/ccc-d4-r20-out/base1.txt
+    1312 /tmp/ccc-d4-r20-out/head1.txt
+$ cmp /tmp/ccc-d4-r20-out/base1.txt /tmp/ccc-d4-r20-out/head1.txt && echo "base1==head1: identical"
+base1==head1: identical
+$ # the within-tree second runs, both byte-identical to their first
+$ cmp /tmp/ccc-d4-r20-out/base1.txt /tmp/ccc-d4-r20-out/base2.txt && echo "base1==base2"
+base1==base2
+$ cmp /tmp/ccc-d4-r20-out/head1.txt /tmp/ccc-d4-r20-out/head2.txt && echo "head1==head2"
+head1==head2
+$ grep PROBE-CONTROL /tmp/ccc-d4-r20-out/head1.log
+PROBE-CONTROL recorded-instant-change moves-digest=true
+PROBE-CONTROL recorded-millisecond-change moves-digest=true
+PROBE-CONTROL recorded-call-id-change moves-digest=true
+PROBE-CONTROL recorded-uuid-change moves-digest=true
+PROBE-CONTROL minted-identity-change moves-digest=false
+```
+
+(The probe test was removed from both trees and the worktree deleted after the runs; the controls'
+`moves-digest=true` arms are what says the comparison can see a recorded value change, and the head
+tree's controls are byte-identical to the base's, so this round's edits are selection-gated.)
+
+#### The round's verification: tests and the gate
+
+473+2 → **475** top-level `Test…` functions in the two packages' test files, unchanged by this round:
+every addition is an arm inside an existing function (the sidechain arm and the family-route loop in
+`TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress`, the call-only arm in
+`TestSelectionPlansNoEvidenceFromACompactionRecord`, the dialogue window and the OpenCode user-text read
+in `TestSelectionWritesExactlyTheSelectedOrdinals`), and the manifest grew 71 → **73** rows
+(`S7-reservation-scope` and `S7-slot-yield`) with the stage's header note; `AGENTS.md` names the new
+`compaction_record_tool_calls` row in the selection paragraph's counting sentence (the paragraph's other
+statements about this round's surface already held: the summary question is stated there as asked
+"wherever the event's record sits"). The gate below is this round's own run.
+
+```console
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: <checkout> (redacted: this checkout's own root)
+gate: go=<go toolchain> (redacted) targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 444 tests in 8.634s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5728 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes ver…
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 73 row(s) verified
+  PASS     secrets  no leaks found in 197 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
+(The transcript is the round's own run, taken with every code, test and gate-step change in the tree and
+both throw-away files removed; a further run, taken after this section's edits were folded in, printed
+the same steps, counts and verdict, so the tree this record describes is the tree the gate passed twice.)

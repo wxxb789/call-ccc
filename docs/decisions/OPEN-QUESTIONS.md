@@ -3487,3 +3487,45 @@ supersede it with a newer one and say which it supersedes.
   (`docs/evidence/0009-selective-context.md`, seventeenth round, `M2a`–`M2c`).
 - **Settled by:** an operator decision between "writability governs every document" and "the default path
   keeps its long-standing repeat count, the rule answering a selection's document".
+
+## Q-0009-19 — Companion tests in the citations manifest, and the round's "do not add rows" scope
+
+- **Status:** open (default taken: two rows were added)
+- **Question:** the round-20 review required two companion tests to be *enforced* by the required
+  `citations` step (`TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite` for the reservation's
+  no-reservation conditions, `TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult` for the
+  writability rule's empty-text/refused-status/unflagged arms), while the same dispatched scope said the
+  manifest must be edited in place with no new rows. The checker schedules one test name per row
+  (`scripts/obligation-citations.py`'s `test` cell; that file is under this round's hard freeze), so a
+  row's cell cannot hold a companion: the only in-place alternatives are a swapped cell — which leaves the
+  previously cited test unenforced — or the rows.
+- **Default taken:** the two rows (`S7-reservation-scope`, `S7-slot-yield`) were added, 71 → 73, because
+  the findings' own instruction ("Give the companion obligation its own row"; "separately cite the test")
+  and the platform's rule (a test that pins a row's claim must fail the citations step when it is deleted)
+  cannot both hold with the one-test-per-row checker otherwise; `M5a`/`M5b` record the executed proof that
+  renaming either test now fails the step.
+- **Reversal:** delete the two rows and return the companion names to the other rows' `artifact` prose
+  (the state the round-19 manifest was in), or teach the checker to accept several test names per cell (an
+  owner-facing change to what "passing" means, outside an increment).
+- **Settled by:** the owner's decision whether the manifest's form should stay one test per row.
+
+## Q-0009-20 — The compaction record's own call units in the family writers
+
+- **Status:** open (default taken: named, not counted there)
+- **Question:** should the Codex, Claude and Pi/OMP writers also report the tool calls (and results) they
+  omit from a record they publish as a compaction boundary alone, on a document a selection produced?
+  This round's finding was measured on OpenCode, whose plan — the only reduction-owned branch — now counts
+  the record's call units under `compaction_record_tool_calls` beside the existing results row; the three
+  family writers drop the same evidence unnamed on *both* paths (`internal/ccc/codex_target.go:504`,
+  `internal/ccc/claude_target.go:399`, `internal/ccc/pi_target.go:739`; the probe transcript is in the
+  round-20 evidence section).
+- **Default taken:** named rather than counted, because the family writers' boundary branch is their
+  long-standing both-path rule, goal 0009's D4 freezes the unflagged report byte-for-byte, and a
+  reduced-only counter would name the same omission on one path and not the other inside one writer — the
+  smallest surface-neutral change is the OpenCode plan's own row.
+- **Reversal:** add a reduction-gated counter and report row to the three writers (and the fourth name to
+  `cmd/ccc/selection_route_test.go`'s `reductionRows`), or widen the omission to both paths if the owner
+  wants the default path's report to change.
+- **Settled by:** an owner decision between "the reduction's disclosure rows name only what the reduction's
+  own plan omits" and "every writer names the boundary record's evidence it omits, D4's report freeze
+  notwithstanding".

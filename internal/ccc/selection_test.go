@@ -916,6 +916,22 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 			absent: []string{selectionBuildCallID, selectionBuildResult, selectionReadCallID,
 				selectionCapCallID, selectionFollowup, selectionAnswer},
 		},
+		{
+			// A window of ordinary dialogue, both roles: the user's follow-up and the assistant's answer
+			// cross as the words they are, on every route, so a reduced document that dropped its
+			// dialogue fails the comparison instead of leaving it unchanged (round 20's third finding:
+			// the tool-evidence windows above state no `text` of their own, and on the OpenCode arm the
+			// user's words live in the message's own `text` member, which selectionEvidence now reads).
+			spec: "9-10",
+			evidence: []string{
+				"text " + selectionFollowup,
+				"text The cap is maxBackoffSeconds = 30, in internal/retry/config.go.",
+			},
+			absent: []string{selectionQuestion, "Starting the build now.",
+				"The build finished. Reading the retry configuration.", selectionBuildCallID,
+				selectionBuildResult, selectionReadCallID, selectionCapCallID, selectionCapResult,
+				selectionSummary, "compact_boundary"},
+		},
 	}
 	for _, testCase := range cases {
 		selected, _, err := Select(conversation, testCase.spec, false)
@@ -1141,6 +1157,7 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 		var document struct {
 			Messages []struct {
 				Type    string           `json:"type"`
+				Text    string           `json:"text"`
 				Summary *string          `json:"summary"`
 				Content []map[string]any `json:"content"`
 			} `json:"messages"`
@@ -1162,6 +1179,13 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 				}
 				evidence = append(evidence, "compaction "+summary)
 				continue
+			}
+			if message.Text != "" {
+				// A user message's dialogue lives in the message's own `text` member (the harness holds no
+				// content parts for it), so it is read here: an oracle that read only assistant parts
+				// could not tell whether a reduced document carried the user's words at all (round 20's
+				// third finding -- the dialogue-bearing window below asserts both roles).
+				text(t, message.Text)
 			}
 			for _, part := range message.Content {
 				switch blockType(t, part) {
@@ -2408,6 +2432,51 @@ func TestSelectionPlansNoEvidenceFromACompactionRecord(t *testing.T) {
 		}
 	}
 
+	// The call-only arm (round 20's second finding): a boundary record whose own call has no separate
+	// result record -- the inherited Crush reader appends a `tool_call` to the record it marks as a
+	// summary (internal/parser/crush.go). The plan installs no evidence from the record, so neither the
+	// call nor a result of its own travels; the call is named by its own row rather than dropped
+	// unnamed, and the selection's report counts it undischarged.
+	callOnly := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "the question", Dialogue: "the question"},
+		Message{Ordinal: 1, Role: "system", IsSystem: true, IsCompactBoundary: true,
+			Content:   boundaryTxt,
+			ToolCalls: []ToolCall{{ToolUseID: callID, Name: "Bash", InputJSON: callInput}}},
+	)
+	callOnlySelected, callOnlyReport, err := Select(callOnly, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the call-only boundary window: %v", err)
+	}
+	if callOnlyReport.CallsUndischarged.Count != 1 ||
+		strings.Join(callOnlyReport.CallsUndischarged.Regions, ",") != "1" {
+		t.Errorf("calls_undischarged = %+v, want the one call at ordinal 1: the boundary record's own "+
+			"call has no recorded outcome", callOnlyReport.CallsUndischarged)
+	}
+	callOnlyConverted, err := route.Convert(callOnlySelected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the call-only boundary window: %v", err)
+	}
+	for _, line := range selectionCallAndResultLines(t, TargetOpenCode, callOnlyConverted.Data) {
+		if strings.Contains(line, callInput) {
+			t.Errorf("the written document holds the boundary record's own call (%q): the record is "+
+				"published as the boundary alone", line)
+		}
+	}
+	if !strings.Contains(string(callOnlyConverted.Data), boundaryTxt) {
+		t.Error("the written document does not hold the boundary's own summary: the compaction record " +
+			"is still published as the boundary it is")
+	}
+	for category, want := range map[string]int{
+		"compaction_record_tool_calls":   1, // the record's own call, named rather than dropped unnamed
+		"compaction_record_tool_results": 0, // it carries no result of its own
+		"unpaired_tool_calls":            0, // the call is not planned, so no part is written for it
+		"unpaired_tool_results":          0,
+	} {
+		if got := lossCount(t, callOnlyConverted.Losses, category).Count; got != want {
+			t.Errorf("call-only boundary %s = %d, want %d", category, got, want)
+		}
+	}
+
 	// The default path: the plan installs the compaction record's result into the call's slot as it always
 	// has, so the part carries that record's wording and the later recorded result is the repeat -- the
 	// bytes and counts a run without a selection has always had (goal 0009's D4).
@@ -2428,10 +2497,11 @@ func TestSelectionPlansNoEvidenceFromACompactionRecord(t *testing.T) {
 		t.Errorf("unflagged repeated_tool_results = %d, want the one extra outcome after the first "+
 			"recorded one", got)
 	}
-	// The boundary-evidence row is the reduction's own disclosure surface: the default path's plan
+	// The boundary-evidence rows are the reduction's own disclosure surface: the default path's plan
 	// installs the record's evidence as it always has and its report keeps its own category list.
 	for _, loss := range unflagged.Losses {
-		if loss.Category == "compaction_record_tool_results" {
+		if loss.Category == "compaction_record_tool_calls" ||
+			loss.Category == "compaction_record_tool_results" {
 			t.Errorf("the unflagged report holds the reduction's own row (%+v): a run without a selection "+
 				"keeps the report it has always had", loss)
 		}
@@ -5679,6 +5749,67 @@ func TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress(t *testing.
 	if got := lossCount(t, converted.Losses, "unpaired_tool_calls").Count; got != 1 {
 		t.Errorf("unpaired_tool_calls = %d, want the call counted: its only recorded event is progress", got)
 	}
+
+	// The omitted-event arm (round 20's first finding): the read's own event for the call is an
+	// id-recorded progress event on a *sidechain* record -- a record the plan and the walk both skip, so
+	// no walk marking ever sees it. The summary question is the read's own pairing's, wherever the
+	// event's record sits (undischargedCalls's summaryDischarges asks the same pairing the same way, and
+	// the family writers' callHasPairedRecordedEvent does too): the summary is that event's view, so the
+	// document states no outcome for the call, and omitting the event must not turn the summary into
+	// outcome evidence of its own.
+	sidechain := conversation(ToolResult{ToolUseID: callID, Status: "running", ContentRaw: progressText,
+		ContentSize: len(progressText)})
+	sidechain.Messages[1].IsSidechain = true
+	selected, sidechainReport, err := Select(sidechain, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the summary with a sidechain progress event: %v", err)
+	}
+	if sidechainReport.CallsUndischarged.Count != 1 ||
+		strings.Join(sidechainReport.CallsUndischarged.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged = %+v, want the one call at ordinal 0: the read's own pairing names "+
+			"a progress event for it, so the summary is that event's view rather than an outcome",
+			sidechainReport.CallsUndischarged)
+	}
+	converted, err = route.Convert(selected, selectionProbeOptions())
+	if err != nil {
+		t.Fatalf("converting the sidechain progress window: %v", err)
+	}
+	if lines := outcomeLines(t, converted.Data); len(lines) != 0 {
+		t.Errorf("the selected document states tool evidence (%v): the read's own event for the call is "+
+			"progress and its record is not carried, so the summary is that event's view rather than an "+
+			"outcome the document may state", lines)
+	}
+	for category, want := range map[string]int{
+		"unpaired_tool_calls":     1, // the call's only recorded event is progress, and it does not travel
+		"sidechain_messages":      1, // the subagent's record, counted where the plan skips it
+		"nonterminal_tool_events": 0, // the walk never reaches the skipped record's event
+		"generated_call_ids":      0, // nothing was inferred
+	} {
+		if got := lossCount(t, converted.Losses, category).Count; got != want {
+			t.Errorf("sidechain-event %s = %d, want %d", category, got, want)
+		}
+	}
+	// The same question on the other four routes, whose summary answer is read-wide by construction
+	// (callHasPairedRecordedEvent, asked of the read's pairing wherever the event's record sits): the
+	// omitted event still makes the stored summary its view, so none of them publishes it as the call's
+	// outcome. (B2's writer-by-writer sweep: the omitted-event arm is OpenCode's `plannedUnwrittenEvents`
+	// and each family writer's own summary loop asks the same pairing with no position filter.)
+	for _, target := range []string{TargetCodex, TargetClaude, TargetPi, TargetOMP} {
+		targetRoute, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		targetConverted, err := targetRoute.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the sidechain progress window: %v", target, err)
+		}
+		if strings.Contains(string(targetConverted.Data), summary) {
+			t.Errorf("%s: the converted document holds the call's stored summary: the read's own pairing "+
+				"names an event for it, wherever the record sits, and the summary is that event's view",
+				target)
+		}
+	}
+
 	// The routes whose readers keep the call and its outcome as separate records ask the same read-wide
 	// question: the read's pairing names the event, so the summary is not written as the call's outcome --
 	// the message-local check alone wrote it, because the event's record stands on a later message.

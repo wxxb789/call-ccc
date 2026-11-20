@@ -348,7 +348,9 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   a compaction record's calls and results are not planned at all, because the writer publishes that record
   as the boundary alone (`writeCompaction`), so planning one would fill a call's slot with a result no
   message states and the recorded result the document *can* state would read as a repeat — and the
-  record's own recorded results are counted (`compaction_record_tool_results`, a row the reduction's
+  record's own recorded results and calls are counted (`compaction_record_tool_results` and
+  `compaction_record_tool_calls` — the inherited Crush reader can append a `tool_call` to the record it
+  marks as a summary — rows the reduction's
   report alone carries, the default path keeping its own category list) rather than dropped unnamed; and a reserved
   occurrence still counts as unanswered where the
   id-less result stands, so an ambiguous window omits the event rather than binding it; the same
