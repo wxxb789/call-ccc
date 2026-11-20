@@ -2659,6 +2659,131 @@ test and gate-step change in the tree and the throw-away probe file removed; a s
 this section's transcript was inserted, printed the same steps and numbers (`selftest Ran 444 tests in
 8.496s`), so the tree this record describes is the tree the gate passed twice.)
 
+### The fifteenth review round's findings (`17a79b3` + working tree), fixed and re-measured
+
+The review of `9242e49..17a79b3` found six findings — one P1 and five P2 — and all six are fixed; none
+was judged invalid. The review's carried-tree audit found the patch matching the reviewed Git diff, all
+37 changed paths project-owned and every carried blob matching the pin; this round changes no carried
+file either — every path it touches is project-owned, and the gate's `parity` step below is the one that
+proves the carried tree still matches the pin.
+
+1. **A selected Pi session lost an active file result across a metadata entry (P1), fixed.** Round 13
+   answered each record's place in the file's tree with the entry its own `parentId` names, but a
+   `parentId` naming an entry the read does not hold — Pi writes a `model_change` between a result and
+   the reply that follows it, and the inherited reader resolves the reply's ancestor through that entry
+   (`internal/parser/pi.go`) — resolved in neither the ancestry walk's message index nor the writer's
+   entry map. The walk fell back to the read's own answer (the projection: the reply reads as hanging
+   off the call), the writer's tool-result step reached the *later* sibling result the file's leaf path
+   leaves off, the round-11 guard refused that off-line entry, and the reply was chained straight to the
+   call: the first result stayed in the target file but fell off the walk a resumed session makes (the
+   review's repro: the round-12 two-result fixture with the metadata entry inserted between the first
+   result and the reply). The file-side answer now walks the file's own `parentId` chain through the
+   entries the read does not carry whose kinds the harness's own loader keeps out of the conversation
+   (and the records the conversion accounts for as omitted), answering the nearest ancestor the read
+   holds an identity for (`piFileParent`); an entry this build cannot step through leaves the answer
+   unresolved, exactly as before, so the source-side leaf check still refuses what it refused. New case
+   `TestContinueKeepsTheFilesOwnResultAcrossAMetadataEntry` pins the repro: the reply's entry hangs off
+   the first result's, the second result is recorded history beside the walk, and
+   `unresolved_source_parents` is 0. `selectionKeptAncestors`, `parentPlace`/`fileParentPlace`,
+   `lineMembership` and `piFileParent`'s own docs say the same.
+2. **The reduced Codex verifier could accept an output attached to the wrong identical invocation (P2),
+   fixed.** The invocation-unit fold attributes a read-back row to a record by the key the row states, so
+   two installed `function_call` records whose id, tool and arguments are equal left every row ambiguous
+   between them: both collapsed to occurrence 1, and an output the inherited reader attached to the
+   second record verified as the first's (the review's arm). `codexFoldableRows` now requires the units
+   under an id to state distinct keys — `codexCallEvidence` and `callOccurrenceOrdinals` read the same
+   eligibility — so those rows stand for the comparison and the misplaced output is reported.
+   `TestCodexRoundTripAssertsTheOwningCallOfEachResult` gains the installed-bytes arms: the document's
+   output written for the first occurrence against a file that puts it after the second is reported
+   (naming the occurrence), and the control owned by the second occurrence holds no call/result
+   difference.
+3. **A later recorded progress event left a call falsely reported as answered (P2), fixed.** The
+   writers' summary guard and the report's `summaryDischarges` asked the call's own record only
+   (`callHasRecordedResult`), so a call whose summary sat beside its only recorded event on a *later*
+   record — an id-recorded `running` progress event — had the summary written as the call's outcome by
+   Codex, Claude and Pi/OMP while OpenCode treated it as that event's view, and the report counted zero
+   undischarged calls where the document stated no outcome. A document a selection produced now asks the
+   read's own pairing (`callHasPairedRecordedEvent`, the same walk the closure and the undischarged
+   count take), so the summary is suppressed as that event's view, the call is counted undischarged, and
+   the writers that cannot carry a progress event count it (`nonterminal_tool_events`); the default path
+   keeps the message-local answer, which is what D4 measures. The id-recorded control of
+   `TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress` now asserts the report (count 1 at
+   the call's ordinal) and the four tree routes' outputs (the summary is in none of their documents).
+4. **OpenCode dropped a skipped compaction record's tool evidence unnamed (P2), fixed.** The reduced
+   plan installs no evidence from a compaction record (the writer publishes it as the boundary alone),
+   and with a later writable outcome for the same call the record's own recorded result was dropped with
+   no loss row naming it — the frozen `S7-boundary-evidence` shape. The plan now counts the record's
+   recorded results (`compaction_record_tool_results`), a row the reduction's report alone carries (the
+   default path keeps its own category list).
+   `TestSelectionPlansNoEvidenceFromACompactionRecord` asserts the count and the row's absence on the
+   default path (the gate `M8` records the mutant that moves the row onto every report), and
+   `TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite` asserts it per arm (only the compaction
+   arm's record is published as a boundary alone).
+5. **The sparse file-ancestry case had no citation row of its own (P2), fixed.**
+   `TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply` — the case whose recorded M17
+   failure established that authoritative ancestry survives an *excluded* reply — is cited by its own
+   row, `S6-file-excluded`; this round's metadata case gets `S5-file-transparent`. The required
+   `citations` step now refuses a tree that lost either case (`M7` below records the observed failure).
+6. **The D2 case did not pin the zero-count JSON class (P2), fixed.**
+   `TestContinueWithASelectionCarriesTheSelectedRecordsAndReportsTheClasses` decoded the class into a
+   value struct and checked only `Count == 0`, so an omitted object or a zero-count object with regions
+   behind it passed. The case now asserts the raw `--json` document: the `calls_undischarged` object is
+   present with count 0 and no regions (`M5` and `M6` below record the observed failures).
+
+#### The round's mutations, each one executed
+
+One line changed per rule (`M7` renames one test), the cited check run immediately, the failure
+recorded, the line restored (the tree after the restores is the one the gate below measured). The line
+numbers are the working tree's.
+
+| # | rule | file:line | the one line (mutation) | command | observed failure |
+|---|---|---|---|---|---|
+| M1 | this round's P1 (the file chain through a metadata entry) | `internal/ccc/pi_source_leaf.go:289` | the resolution reverted (`piFileParent(...)` → `parentOfPiEntry(answer.entries[at])`) | `go test -tags fts5 ./internal/ccc/ -run '^TestContinueKeepsTheFilesOwnResultAcrossAMetadataEntry$' -count=1` | `--- FAIL: TestContinueKeepsTheFilesOwnResultAcrossAMetadataEntry` — `continue_pi_test.go:2523: pi: the selected session's model-visible history = ["Where is the retry cap configured?" "I will look for the retry configuration." "It is set in internal/retry/config.go." "The cap is 30 seconds of backoff between attempts."], want the source file's own [… "internal/retry/config.go:41: maxBackoffSeconds = 30" …]`; `:2549: the reply's entry hangs off "be49f540", want the first result's entry "2c494474"` |
+| M2 | this round's P2 (the fold refuses rows it cannot attribute) | `internal/ccc/codex_install.go:788` | the distinct-key guard's `return false` disabled | `go test -tags fts5 ./internal/ccc/ -run '^TestCodexRoundTripAssertsTheOwningCallOfEachResult$' -count=1` | `codex_install_test.go:256: the comparison accepted a result the read-back attached to the other occurrence of two installed records whose fields are identical: the fold may not attribute a row the file's own bytes cannot tell apart` |
+| M3 | this round's P2 (the summary reads the read's own pairing) | `internal/ccc/selection.go:988`, and the writers' guard at `codex_target.go:666`, `claude_target.go:662`, `pi_target.go:1101` | the read-wide question disabled (the report answers `true`; the writers' `b.selectionReduced && callHasPairedRecordedEvent(...)` guard defeated) | `go test -tags fts5 ./internal/ccc/ -run '^TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress$' -count=1` | `selection_test.go:5220: calls_undischarged = {Count:0 Regions:[]}, want the one call at ordinal 0: the read's recorded event for the call is progress, and the summary is that event's view rather than an outcome`; `:5248` names each of `codex`, `claude`, `pi` and `omp`: `the converted document holds the call's stored summary` |
+| M4 | this round's P2 (a boundary record's results are counted) | `internal/ccc/opencode_target.go:665` | `c.lossCompactionEvidence += len(message.ToolResults)` removed | `go test -tags fts5 ./internal/ccc/ -run '^(TestSelectionPlansNoEvidenceFromACompactionRecord\|TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite)$' -count=1` | `selection_test.go:1906: a compaction boundary record: compaction_record_tool_results = 0, want 1: a boundary record's own event is named by that row …`; `:1980: selected compaction_record_tool_results = 0, want 1` |
+| M5 | this round's P2 (a zero count names no ordinal) | `internal/ccc/selection.go:324` | `Regions: spellOrdinalRuns(undischargedOrdinals)` → `spellOrdinalRuns(spaceOrdinals(conversation))` (with `_ = undischargedOrdinals` so the mutant compiles) | `go test -tags fts5 ./cmd/ccc/ -run '^TestContinueWithASelectionCarriesTheSelectedRecordsAndReportsTheClasses$' -count=1` | `selection_route_test.go:152: calls_undischarged regions = [0-10], want none: a zero count has no ordinal to name` |
+| M6 | this round's P2 (the zero-count object is named) | `internal/ccc/selection.go:85` | the class's JSON key renamed (`calls_undischarged` → `undischarged_calls`) | same case as `M5` | `selection_route_test.go:139: the selection section holds no calls_undischarged object: map[excluded:{…` |
+| M7 | this round's P2 (the sparse case has its own citation) | `internal/ccc/continue_pi_test.go:2571` | the cited test renamed (`…ExcludedReply` → `…ExcludedReplyRenamed`) | `python3 scripts/obligation-citations.py` | `docs/evidence/0009-citations.tsv:302: rule S6-file-excluded: test TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply is not declared by any _test.go in ./internal/ccc`; `citations: FAIL — 1 violation(s)` |
+| M8 | this round's P2 (the boundary row is the reduction's own) | `internal/ccc/opencode_target.go:2171` | the reduction gate opened (`if c.conv.selectionReduced() {` → `if true {`, moving both reduction-scoped rows onto every report) | `go test -tags fts5 ./internal/ccc/ -run '^TestSelectionPlansNoEvidenceFromACompactionRecord$' -count=1` | `selection_test.go:2008: the unflagged report holds the reduction's own row ({Category:compaction_record_tool_results …}): a run without a selection keeps the report it has always had` |
+
+The round's verification: 469 → **470** top-level `Test…` functions in the two packages' own test files
+(`^(internal|cmd)/ccc/[^/]*_test\.go$` on `17a79b3` and on the working tree — the new
+`TestContinueKeepsTheFilesOwnResultAcrossAMetadataEntry`; every other addition lives inside an existing
+function, and the per-file set comparison against `HEAD` names that one addition and no removal or
+rename); `0009-citations.tsv` grown 64 → **67** rows (`S5-file-transparent`, `S6-file-excluded` and
+`S2-summary-paired` added; `D2` and `S7-boundary-evidence` rewritten to what their cases now assert);
+`selftest` unchanged at **444** tests; `gofmt -l` names nothing. The D4 probe was re-run on this tree:
+1312 lines, byte-identical to the round-14 tree's own run (`after1.txt`, `/tmp/ccc-d4-r13`), so this
+round's edits are selection-gated and the default path's bytes and report are what they were — §4's
+retained numbers stand as their single source, and the probe's own two-tree relation (1187 shared lines
+silent, the previous round's recorded run) is intact for a tree whose output equals that run's "after"
+side. The mock target harnesses and the native checks are untouched: no route's install, verify or print
+behaviour changed.
+
+```console
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: <checkout> (redacted: this checkout's own root)
+gate: go=<go toolchain> (redacted) targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 444 tests in 8.395s (rc=0)
+  PASS     parity   … | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5728 | …
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 67 row(s) verified
+  PASS     secrets  no leaks found in 197 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
+(`parity`'s detail is elided in this transcript with `…`, as the earlier transcripts do; the numbers this
+round's record quotes are the step's own. The transcript is the round's own run, taken with every code,
+test and gate-step change in the tree and the throw-away probe file removed; a second run, taken after
+this section's transcript and this section's own follow-up edits (the `M8` row, the `M1`–`M8`
+references and Q-0009-16) were folded in, printed the same steps and numbers, so the tree this record
+describes is the tree the gate passed twice.)
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -2727,7 +2852,12 @@ this section's transcript was inserted, printed the same steps and numbers (`sel
   `parentId` where the file answered for the record the walk is at, the read's relation and its
   projection step for every other record), and the gate bullet to the `citations` step's own requirement
   that every manifest a goal file names must be present — the goal's acceptance surface, so a tree that
-  lost one beside surviving manifests fails rather than passing with that goal's rows unchecked.
+  lost one beside surviving manifests fails rather than passing with that goal's rows unchecked. The
+  fifteenth fix round added the file chain's step through entries the read does not hold to the
+  file-backed line clause, the fold's distinct-key requirement to the offline-half sentence, the read's
+  own pairing to the summary sentence (the reduced-path question, the default path's message-local
+  answer stated beside it), and the counted `compaction_record_tool_results` row to the
+  boundary-evidence sentence.
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -2759,14 +2889,17 @@ this section's transcript was inserted, printed the same steps and numbers (`sel
   the reduction with the default path's base marking) folded in beside them, and the fourteenth round's
   (the goal-named manifest's presence as the `citations` step's own requirement — a named manifest the
   tree does not hold is refused before any tool runs, whether or not other manifests remain) folded in as
-  well.
+  well, and the fifteenth round's (the file chain's step through entries the read does not hold, the
+  fold's distinct-key requirement, the summary's read-wide question on a reduced document, and the
+  counted `compaction_record_tool_results` row) folded in beside them.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
   measurement behind each (the third round's four in §11.12) and the fourth through eleventh rounds' seven,
   five, six, three, four, five, four and five at its close (the seventh's as item 13, the eighth's as item
   14, the ninth's as item 15, the tenth's as item 16, the eleventh's as item 17, and the twelfth's four as
   item 18, with the twelve mutations that pin them in this record's round section), and the thirteenth
   round's four as item 19 with this record's `M1`–`M7` behind them, and the fourteenth round's seven as
-  item 20 with this record's `M1`–`M19` behind them.
+  item 20 with this record's `M1`–`M19` behind them, and the fifteenth round's six as item 21 with this
+  record's `M1`–`M8` behind them.
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
@@ -2776,7 +2909,9 @@ this section's transcript was inserted, printed the same steps and numbers (`sel
   nothing accepted was waiting for the archive, so no goal file and no index row moved. The thirteenth fix
   round re-checked it a third time and found the same answer: no already accepted goal file sits under
   `docs/goals/` (0009's own file stays until the operator merges it), so nothing moved and no index row
-  changed. The fourteenth fix round re-checked it a fourth time: 0009 still awaits operator acceptance,
+  changed. The fifteenth fix round re-checked it a fifth time: 0009
+  still awaits operator acceptance, 0010–0013 are Provisional, 0014–0017 are Ready and unstarted — no
+  already accepted goal file sits under `docs/goals/`, so nothing moved and no index row changed. The fourteenth fix round re-checked it a fourth time: 0009 still awaits operator acceptance,
   0010–0013 are Provisional, 0014–0017 are Ready and unstarted — no already accepted goal file sits under
   `docs/goals/`, so nothing moved and no index row changed.
 * `docs/decisions/OPEN-QUESTIONS.md` — Q-0009-01 (the strict refusal's exit code); Q-0009-02 (rewritten:
@@ -2832,7 +2967,13 @@ this section's transcript was inserted, printed the same steps and numbers (`sel
   evidence from a compaction record, and both completion members of a tool part follow the result its slot
   carries, while the default path keeps the reconstruction, its chain and its counts and the boundary
   record's outcome is disclosed by its call's own row; the reversals are the pre-fix lines the round's
-  `M1`–`M3`, `M6` and `M7` record).
+  `M1`–`M3`, `M6` and `M7` record); and Q-0009-16 (this round: the file chain's resolution through
+  the entries the read does not hold, the fold's refusal to attribute rows two identical units could
+  state, the summary's read-wide question and the boundary record's counted results answer the
+  reduction's documents only — the default path keeps its immediate-parent answer, its fold and its
+  message-local summary guard, and the boundary row stays the reduction's — with the round's probe
+  re-run as the measured statement; the reversals are the pre-fix lines the round's `M1`–`M8`
+  record).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the
@@ -2871,7 +3012,13 @@ this section's transcript was inserted, printed the same steps and numbers (`sel
   id-recorded progress marking to the runs that carry a selection (the default path's own marking, in
   which an id-less event names the sole call awaiting a result, is stated beside it), and added the
   boundary record's missing planned outcome to the slot sentence (a record the writer publishes as a
-  boundary alone contributes no state to any message).
+  boundary alone contributes no state to any message). The fifteenth round extended the file-backed line
+  sentence (the same read answers a record's place through the entries the read does not hold — a
+  metadata row between a result and the reply is stepped through), the summary sentence (a reduced
+  document asks the read's own pairing, so an event recording the call's own id suppresses the summary
+  wherever its record sits), and the boundary sentence (the record's own recorded results are counted
+  `compaction_record_tool_results`), and added the fold's distinct-key requirement to the comparison
+  sentence.
 * `docs/harness.md` — the increment itself added no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest. The fourteenth fix round extended the
   `citations` section with the requirement that section now implements: every manifest a goal file names
@@ -2902,4 +3049,7 @@ this section's transcript was inserted, printed the same steps and numbers (`sel
   and the fixed tree's output is byte-identical to the pre-0009 tree's whole file while the reviewed
   head's differs on the id-less-progress arm alone (that recorded run is not re-run this round). The
   fixture generator (`internal/ccc/fixturegen`) and the committed fixture tree move together, pinned by
-  the existing `TestFixturesMatchTheirGenerator`.
+  the existing `TestFixturesMatchTheirGenerator`. The fifteenth round re-ran the retained probe on this tree alone
+  (1312 lines, byte-identical to the fourteenth round's own current-tree run, `after1.txt`), which is
+  the measured statement that this round's edits are selection-gated and the default path's output is
+  unchanged.

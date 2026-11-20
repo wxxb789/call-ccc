@@ -656,12 +656,19 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 		if !ok {
 			continue
 		}
-		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
-			continue
-		}
 		// The summary is the call's own evidence, so it is paired with the call occurrence the walk just
 		// wrote rather than with a document occurrence: there is no recorded result here.
 		place := callOccurrence{message: b.messageIndex, call: entry.index}
+		// A document a selection produced asks the read's own pairing: a recorded result event the read
+		// holds for this call occurrence -- wherever its record sits -- is the event the archive derived
+		// the summary from, so the summary is that event's view and the call's disposition follows the
+		// event's own (round 15's finding 3). A run without a selection keeps the message-local answer.
+		if b.selectionReduced && callHasPairedRecordedEvent(b.pairings, place) {
+			continue
+		}
+		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
+			continue
+		}
 		b.toolResult(&place, result, message.Timestamp)
 	}
 }
@@ -722,9 +729,30 @@ func derivedResultSummary(call ToolCall, toolUseID string) (ToolResult, bool) {
 // call with any result of its own has its outcome carried as that result, whatever the summary text
 // happens to be; a summary whose call carries no result at all is the only evidence the read holds of
 // the outcome, and it is written.
+//
+// The question reads the call's own record. A document a selection produced asks the read's own pairing
+// instead (callHasPairedRecordedEvent): the events the read recorded for the call may sit on records the
+// window's walk does not reach at the call's own message, and the declaration above is about the read's
+// events, not about one record. A run without a selection keeps this message-local answer.
 func callHasRecordedResult(results []ToolResult, callID string) bool {
 	for _, result := range results {
 		if result.ToolUseID == callID {
+			return true
+		}
+	}
+	return false
+}
+
+// callHasPairedRecordedEvent answers whether the read's own pairing holds a recorded result event for one
+// call occurrence, wherever that event's record sits. The archive's derived summary of a call is a view
+// of the read's events (callHasRecordedResult's declaration), so a summary whose call occurrence the
+// pairing names an event for is not the outcome evidence and the call's disposition follows the event's
+// own: an event that states an outcome answers, and a progress event leaves the call unanswered. The
+// narrowed, message-local question (callHasRecordedResult) stays the default path's answer, because a run
+// without a selection keeps its bytes and its whole report (goal 0009's D4).
+func callHasPairedRecordedEvent(pairings map[resultOccurrence]callOccurrence, call callOccurrence) bool {
+	for _, paired := range pairings {
+		if paired == call {
 			return true
 		}
 	}

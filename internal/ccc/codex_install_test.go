@@ -221,6 +221,57 @@ func TestCodexRoundTripAssertsTheOwningCallOfEachResult(t *testing.T) {
 	}
 	noCallOrResultDifference(t, "equal arguments, attached",
 		compareCodexRoundTrip(sameRollout, sameAttached, nil).differences)
+
+	// The installed-file arm (round 15's finding 2): the equal-fields shape with real installed bytes. The
+	// file holds two `function_call` records whose id, tool and arguments are equal and one output after
+	// the second, which is the call the inherited reader attaches it to (the last call registered for the
+	// id). The fold attributes a row by the key it states, so with two records it cannot tell apart it
+	// cannot say which record a row projects: the rows stand for the comparison, and an output the
+	// document wrote for the first occurrence is reported -- where a fold that collapsed both records to
+	// occurrence 1 accepted it as that occurrence's own. The control whose document wrote the output for
+	// the second occurrence holds no call/result difference.
+	installed := []byte(strings.Join([]string{
+		codexInstalledLine(t, codexRecordResponseItem, codexFunctionCallPayload{
+			Type: codexItemFunctionCall, CallID: reusedID, Name: "Bash", Arguments: firstInput}),
+		codexInstalledLine(t, codexRecordResponseItem, codexFunctionCallPayload{
+			Type: codexItemFunctionCall, CallID: reusedID, Name: "Bash", Arguments: firstInput}),
+		codexInstalledLine(t, codexRecordResponseItem, codexFunctionCallOutputPayload{
+			Type: codexItemFunctionOutput, CallID: reusedID, Output: earlyOutput}),
+	}, ""))
+	fileRollout := CodexRollout{
+		Directory: "2026/05/04", FileName: "rollout-2026-05-04-selection.jsonl",
+		Data: installed, SelectionReduced: true,
+	}
+	installedDocument := func(owner int) CodexRollout {
+		return CodexRollout{SelectionReduced: true, Items: []TargetItem{
+			{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: firstInput},
+			{Kind: ItemToolCall, CallID: reusedID, ToolName: "Bash", InputJSON: firstInput},
+			{Kind: ItemToolResult, CallID: reusedID, Text: earlyOutput, OwnerCall: &owner},
+		}}
+	}
+	firstItem, secondItem := 0, 1
+	fileReadBack := Conversation{Messages: codexReadBackMessages(t, fileRollout)}
+	installedRoundTrip := compareCodexRoundTrip(installedDocument(firstItem), fileReadBack, installed)
+	if callOrResultDifferences(installedRoundTrip.differences) == 0 {
+		t.Fatal("the comparison accepted a result the read-back attached to the other occurrence of two " +
+			"installed records whose fields are identical: the fold may not attribute a row the file's " +
+			"own bytes cannot tell apart")
+	}
+	installedReport := strings.Join(installedRoundTrip.differences, "; ")
+	if !strings.Contains(installedReport, reusedID) {
+		t.Errorf("the difference does not name the id it is about: %q", installedReport)
+	}
+	if !strings.Contains(installedReport, "(occurrence 2)") {
+		t.Errorf("the difference does not name the occurrence the read-back attached the output to: %q",
+			installedReport)
+	}
+	for _, content := range []string{earlyOutput, firstInput} {
+		if strings.Contains(installedReport, content) {
+			t.Errorf("the difference carries the evidence it could not match: %q", installedReport)
+		}
+	}
+	noCallOrResultDifference(t, "installed equal records, owned by the second occurrence",
+		compareCodexRoundTrip(installedDocument(secondItem), fileReadBack, installed).differences)
 }
 
 // TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute pins the tenth round's fourth finding: the

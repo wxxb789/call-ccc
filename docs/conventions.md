@@ -195,7 +195,9 @@ obligation ships no citations file, rather than an empty one.
   file it names) has its calls compared as the file's own record units rather than the rows — and only
   where every row under the id is a projection of one of those records: a call record of a type whose key
   this build does not state, or a row whose key no record under the id states, leaves the read-back's rows
-  standing for the comparison rather than being folded away — and an owner
+  standing for the comparison rather than being folded away — and the keys must be distinct: two records
+  whose id, tool and arguments are equal leave every row with that key ambiguous between them, so they too
+  leave the rows standing and a result attached to the wrong one of them is reported — and an owner
   a tree format states (the Pi family, the Claude transcript) is resolved through the result's own
   recorded ancestry rather than by file order, following the installed file's own entry chain where a
   parent names an entry the read-back holds no message for (the Claude reader's merge of one message id's
@@ -208,7 +210,9 @@ obligation ships no citations file, rather than an empty one.
   several rows, so one recorded outcome discharges it, and a second outcome does not answer a call the
   pairing left unanswered — while an archive read's own summary of an outcome on the call itself
   (`ToolCall.ResultContent`) is outcome evidence where the read holds no recorded result event of the
-  call, so that shape is not counted. The reduced writers read the same rule on their side: a progress
+  call — on a reduced document the read's own pairing answers that question wherever the event's record
+  sits, so a summary beside a later progress event is that event's view and the writers refuse it, leaving
+  the call undischarged — so that shape is not counted. The reduced writers read the same rule on their side: a progress
   event is not an answer in the outstanding set an id-less result is inferred against and the event itself
   is omitted and counted there (`nonterminal_tool_events`, a row scoped to the reduction as
   `coalesced_tool_call_projections` is, because these formats carry an outcome or nothing and a written
@@ -225,7 +229,9 @@ obligation ships no citations file, rather than an empty one.
   nothing and a reserved occurrence still counts as unanswered where the id-less result stands, and the
   reduced plan reads the same eligibility: a compaction record's calls and results are not planned at all,
   because the writer publishes that record as the boundary alone, so the recorded result the document can
-  state is the one written; and on a
+  state is the one written — while the boundary record's own recorded results are counted
+  (`compaction_record_tool_results`, a row the reduction's report alone carries) rather than dropped
+  unnamed; and on a
   reduced document the same writability rule holds the slot itself, so an event the part cannot state — no
   text, whitespace-only text, a status word the tool states cannot spell — is counted exactly as the
   writer counts the same result and yields the slot to a later recorded outcome the part can state, while a
@@ -262,8 +268,11 @@ obligation ships no citations file, rather than an empty one.
   read (a Pi-family read the conversion took from the file itself, whose bytes are the size the read's own
   snapshot recorded), the file's own leaf path — the walk from its last entry back through `parentId`, the
   walk the harness's own loader builds the context from — is that line for every record the read answered
-  an identity for, and the same read answers each of those records' own place in the file's tree (the entry
-  its `parentId` names), which a tree target hangs the entry off — so the read's lossy tool-result step
+  an identity for, and the same read answers each of those records' own place in the file's tree — the
+  nearest ancestor its `parentId` chain names that the read holds a record for, stepping through entries
+  the read does not carry that the harness's own loader keeps out of the context (a `model_change` between
+  a result and the reply included, so the reply hangs off the result the file recorded) — which a tree
+  target hangs the entry off — so the read's lossy tool-result step
   cannot put a result the file left beside the conversation back on the resumed walk (and a call whose file
   holds two results keeps the result the file recorded between the call and the record that follows it,
   rather than the projection's most recent one), and the relation the file answered is not counted as an

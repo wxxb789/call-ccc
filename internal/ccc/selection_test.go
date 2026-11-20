@@ -1841,19 +1841,23 @@ func TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite(t *testing.T) {
 	for _, arm := range []struct {
 		name    string
 		carried Conversation
+		// wantBoundaryEvidence is the boundary-record row this arm's plan must state: only the compaction
+		// arm's record is published as a boundary alone, so only its event is named by that category.
+		wantBoundaryEvidence int
 	}{
 		// The event's record hangs off the root while the conversation continues through the id-less
 		// result, so the read's own line leaves it off the walk and the plan never installs it. The ask
 		// record chains through the id-less result, not through the owed record.
-		{"a record the read's line leaves off", conversation(outcome("u1"), "r3")},
+		{"a record the read's line leaves off", conversation(outcome("u1"), "r3"), 0},
 		// A subagent's record: the plan and the writer both skip a sidechain record, though the record
 		// stands on the line (the ask record chains through it).
-		{"a subagent's record", conversation(sidechain, "s4")},
-		// A compaction boundary record: the writer publishes the boundary alone and never its evidence.
-		{"a compaction boundary record", conversation(compaction, "s4")},
+		{"a subagent's record", conversation(sidechain, "s4"), 0},
+		// A compaction boundary record: the writer publishes the boundary alone and never its evidence --
+		// and the event it carries is named by the category the finding added, not dropped unnamed.
+		{"a compaction boundary record", conversation(compaction, "s4"), 1},
 		// A progress event names the call but states no outcome the tool states can spell, so the part is
 		// owed nothing.
-		{"a progress event", conversation(progress, "s4")},
+		{"a progress event", conversation(progress, "s4"), 0},
 	} {
 		selected, _, err := Select(arm.carried, "0-", false)
 		if err != nil {
@@ -1897,6 +1901,11 @@ func TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite(t *testing.T) {
 		if got := lossCount(t, converted.Losses, "unpaired_tool_results").Count; got != 0 {
 			t.Errorf("%s: unpaired_tool_results = %d, want 0: the id-less result was written under the "+
 				"call it could mean", arm.name, got)
+		}
+		if got := lossCount(t, converted.Losses, "compaction_record_tool_results").Count; got != arm.wantBoundaryEvidence {
+			t.Errorf("%s: compaction_record_tool_results = %d, want %d: a boundary record's own event is "+
+				"named by that row, and no other arm's record is published as a boundary alone",
+				arm.name, got, arm.wantBoundaryEvidence)
 		}
 	}
 }
@@ -1963,6 +1972,9 @@ func TestSelectionPlansNoEvidenceFromACompactionRecord(t *testing.T) {
 		"repeated_tool_results": 0, // the later recorded result is the outcome, not a repeat
 		"unpaired_tool_results": 0, // and the boundary record's event is not counted as an outcome either
 		"unpaired_tool_calls":   0, // the call's part is written with that outcome
+		// The boundary record's own event is named by its own row: no written message states it, and the
+		// count is what keeps it from being dropped unnamed (round 15's finding 4).
+		"compaction_record_tool_results": 1,
 	} {
 		if got := lossCount(t, converted.Losses, category).Count; got != want {
 			t.Errorf("selected %s = %d, want %d", category, got, want)
@@ -1988,6 +2000,14 @@ func TestSelectionPlansNoEvidenceFromACompactionRecord(t *testing.T) {
 	if got := lossCount(t, unflagged.Losses, "repeated_tool_results").Count; got != 1 {
 		t.Errorf("unflagged repeated_tool_results = %d, want the one extra outcome after the first "+
 			"recorded one", got)
+	}
+	// The boundary-evidence row is the reduction's own disclosure surface: the default path's plan
+	// installs the record's evidence as it always has and its report keeps its own category list.
+	for _, loss := range unflagged.Losses {
+		if loss.Category == "compaction_record_tool_results" {
+			t.Errorf("the unflagged report holds the reduction's own row (%+v): a run without a selection "+
+				"keeps the report it has always had", loss)
+		}
 	}
 }
 
@@ -5205,11 +5225,21 @@ func TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress(t *testing.
 	}
 
 	// The id-recorded control: the read's own event for the call says it is still running, so the summary
-	// is that event's view and is not written as an outcome.
-	selected, _, err = Select(conversation(ToolResult{ToolUseID: callID, Status: "running",
+	// is that event's view and is not written as an outcome. The report says the same thing the writers
+	// do: the event the pairing names, wherever its record sits, makes the summary a view rather than
+	// outcome evidence, so the call is undischarged although the archive stored a summary for it (round
+	// 15's finding 3 -- before the read's own pairing was asked, the count checked only results on the
+	// call's own record and reported zero).
+	selected, controlReport, err := Select(conversation(ToolResult{ToolUseID: callID, Status: "running",
 		ContentRaw: progressText, ContentSize: len(progressText)}), "0-1", false)
 	if err != nil {
 		t.Fatalf("selecting the summary with an id-recorded progress event: %v", err)
+	}
+	if controlReport.CallsUndischarged.Count != 1 ||
+		strings.Join(controlReport.CallsUndischarged.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged = %+v, want the one call at ordinal 0: the read's recorded event for "+
+			"the call is progress, and the summary is that event's view rather than an outcome",
+			controlReport.CallsUndischarged)
 	}
 	converted, err = route.Convert(selected, selectionProbeOptions())
 	if err != nil {
@@ -5221,6 +5251,24 @@ func TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress(t *testing.
 	}
 	if got := lossCount(t, converted.Losses, "unpaired_tool_calls").Count; got != 1 {
 		t.Errorf("unpaired_tool_calls = %d, want the call counted: its only recorded event is progress", got)
+	}
+	// The routes whose readers keep the call and its outcome as separate records ask the same read-wide
+	// question: the read's pairing names the event, so the summary is not written as the call's outcome --
+	// the message-local check alone wrote it, because the event's record stands on a later message.
+	for _, target := range []string{TargetCodex, TargetClaude, TargetPi, TargetOMP} {
+		targetRoute, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		targetConverted, err := targetRoute.Convert(selected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the id-recorded progress window: %v", target, err)
+		}
+		if strings.Contains(string(targetConverted.Data), summary) {
+			t.Errorf("%s: the converted document holds the call's stored summary: the read's own event "+
+				"for the call is progress, and the summary is that event's view (round 15's finding 3)",
+				target)
+		}
 	}
 
 	// The default path keeps the writer's long-standing rule, which the twelfth round's second finding

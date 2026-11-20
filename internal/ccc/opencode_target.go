@@ -445,7 +445,13 @@ type openCodeConverter struct {
 	lossGeneratedAgent              int
 	lossCompactionReason            int
 	lossCompletion                  int
-	sawBoundary                     bool
+	// lossCompactionEvidence counts the recorded tool results a compaction record carries on a document a
+	// selection produced: the plan installs no evidence from such a record (the writer publishes it as the
+	// boundary alone, writeCompaction), and nothing else names those results -- the reservation pass skips
+	// the same record, and the outcome the document *can* state is written for the call by its own later
+	// result -- so they are counted rather than dropped unnamed (round 15's finding 4).
+	lossCompactionEvidence int
+	sawBoundary            bool
 }
 
 // openCodeClock hands out message timestamps that never go backwards, and remembers the highest instant
@@ -653,8 +659,11 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			// the recorded pair travelled (round 12's third finding). The call such a result answers is
 			// then unanswered on the written path -- counted unpaired_tool_calls where its own record is
 			// written, or omitted with the record the line leaves off -- rather than answered by an
-			// outcome no message holds. A run without a selection keeps the plan it has always made (goal
-			// 0009's D4).
+			// outcome no message holds. The record's own recorded results are counted here all the same:
+			// no written message states them, and a report that left them unnamed would drop evidence the
+			// source recorded under a category nothing else can hold (round 15's finding 4).
+			c.lossCompactionEvidence += len(message.ToolResults)
+			// A run without a selection keeps the plan it has always made (goal 0009's D4).
 			continue
 		}
 		calls := distinctCalls(message, func(callIndex int, call ToolCall) openCodePlannedCall {
@@ -2154,10 +2163,11 @@ func (c *openCodeConverter) losses() []Loss {
 			Detail:      needsRetryDetail,
 		},
 	}...)
-	// The colliding-id category exists only where an id can collide: only a document a selection produced
-	// writes every call occurrence the read holds beside the ids the source recorded, and an unflagged run
-	// keeps those ids and its report keeps its own category list (goal 0009's D4). The count is zero on a
-	// reduced document with no collision, so the completeness rule holds within the selection surface.
+	// The colliding-id category exists only where an id can collide, and a boundary record's carried
+	// results are only planned away on a document a selection produced: on an unflagged run the plan
+	// installs the boundary record's own evidence as it always has and its report keeps its own category
+	// list (goal 0009's D4). Both counts are zero on a reduced document that meets neither shape, so each
+	// row's presence is the reduction's own disclosure surface (colliding_call_ids included).
 	if c.conv.selectionReduced() {
 		losses = append(losses, Loss{
 			Category:    "colliding_call_ids",
@@ -2167,6 +2177,16 @@ func (c *openCodeConverter) losses() []Loss {
 				"the harness's tool part is keyed by its id, so two parts under one id could not be " +
 				"told from each other. The occurrence was written under an id generated from its own " +
 				"place, and the file does not state the id the source recorded for it",
+		})
+		losses = append(losses, Loss{
+			Category:    "compaction_record_tool_results",
+			Disposition: DispositionOmitted,
+			Count:       c.lossCompactionEvidence,
+			Detail: "these recorded results sit on a compaction record, which this conversion publishes " +
+				"as the boundary alone (writeCompaction): no written message states them, and the plan " +
+				"installs no evidence from that record. A later recorded outcome for the same call is " +
+				"the outcome its part carries; these are the boundary record's own events, named here " +
+				"rather than dropped",
 		})
 	}
 	return losses

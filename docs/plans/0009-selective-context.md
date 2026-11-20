@@ -883,3 +883,53 @@ measurement that decided it, followed by the review round's own:
     * **the record's two late gate excerpts are redacted** (review 7/7, a P3): the checkout and toolchain
       paths in the twelfth and thirteenth rounds' gate blocks now carry the record's own placeholders;
       the recorded verdicts are untouched.
+21. **The fifteenth review round's six findings.** The review of `9242e49..17a79b3` found six items (one
+    P1, five P2), all fixed, and this round's own section of the evidence record carries the mutations
+    that pin them (`M1`–`M8`).
+    * **the file's own chain is stepped through, not only the immediate parent** (review 1/6, a P1):
+      round 13 answered a record's place with the entry the file names as its parent, but a `parentId`
+      naming an entry the read does not hold (Pi writes a `model_change` between a result and the reply,
+      and the read resolves the record's ancestor through it) resolved in neither the ancestry walk's
+      message index nor the writer's entry map — the walk fell back to the read's projection, its
+      tool-result step reached the *later* sibling result, the writers' guard refused that off-line entry
+      and the reply was chained straight to the call: the first result stayed in the target file but fell
+      off the resumed walk. The file-side answer now walks the file's own `parentId` chain through the
+      entries the read does not carry whose kinds the harness's own loader keeps out of the context (and
+      the records the conversion accounts for as omitted), answering the nearest ancestor the read holds
+      (`piFileParent`); an entry this build cannot step through leaves the answer unresolved, exactly as
+      before. `TestContinueKeepsTheFilesOwnResultAcrossAMetadataEntry` pins the finding's repro; one
+      executed mutation (the resolution reverted to the immediate parent) fails it.
+    * **the fold refuses rows it cannot attribute** (review 2/6, a P2): the Codex invocation-unit fold
+      attributes a read-back row by the key it states, so two installed `function_call` records whose id,
+      tool and arguments are equal left every row ambiguous, both collapsed to occurrence 1, and a result
+      the reader attached to the second record verified as the first's. `codexFoldableRows` now requires
+      the units under an id to state distinct keys, leaving the read-back's rows standing for the
+      comparison; `TestCodexRoundTripAssertsTheOwningCallOfEachResult` gains the installed-bytes arms (the
+      misplaced output is reported; the control owned by the second occurrence holds no difference); one
+      executed mutation (the distinctness guard disabled) fails it.
+    * **the summary question reads the read's own pairing** (review 3/6, a P2): the writers' summary guard
+      and the report's `summaryDischarges` asked only the call's own record, so a summary whose call's
+      only recorded event sat on a *later* record (an id-recorded `running` progress event) was written
+      as the call's outcome by Codex, Claude and Pi/OMP and the report counted the call answered — while
+      OpenCode treats the summary as that event's view. On a reduced document both now ask the read's own
+      pairing (`callHasPairedRecordedEvent`), so the summary is suppressed, the call is counted
+      undischarged, and the default path keeps its message-local answer; the id-recorded control of
+      `TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress` asserts the report and the four
+      tree routes' outputs; one executed mutation (both halves reverted) fails it.
+    * **a skipped compaction record's evidence is counted** (review 4/6, a P2): the reduced OpenCode plan
+      installs no evidence from a compaction record (the writer publishes it as the boundary alone), and
+      with a later writable outcome for the same call the record's own result was dropped with no loss row
+      naming it; the plan now counts the record's recorded results
+      (`compaction_record_tool_results`, a row the reduction's report alone carries, the default path
+      keeping its own category list). `TestSelectionPlansNoEvidenceFromACompactionRecord` and
+      `TestSelectionReservesNoSlotForAResultThePlanDoesNotWrite` pin the count and the row's absence on
+      the default path; one executed mutation (the count removed) fails both.
+    * **the sparse file-ancestry case has its own citation** (review 5/6, a P2): the obligation that
+      authoritative ancestry survives an *excluded* record was cited only by rows for other windows; a
+      row of its own (`S6-file-excluded`) cites
+      `TestContinueKeepsASparseWindowsFileAncestryThroughAnExcludedReply`, and this round's metadata case
+      gets `S5-file-transparent`.
+    * **the D2 case pins the zero-count JSON class** (review 6/6, a P2): the case decoded the class into a
+      value struct and checked only `Count == 0`, so an omitted object or a zero-count object naming
+      ordinals passed; the case now asserts the raw JSON object's presence and its empty regions. Two
+      executed mutations (bogus regions behind a zero count; the JSON key renamed) fail it.

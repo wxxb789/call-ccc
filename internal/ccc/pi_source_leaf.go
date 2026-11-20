@@ -266,6 +266,12 @@ func (answer piSourceFileAnswer) lineMembership(conversation Conversation) []sou
 		}
 		current = next
 	}
+	held := make(map[string]bool, len(conversation.Messages))
+	for _, message := range conversation.Messages {
+		if id := strings.TrimSpace(message.SourceUUID); id != "" {
+			held[id] = true
+		}
+	}
 	line := make([]sourceFileLineAnswer, len(conversation.Messages))
 	for index, message := range conversation.Messages {
 		id := strings.TrimSpace(message.SourceUUID)
@@ -273,16 +279,55 @@ func (answer piSourceFileAnswer) lineMembership(conversation Conversation) []sou
 			continue
 		}
 		recordAnswer := sourceFileLineAnswer{holds: onPath[id], answered: true}
-		// The record's own place in the file's tree travels beside its membership: the entry the file's
-		// bytes name as its parent. The read may have answered that relation as a projection (a record
-		// the file placed under a tool result reads as hanging off the message that made the call), and a
-		// tree writer holding this answer chains the entry to the record the file named.
+		// The record's own place in the file's tree travels beside its membership: the record the file's
+		// own chain names as its nearest ancestor the read holds (piFileParent, which steps through the
+		// file's metadata entries the way the harness's own loader does). The read may have answered that
+		// relation as a projection (a record the file placed under a tool result reads as hanging off the
+		// message that made the call), and a tree writer holding this answer chains the entry to the
+		// record the file named.
 		if at, ok := answer.byID[id]; ok {
-			recordAnswer.parent = parentOfPiEntry(answer.entries[at])
+			recordAnswer.parent = piFileParent(answer.entries, answer.byID, held, answer.entries[at])
 		}
 		line[index] = recordAnswer
 	}
 	return line
+}
+
+// piFileParent answers the nearest ancestor record one entry's own file chain names that the read holds
+// an identity for, stepping through the entries the harness's own loader keeps out of the conversation
+// (piEntryKindsOutsideTheContext) and the records the conversion accounts for as omitted
+// (piAccountedSourceOmission). Pi writes metadata rows into the tree -- a `model_change` may stand
+// between a tool result and the reply that names it as its parent, and the loader's own walk passes
+// through it -- and a raw `parentId` answer for such a record names an entry this read never holds. A
+// consumer left with the read's own answer instead takes the projection (the reply reads as hanging off
+// the message that made the call), and the tree writer's tool-result step reaches the *last* result of
+// that call -- a later sibling the file's own leaf path leaves off -- so the reply is chained past the
+// result the file recorded. The file's own chain settles it: the walk steps through the entries the
+// source's conversation context does not hold and answers the first ancestor the read does, which is the
+// record the source's own loader would walk through. "" where the chain reaches an entry this build
+// cannot step through (a kind nothing here can say the conversation leaves out) or runs out (a root, a
+// parent the file does not hold, a loop): the caller's other places decide then, exactly as they did
+// before the file answered anything.
+func piFileParent(
+	entries []piConversationEntry, byID map[string]int, held map[string]bool, entry piConversationEntry,
+) string {
+	parent := parentOfPiEntry(entry)
+	for steps := 0; parent != "" && steps <= len(entries); steps++ {
+		at, ok := byID[parent]
+		if !ok {
+			return ""
+		}
+		if held[parent] {
+			return parent
+		}
+		ancestor := entries[at]
+		if !piEntryKindsOutsideTheContext[ancestor.Type] &&
+			!piAccountedSourceOmission(ancestor.Type, ancestor.Message.Role) {
+			return ""
+		}
+		parent = parentOfPiEntry(ancestor)
+	}
+	return ""
 }
 
 // check answers what one conversion could establish about the record the source's own loader selects as

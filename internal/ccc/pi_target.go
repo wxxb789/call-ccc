@@ -1090,13 +1090,20 @@ func (b *piSessionBuilder) writeToolEvidence(message Message, calls []piProjecte
 		if !ok {
 			continue
 		}
-		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
-			continue
-		}
 		// The summary is the call's own evidence and the call was written just above, within this very
 		// record: the pairing to hand the writer is that occurrence, so the ancestry check asks about the
 		// one place the pair really stands at.
 		place := callOccurrence{message: record, call: entry.index}
+		// A document a selection produced asks the read's own pairing: a recorded result event the read
+		// holds for this call occurrence -- wherever its record sits -- is the event the archive derived
+		// the summary from, so the summary is that event's view and the call's disposition follows the
+		// event's own (round 15's finding 3). A run without a selection keeps the message-local answer.
+		if b.selectionReduced && callHasPairedRecordedEvent(b.pairings, place) {
+			continue
+		}
+		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
+			continue
+		}
 		b.writeToolResult(&place, result, message.Timestamp, toolResultCarrierRecord(message))
 	}
 }

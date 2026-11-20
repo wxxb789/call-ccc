@@ -765,19 +765,30 @@ func codexCallEvidence(rows []readBackCall, installed []byte) []string {
 }
 
 // codexFoldableRows answers whether the read-back's rows under one stated id are the reader's projection
-// of the file's call records under it: every unit states a key this build can compare, the read-back
-// holds at least as many rows as the file holds records, and every row's key is one a unit states. A row
-// whose key no unit states is a call the reader read from a record these units do not account for, so
-// folding the id's rows into the units would hide it; an unkeyed unit (a record type whose call key this
-// build does not restate) leaves the id's rows standing for the same reason.
+// of the file's call records under it: every unit states a key this build can compare, the units state
+// *distinct* keys, the read-back holds at least as many rows as the file holds records, and every row's
+// key is one a unit states. A row whose key no unit states is a call the reader read from a record these
+// units do not account for, so folding the id's rows into the units would hide it; an unkeyed unit (a
+// record type whose call key this build does not restate) leaves the id's rows standing for the same
+// reason; and two units stating one key leave every row with that key ambiguous -- the fold attributes a
+// row by the key it states, so it cannot say which of the two records a row projects, and folding them
+// would let a result the reader attached to one occurrence be read as the other's (round 15's finding 2).
+// The writer's own documents state no such pair (a repeated recorded id is emitted under an id generated
+// from the occurrence's own place, colliding_call_ids), but this walk reads arbitrary installed bytes,
+// and the fold must not collapse records the file's own bytes cannot tell apart.
 func codexFoldableRows(units []codexInstalledCallUnit, rows []readBackCall) bool {
 	if len(rows) < len(units) {
 		return false
 	}
+	seenKeys := make(map[string]bool, len(units))
 	for _, unit := range units {
 		if !unit.keyed {
 			return false
 		}
+		if seenKeys[unit.key] {
+			return false
+		}
+		seenKeys[unit.key] = true
 	}
 	for _, row := range rows {
 		attributed := false

@@ -133,10 +133,11 @@ progress event itself is omitted and counted (`nonterminal_tool_events`) rather 
 answer, which is what a file whose format carries an outcome or nothing would read it as, and, on a run
 that carries a selection, an event that
 records no call id of its own — a link only the writer's inference makes — does not stand in for the
-summary the read stored on the call, which is still written (there only an event recording the call's own
-id suppresses it, because the summary is then that event's view; a run without the flag keeps the writer's
-own marking, in which an id-less event names the sole call still awaiting a result, so the summary is not
-written and the call is counted unanswered on the written path). On a target whose session is a tree, a
+summary the read stored on the call, which is still written (there only an event the read's own pairing
+names for that call -- the call's own id recorded on it, wherever the event's record sits -- suppresses
+it, because the summary is then that event's view; a run without the flag keeps the writer's own
+message-local marking, in which an id-less event names the sole call still awaiting a result, so the
+summary is not written and the call is counted unanswered on the written path). On a target whose session is a tree, a
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
 line (a window whose own end stands off that line is refused by name rather than written under a branch --
@@ -146,8 +147,9 @@ and an on-line record is never chained under an identity-less record the line le
 for a source whose own file stands behind the read (a Pi-family session the conversion read from its file
 itself), that line is the file's own leaf path -- the walk its own loader makes from the file's last entry
 -- for every record the read answered an identity for, and the same read answers each of those records'
-own place in the file's tree (the entry its `parentId` names), which a tree target writes: the entry hangs
-off the record the file named, so the read's lossy tool-result step cannot put a
+own place in the file's tree (the nearest ancestor its `parentId` chain names that the read holds a record
+for, stepping through entries the read does not carry that the harness's own loader keeps out of the
+context), which a tree target writes: the entry hangs off the record the file named, so the read's lossy tool-result step cannot put a
 result the source's file left beside the conversation back on the resumed walk -- and a call whose file
 holds two results keeps the result the file recorded between the call and the record that follows it, not
 the projection's most recent one -- while a window ending on a result the file left beside the
@@ -172,7 +174,9 @@ as a repeat; on a run that carries a selection an event the part cannot state �
 text, a status word the tool states cannot spell — is counted where the writer counts the same result and
 yields that slot to a later recorded outcome the part *can* state, and a record the writer publishes as a
 boundary alone contributes no planned outcome at all (its evidence is not a state any message of this
-document holds, so the recorded result the document can state is the one written), while a run without the
+document holds, so the recorded result the document can state is the one written, and the record's own
+recorded results are counted `compaction_record_tool_results` rather than dropped unnamed), while a run
+without the
 flag keeps the
 first recorded outcome in the slot).
 A call occurrence whose recorded id an earlier written occurrence already holds is written under an id
@@ -182,7 +186,9 @@ asserts that ownership: a result item names the call item it was written for and
 attachment is compared with it, rather than trusting the id and the text. A reader that projects one call
 record into several rows (Codex reads one `apply_patch` as one call per file it names) is compared as the
 file's own record units, so a file holding several call envelopes is not read as one — rows the file's own
-records do not account for keep standing, so an extra invocation under a shared id is still reported —
+records do not account for keep standing, so an extra invocation under a shared id is still reported, and
+rows whose keys cannot name one record — two records under an id whose id, tool and arguments are equal —
+keep standing too, so an output the reader attached to the wrong one of them is reported —
 and an owner a tree format states is resolved through the result's own recorded ancestry rather than by
 file order, following the installed file's own entry chain where a parent names an entry the read-back
 holds no message for. The flat

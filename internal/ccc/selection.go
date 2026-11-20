@@ -815,12 +815,14 @@ type selectionPair struct {
 // occurrence the same non-empty id recorded *before* it -- the reading the inherited readers' own
 // termination check takes
 // (internal/parser/termination.go's hasOrphanedToolCall counts only results recorded after the call it
-// answers), so a reused id does not make an earlier pair's records the counterpart of a later call -- and
-// answered names, per call message, the ids of the calls an *outcome* result thus answers. The pairing is
-// the read's own relation rather than a consumption: two results after one call both pair with it (a
-// streamed terminal event beside a summary), and a call the source recorded after an outcome that lies
-// before it is not answered by it.
-func selectionPairing(conversation Conversation) ([]selectionPair, map[int]map[string]bool) {
+// answers), so a reused id does not make an earlier pair's records the counterpart of a later call --
+// and answered names, per call message, the ids of the calls an *outcome* result thus answers, and paired
+// is the walk's own map, occurrence to occurrence, for a caller asking about one call's recorded events
+// (the report's summary question, which reads it the way the writers do). The pairing is the read's own
+// relation rather than a consumption: two results after one call both pair with it (a streamed terminal
+// event beside a summary), and a call the source recorded after an outcome that lies before it is not
+// answered by it.
+func selectionPairing(conversation Conversation) ([]selectionPair, map[int]map[string]bool, map[resultOccurrence]callOccurrence) {
 	paired := pairedCallOccurrences(conversation)
 	var pairs []selectionPair
 	answered := map[int]map[string]bool{}
@@ -844,12 +846,12 @@ func selectionPairing(conversation Conversation) ([]selectionPair, map[int]map[s
 			answered[call.message][id] = true
 		}
 	}
-	return pairs, answered
+	return pairs, answered, paired
 }
 
 // selectionPairs answers the pairs half of selectionPairing, for the closure and the strict refusal.
 func selectionPairs(conversation Conversation) []selectionPair {
-	pairs, _ := selectionPairing(conversation)
+	pairs, _, _ := selectionPairing(conversation)
 	return pairs
 }
 
@@ -951,12 +953,13 @@ func strictSelectionRefusal(conversation Conversation, pair selectionPair, callS
 // answered -- or as undischarged -- by a guess in the other direction.
 //
 // An archive read's own summary of a call is outcome evidence too: where the call carries one and the
-// read holds no recorded result of its own for it (callHasRecordedResult, the writers' own guard, under
-// which they write that summary as the call's outcome), the source recorded the outcome -- in the
-// archive's derived column rather than as a result event -- and the call is not among the undischarged,
-// exactly as the routes that write the summary do not leave it out. Where a recorded result event does
-// stand for the call, the summary is a view of it and the call's disposition follows that event, not the
-// column.
+// read holds no recorded result *event* of its own for the call occurrence (the writers' own guard:
+// callHasRecordedResult message-locally, callHasPairedRecordedEvent through the read's pairing on a
+// reduced document), the source recorded the outcome -- in the archive's derived column rather than as a
+// result event -- and the call is not among the undischarged, exactly as the routes that write the
+// summary do not leave it out. Where a recorded result event does stand for the call, wherever its record
+// sits, the summary is a view of that event and the call's disposition follows the event, not the column:
+// a later progress event leaves the call undischarged although a summary exists (round 15's finding 3).
 //
 // Progress is not an answer: a result whose recorded status says the call is still running (a Codex
 // subagent's `running` notification, a streamed chunk) is the read's record of a call that has not
@@ -964,20 +967,25 @@ func strictSelectionRefusal(conversation Conversation, pair selectionPair, callS
 // the inherited termination rule reads the same event the same way, an id-less progress event cannot
 // establish an outcome either, and the writers that refuse to write such an event as an outcome count the
 // call on their own side (unpaired_tool_calls on OpenCode). The answers are selectionPairing's own (one
-// walk for both the closure and this count), so no second accounting can disagree with the pairing: an
-// earlier result does not resolve a later call, and a later outcome does not retroactively answer an
-// earlier call the seam paired with nothing.
+// walk for the closure, this count and the summary question), so no second accounting can disagree with
+// the pairing: an earlier result does not resolve a later call, and a later outcome does not retroactively
+// answer an earlier call the seam paired with nothing.
 func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
-	_, answered := selectionPairing(conversation)
+	_, answered, paired := selectionPairing(conversation)
 	// summaryDischarges answers whether the archive's own summary of a call is the outcome evidence the
-	// read holds for it: the summary exists (ResultContent) and the read holds no recorded result of its
-	// own for the call, which is exactly where the writers carry the summary as the call's outcome rather
-	// than treating it as a view of a recorded event (callHasRecordedResult).
-	summaryDischarges := func(call ToolCall, results []ToolResult, id string) bool {
+	// read holds for it: the summary exists (ResultContent) and the read holds no recorded result event of
+	// its own for the call occurrence -- neither a result the call's own record carries under the id nor,
+	// through the read's own pairing, one anywhere else in the read -- which is exactly where the writers
+	// carry the summary as the call's outcome rather than treating it as a view of a recorded event
+	// (callHasRecordedResult, callHasPairedRecordedEvent).
+	summaryDischarges := func(call ToolCall, results []ToolResult, id string, place callOccurrence) bool {
 		if _, ok := derivedResultSummary(call, id); !ok {
 			return false
 		}
-		return !callHasRecordedResult(results, id)
+		if callHasRecordedResult(results, id) {
+			return false
+		}
+		return !callHasPairedRecordedEvent(paired, place)
 	}
 	// idLessResultAfter answers, per message position, whether the carried document holds an id-less
 	// result that states an outcome at or after it: the writers' inference (the sole outstanding call in
@@ -1005,10 +1013,11 @@ func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
 		}
 		units, discharged := 0, 0
 		seen := map[string]bool{}
-		for _, call := range message.ToolCalls {
+		for callIndex, call := range message.ToolCalls {
 			id := strings.TrimSpace(call.ToolUseID)
+			place := callOccurrence{message: index, call: callIndex}
 			if id == "" {
-				if !idLessResultAfter[index] && !summaryDischarges(call, message.ToolResults, "") {
+				if !idLessResultAfter[index] && !summaryDischarges(call, message.ToolResults, "", place) {
 					units++
 				}
 				continue
@@ -1018,7 +1027,7 @@ func undischargedCalls(conversation Conversation, carried []bool) (int, []int) {
 			}
 			seen[id] = true
 			units++
-			if answered[index][id] || summaryDischarges(call, message.ToolResults, id) {
+			if answered[index][id] || summaryDischarges(call, message.ToolResults, id, place) {
 				discharged++
 			}
 		}

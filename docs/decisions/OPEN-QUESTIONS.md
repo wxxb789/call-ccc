@@ -3391,3 +3391,43 @@ supersede it with a newer one and say which it supersedes.
   and the displaced outcome's members answer the reduced documents only, the default path keeping the
   reconstruction, and a boundary record's outcome is disclosed by its call's own row" and "the file's own
   relation governs the default path too, or the boundary record's evidence gets a row of its own".
+
+## Q-0009-16 — The file chain steps through the entries the read does not hold, the fold refuses units it cannot tell apart, and a reduced summary reads the read's own pairing
+
+- **Status:** open (defaults taken: the file-side answer a Pi-family read gives for a record's place walks
+  the file's own `parentId` chain through the entries the read does not carry whose kinds the harness's own
+  loader keeps out of the conversation — a `model_change` between a result and the reply is stepped
+  through, so the reply hangs off the result the file recorded rather than off the call the read's
+  projection answers or the later sibling result the projection step reaches — and an entry this build
+  cannot step through leaves the answer unresolved, exactly as before; the Codex round-trip check's
+  invocation-unit fold refuses to attribute a row whose key more than one of the file's own records states,
+  leaving the read-back's rows standing for the comparison, so an output the reader attached to the wrong
+  one of two records with identical fields is reported rather than accepted under the other's occurrence;
+  and on a document a selection produced, the archive's summary of a call is written only where the read's
+  own pairing holds no recorded result event for the call occurrence — a later id-recorded progress event
+  is that event's view, the writers refuse the summary and the call stays counted undischarged — while a
+  run without a selection keeps the message-local guard, and the boundary record's own recorded results a
+  reduced OpenCode plan does not publish are counted `compaction_record_tool_results`, a row the
+  reduction's report alone carries.)
+- **Question:** may the file chain's resolution and the summary's read-wide question govern the *default*
+  path too (the file's chain is the source's own and the read's projection is the lossy one; the archive
+  derives the summary from the read's events, not from one record), and should a boundary record's omitted
+  evidence keep a reduction-only row or be counted on every report?
+- **Default taken:** each answer is scoped to what the finding measured — every reviewed defect is about a
+  *selected* conversion (the round-12 fixture's selection, the reduced Codex verification, the id-recorded
+  control's selection, the reduced plan) — and a run without a selection keeps its bytes, its counts and
+  its report (goal 0009's D4), which this round's probe re-run measures (the current tree's 1312 lines are
+  byte-identical to the previous round's own current-tree run). The `compaction_record_tool_results` row
+  answers the thirteenth round's open question in the direction that round's review named: the boundary
+  record's omitted evidence now has a row of its own, scoped to the reduction as `colliding_call_ids` is;
+  counting it on the default path's report remains the operator's call.
+- **Reversal:** the pre-fix behaviour returns by answering a record's file parent with its immediate
+  `parentId` entry, by letting the fold take units that state one key, by dropping the read-wide question
+  from `summaryDischarges` and the three writers' reduced guard, by removing the boundary record's count
+  and its row, and by returning the D2 case to the decoded count-only assertion — each reopens the failure
+  its mutation records (`docs/evidence/0009-selective-context.md`, fifteenth round, `M1`–`M8`).
+- **Settled by:** an operator decision between "the file chain's resolution, the fold's distinct-key
+  refusal and the summary's read-wide question answer the reduction's documents only (the default path
+  keeps its immediate-parent answer, its fold and its message-local summary guard), and the boundary
+  record's row stays the reduction's" and "the file's own chain and the read's own pairing govern the
+  default path too, or the boundary record's evidence is counted on every report".

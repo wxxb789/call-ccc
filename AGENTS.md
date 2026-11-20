@@ -61,7 +61,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   had (D4), and the fold itself may only replace rows the file's own records account for — a call record
   the reader reads under an id the document's call holds, of a type whose key this build does not state, or
   a row whose key no record under that id states, leaves the read-back's rows standing for the comparison
-  rather than disappearing behind the fold — and an owner a tree format states (the
+  rather than disappearing behind the fold — and a row's key says which record it projects only where the
+  records under that id state distinct keys: two records whose id, tool and arguments are equal leave every
+  row with that key ambiguous between them, so they too leave the read-back's rows standing and a result
+  the reader attached to the wrong one of them is reported rather than accepted under the other's
+  occurrence — and an owner a tree format states (the
   Pi family, the Claude transcript) is resolved through the result's own recorded ancestry, never by file
   order, following the *installed file's* own entry chain where a parent names an entry the read-back holds
   no message for: the Claude reader merges the assistant entries of one message id into the run's last
@@ -343,7 +347,9 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   or status has no shape — reserves nothing, and the plan reads the same eligibility on a reduced document:
   a compaction record's calls and results are not planned at all, because the writer publishes that record
   as the boundary alone (`writeCompaction`), so planning one would fill a call's slot with a result no
-  message states and the recorded result the document *can* state would read as a repeat; and a reserved
+  message states and the recorded result the document *can* state would read as a repeat — and the
+  record's own recorded results are counted (`compaction_record_tool_results`, a row the reduction's
+  report alone carries, the default path keeping its own category list) rather than dropped unnamed; and a reserved
   occurrence still counts as unanswered where the
   id-less result stands, so an ambiguous window omits the event rather than binding it; the same
   writability rule holds the slot itself on a reduced document, where an event the part cannot state (no
@@ -380,7 +386,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   an id-less progress event still stands in for the call's stored summary there, which is the answer the
   base revision gave and what goal 0009's D4 requires the default path to keep — and an archive
   read's own summary of an outcome on the call itself (`ToolCall.ResultContent`) is outcome evidence where
-  the read holds no recorded result event of the call, so that shape is not counted; whether a
+  the read holds no recorded result event of the call — on a reduced document the read's own pairing
+  answers that question, wherever the event's record sits (a result the call's own record carries
+  included), so a summary beside a later progress event is that event's view and the writers refuse it,
+  leaving the call undischarged — so that shape is not counted; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
   losses (`unpaired_tool_calls` on OpenCode). **The line is the read's own**: which records the source's relations place on the
   line its loader walks is a property of the read, and a selection neither moves a record onto that line nor
@@ -389,8 +398,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   entries once and its own leaf path — the walk from the file's last entry back through `parentId`, the walk
   harness's own loader builds the context from — is the line the selection's flags are taken from for
   every record the read answered an identity for, and the same read answers each of those records' own
-  place in the file's tree (its `parentId`), which a tree target writes: the entry hangs off the record
-  the file named rather than the place the read's projection step reaches, so a call whose file holds two
+  place in the file's tree — the nearest ancestor its own `parentId` chain names that the read holds a
+  record for, stepping through the entries the read does not carry that the harness's own loader keeps
+  out of the context (a `model_change` Pi wrote between a result and the reply is one such entry: the
+  reply hangs off the result, not off the call the read's projection answers) — which a tree target
+  writes: the entry hangs off the record the file named rather than the place the read's projection step
+  reaches, so a call whose file holds two
   results keeps the *recorded* one between the call and the record that follows it on the walk a resumed
   session makes — the projection step takes the call's most recent result, and a later sibling the file's
   leaf path leaves off would carry the record past the result the file recorded — and the relation the

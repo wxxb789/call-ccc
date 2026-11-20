@@ -124,6 +124,34 @@ func TestContinueWithASelectionCarriesTheSelectedRecordsAndReportsTheClasses(t *
 	if selection.CallsUndischarged.Count != 0 {
 		t.Errorf("calls_undischarged = %+v, want none: the window holds no unanswered call", selection.CallsUndischarged)
 	}
+	// The class is an object of its own even at its zero value, and a zero count names no ordinal: an
+	// omitted object or a zero-count object with regions behind it leaves a consumer unable to read the
+	// report's answer exactly where it says there is nothing to report, and the decoded declaration
+	// above cannot tell either shape from the zero it decodes to (round 15's finding 6).
+	var rawDocument struct {
+		Selection map[string]json.RawMessage `json:"selection"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &rawDocument); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	rawClass, ok := rawDocument.Selection["calls_undischarged"]
+	if !ok {
+		t.Fatalf("the selection section holds no calls_undischarged object: %v", rawDocument.Selection)
+	}
+	var rawUndischarged struct {
+		Count   *int     `json:"count"`
+		Regions []string `json:"regions"`
+	}
+	if err := json.Unmarshal(rawClass, &rawUndischarged); err != nil {
+		t.Fatalf("calls_undischarged is not one JSON object: %v", err)
+	}
+	if rawUndischarged.Count == nil || *rawUndischarged.Count != 0 {
+		t.Errorf("calls_undischarged count = %v, want 0", rawUndischarged.Count)
+	}
+	if len(rawUndischarged.Regions) != 0 {
+		t.Errorf("calls_undischarged regions = %v, want none: a zero count has no ordinal to name",
+			rawUndischarged.Regions)
+	}
 	// The counts reconcile with the conversion's own: the writer was handed the two carried records, and
 	// what it holds for them is their one call/result pair. The conversion's message count is the target's
 	// own vocabulary -- a record that carried only a tool call or only a result is not a message in either
