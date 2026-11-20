@@ -805,9 +805,17 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # (`internal/parser/codex.go`'s `handleCompacted`), so no boundary can stand outside the plan by carrying
 # no `message`; and where a plan is compared, a boundary that carries a native `replacement_history` is
 # refused as well, because dialogue that member holds is dialogue the plan — whose boundary identity is
-# the summary alone — cannot account for, and this route's writer emits only the summary. The structural
-# half refuses an output written before its owner in either mode: the target's own reader keeps such an
-# event as an unattached update rather than a result on its call
+# the summary alone — cannot account for, and this route's writer emits only the summary. The same holds
+# for every `response_item` a read turns into an occurrence the receipt's vocabulary cannot name: an
+# artifact's `session_meta` naming an agent path plus an inter-agent `agent_message` addressed to it is a
+# user message to the carried reader (`internal/parser/codex.go`'s `handleAgentMessage`), a payload type
+# the reader's switch does not take but which carries a `user`/`assistant` role and readable text is a
+# message to its default branch, and an `image_generation_call` is a tool call whose identity lives in
+# members the receipt does not have — before this refusal, an omitted prompt written into such a shape
+# travelled through receipt validation unnoticed (review round r4's finding). A `reasoning` item is not
+# one of these: the reader answers it as a thinking row with an explicitly empty dialogue projection, so
+# it carries no dialogue. The structural half refuses an output written before its owner in either mode:
+# the target's own reader keeps such an event as an unattached update rather than a result on its call
 # (`internal/parser/codex_collecting_sink.go`), and this route's writer never emits one there.
 # ===================================================================================================
 
@@ -852,9 +860,12 @@ ORACLE_RULES: dict[str, str] = {
         "`response_item` and the turn-view `event_msg`",
     "oracle.plan-accounted":
         "the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks "
-        "`omitted`, one it names nowhere, and a compaction boundary's `replacement_history` — dialogue "
-        "this route's writer never emits — are equally refused; the plan is total, in both of the "
-        "target's dialogue channels",
+        "`omitted`, one it names nowhere, a compaction boundary's `replacement_history`, and a "
+        "`response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the "
+        "inter-agent `agent_message` addressed to the session's own agent path, any other payload type "
+        "whose `user`/`assistant` role and readable text a read appends as a message, and an "
+        "`image_generation_call` — are equally refused; the plan is total, in both of the target's "
+        "dialogue channels",
     "oracle.plan-order":
         "the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, "
         "and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past "
@@ -1002,6 +1013,24 @@ def oracle_blank(text: str) -> bool:
     return all(oracle_is_space(character) for character in text)
 
 
+def oracle_go_trim(text: str) -> str:
+    """What Go's own `strings.TrimSpace` answers for one string: the text without the space set
+    `oracle_is_space` names at either end.
+
+    Not `str.strip`: the carried reader trims an inter-agent `recipient` and the session's `agent_path`
+    with `strings.TrimSpace` (`internal/parser/codex.go`'s `extractCodexInboundAgentMessage` and
+    `handleSessionMeta`), and Python's predicate strips the information separators U+001C–U+001F Go's
+    does not (the same difference `oracle_blank` states), so a trimming written with `str.strip` would
+    compare two values the reader compares differently.
+    """
+    start, end = 0, len(text)
+    while start < end and oracle_is_space(text[start]):
+        start += 1
+    while end > start and oracle_is_space(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
 def oracle_value_text(value: object) -> str:
     """One member's value as a diagnostic names it: what kind of value it is and, for the kinds that can
     hold the conversation's own words, how much of it there is — never the value itself.
@@ -1035,8 +1064,14 @@ def oracle_digest(text: str) -> str:
     value that identifies a record is named by the first 12 hex digits of its SHA-256: a reader can tell
     two identities apart, or match a record against a receipt entry, without the report echoing the value
     (review round r3's finding; the object shapes are `oracle_value_text`'s).
+
+    The encoding is strict UTF-8 with `surrogatepass`: JSON's `\\ud800`-style escape decodes to a lone
+    surrogate code point, which `str.encode("utf-8")` refuses — an unmatched output whose `call_id` was
+    such a string ended the run in a `UnicodeEncodeError` traceback instead of a printed verdict (review
+    round r4's finding) — while `surrogatepass` writes each surrogate as its own three-byte form, which
+    is injective (no non-surrogate text encodes to those bytes), so two identities stay distinguishable.
     """
-    return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}"
+    return f"sha256:{hashlib.sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()[:12]}"
 
 
 def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
@@ -1341,41 +1376,34 @@ def oracle_call_name(payload: dict) -> str:
 
 
 def oracle_call_arguments(payload: dict) -> str:
-    """One call's own recorded input, as the occurrence identity counts it: the `arguments` member — the
-    shape this route's writer emits — or, where that member is absent or holds nothing, the `input`
-    member a `custom_tool_call` carries its input in, for either call family, because that is how the
-    carried reader reads it (`internal/parser/codex.go`'s `extractCodexInputJSON` checks `arguments` then
-    `input`, skips an empty or `{}`/`[]` value, and answers the string itself or the value's JSON
-    spelling).
+    """One call's own recorded input, as the occurrence identity counts it: **what the record writes** in
+    its `arguments` member — the shape this route's writer emits — or, where that member is absent or
+    blank, the `input` member a `custom_tool_call` carries its input in, for either call family.
 
-    Reading the same two members in the same order is what keeps the identity the read's own answer: an
-    input-only custom call (the shape Codex's own files write, `internal/parser/codex_provider_test.go`)
-    is counted by that input rather than as an invocation with none, and a receipt's `arguments` member
-    names the recorded input whichever of the two members held it (review round r3's finding).
+    The identity is the written member and not the carried reader's projection of it (review round r4's
+    finding). `internal/parser/codex.go`'s `extractCodexInputJSON` skips an empty or `{}`/`[]` value and
+    answers the trimmed text, and an identity written from that read made two different records one
+    occurrence: this route's writer emits `arguments: "{}"` for a call whose source recorded no input
+    (`internal/ccc/codex_target.go`: `input = "{}"`, counted as `lossEmptyInputs`), so a receipt naming
+    the written `"{}"` was a mismatch against the correct artifact, while a receipt using the read's
+    empty identity certified both that artifact and one a mutation left with no `arguments` member at
+    all. The member is read exactly as written (a blank one falls through to `input`, the member
+    preference the read shares), because only then is a substituted invocation a different occurrence.
+
+    A non-string member is kept as its JSON spelling, the same convention `oracle_result_text` states: an
+    absent one is the empty string, and a member written as `null` is the string `null` the reader
+    answers for it.
     """
     for member in ("arguments", "input"):
         if member not in payload:
             continue
         value = payload[member]
         if isinstance(value, str):
-            trimmed = value.strip()
-            if trimmed == "" or trimmed in ("{}", "[]"):
+            if oracle_blank(value):
                 continue
-            return trimmed if _oracle_valid_json(trimmed) else value
-        raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-        if raw in ("{}", "[]"):
-            continue
-        return raw
+            return value
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     return ""
-
-
-def _oracle_valid_json(text: str) -> bool:
-    """Whether gjson — the carried reader's own parser — would read `text` as JSON."""
-    try:
-        json.loads(text, parse_constant=_reject_json_constant)
-    except ValueError:
-        return False
-    return True
 
 
 def oracle_boundary_text(payload: dict) -> str:
@@ -1423,6 +1451,132 @@ def oracle_boundary_history_violations(records: list[tuple[int, dict]]) -> list[
                                     f"({oracle_value_text(history)}); the receipt's boundary identity is "
                                     f"the summary alone, so the plan cannot account for dialogue written "
                                     f"in that member — this route's writer emits only the summary"))
+    return violations
+
+
+def oracle_agent_path(records: list[tuple[int, dict]]) -> str:
+    """The session's own agent path, read from the artifact's `session_meta` the way the carried reader
+    reads it: `payload.agent_path`, else the `payload.source.subagent.thread_spawn.agent_path` a subagent
+    session carries it in (`internal/parser/codex.go`'s `handleSessionMeta`), each through Go's own
+    trimming (`oracle_go_trim`). The empty string where the artifact names none — the artifact standing
+    alone is all this reads; D2's subject is that no source session is consulted.
+    """
+    for _, record in records:
+        if record.get("type") != "session_meta":
+            continue
+        payload = oracle_payload(record)
+        direct = payload.get("agent_path")
+        candidates = [direct] if isinstance(direct, str) else []
+        source = payload.get("source")
+        subagent = source.get("subagent") if isinstance(source, dict) else None
+        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+        if isinstance(spawn, dict) and isinstance(spawn.get("agent_path"), str):
+            candidates.append(spawn["agent_path"])
+        for candidate in candidates:
+            trimmed = oracle_go_trim(candidate)
+            if trimmed != "":
+                return trimmed
+        return ""
+    return ""
+
+
+def oracle_agent_message_text(payload: dict) -> str:
+    """One inter-agent message's delivered text, as the carried reader collects it
+    (`extractCodexInboundAgentMessage`): the `encrypted_content` string of every block typed
+    `encrypted_content`, kept where it is not empty and joined in the record's order.
+
+    The reader's own display test for an opaque Fernet envelope (`isCodexEncryptedToolContent`) is
+    deliberately **not** mirrored here: it decides what that reader chooses to show, not what the
+    record's bytes can carry, and a plan that names nothing for the record cannot account for its
+    delivered text either way (see `oracle_unaccounted_occurrence_violations`).
+    """
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return ""
+    texts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "encrypted_content":
+            continue
+        text = block.get("encrypted_content")
+        if isinstance(text, str) and text != "":
+            texts.append(text)
+    return "\n".join(texts)
+
+
+#: The `response_item` payload types the carried reader takes in its own switch before its `role` branch
+#: (`internal/parser/codex.go`'s `handleResponseItem`): each is read as a call, its output, a reasoning
+#: row or an inter-agent message, never through the role the branch below the switch reads. The three
+#: families this route's vocabulary names are not in this list because they are occurrences the receipt
+#: can account for; the rest are here so a record of one of them carrying a role and text is not read as
+#: a message this oracle would then have to refuse.
+ORACLE_INTERCEPTED_ITEMS = (
+    "function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output",
+    "agent_message", "image_generation_call", "reasoning",
+)
+
+
+def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.plan-accounted`, for the occurrences a read makes that the receipt cannot name.
+
+    The receipt's vocabulary is this route's four evidence kinds, and every identity it states is read
+    from the artifact's own members. A `response_item` outside that vocabulary can still be an occurrence
+    to the carried reader, and then the plan cannot account for it in any spelling — review round r4's
+    finding wrote the reduced plan's omitted prompt into a `message`-shaped record declared with the
+    payload type `agent_message`, and receipt validation certified it because neither accounting rule saw
+    the shape at all. The shapes are enumerated rather than the refusal narrowed to the one:
+
+    - an inter-agent `agent_message` addressed to the session's own agent path, whose delivered text
+      `handleAgentMessage` appends as a **user** message (`oracle_agent_message_text` states the one
+      gate of that read this oracle does not mirror);
+    - a payload type the reader's switch does not take, carrying a `user`/`assistant` role and readable
+      text: the reader's default branch appends it as a message (`extractCodexContent` over
+      `extractCodexTextBlocks`), and the vocabulary names only the `message` item;
+    - an `image_generation_call`, which `handleImageGenerationCall` appends as a tool call whose
+      identity is read from the payload's `id` and raw text — members the receipt's
+      `call_id`/`name`/`arguments` identity has no place for.
+
+    Each is refused where a plan is compared and silent without one: a native rollout may legitimately
+    carry these shapes, and the structural rules say nothing about them (measured: 19 inter-agent
+    `agent_message` records across Codex 0.170.0's own 25 host sessions, §0 of the evidence record). A
+    `reasoning` item is deliberately not one of them: the reader answers it as a thinking row with an
+    explicitly empty dialogue projection (`handleReasoning`: `DialogueText: new("")`), so it carries no
+    dialogue the plan's dialogue accounting could be total over.
+    """
+    agent_path = oracle_agent_path(records)
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = oracle_payload(record)
+        item = payload.get("type")
+        if item == "message" or item in ORACLE_CALL_ITEMS or item in ORACLE_RESULT_ITEMS:
+            continue  # the vocabulary's own shapes; the accounting rules read them
+        if item == "agent_message":
+            recipient = payload.get("recipient")
+            delivered = oracle_agent_message_text(payload)
+            if (agent_path == "" or not isinstance(recipient, str)
+                    or oracle_go_trim(recipient) != agent_path or oracle_blank(delivered)):
+                continue
+            found = (f"the artifact holds an inter-agent `agent_message` addressed to the session's own "
+                     f"agent path carrying delivered text ({oracle_value_text(delivered)})")
+        elif item == "image_generation_call":
+            found = ("the artifact holds an `image_generation_call`, which a read appends as a tool call "
+                     "whose identity (the payload's `id` and raw text) the receipt's `call_id`/`name`/"
+                     "`arguments` identity has no members for")
+        elif item not in ORACLE_INTERCEPTED_ITEMS:
+            role = payload.get("role")
+            text = oracle_message_text(payload)
+            if role not in ORACLE_MESSAGE_ROLES or oracle_blank(text):
+                continue
+            found = (f"the artifact holds a `response_item` whose payload type is "
+                     f"{oracle_value_text(item)} carrying a `{role}` role and readable text "
+                     f"({oracle_value_text(text)})")
+        else:
+            continue
+        violations.append(Violation("oracle.plan-accounted", line,
+                                    f"{found}; the receipt's vocabulary cannot name that occurrence, so "
+                                    f"the plan cannot account for it — this route's writer writes no such "
+                                    f"record"))
     return violations
 
 
@@ -1755,6 +1909,7 @@ def oracle_reading(text: str, receipt: object = _NO_RECEIPT
             violations += oracle_plan_violations(plan, occurrences, view_occurrences)
             violations += oracle_plan_order_violations(plan, occurrences, view_occurrences)
             violations += oracle_boundary_history_violations(records)
+            violations += oracle_unaccounted_occurrence_violations(records)
     return records, occurrences, sorted(
         violations, key=lambda violation: (violation.line, violation.rule, violation.detail))
 

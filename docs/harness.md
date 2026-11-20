@@ -379,8 +379,14 @@ says so.
   dialogue message read against both of the artifact's dialogue channels, the emitted order read against
   the receipt's own in both channels, every `compacted` record an occurrence whether or not it carries
   a summary, a boundary carrying a native `replacement_history` refused where a receipt is compared,
-  every call output required to name a call written before it, and a receipt that declares no
-  occurrences refused before any comparison). It
+  a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent
+  `agent_message` addressed to the session's own agent path, another payload type carrying a
+  `user`/`assistant` role and readable text, and an `image_generation_call` among them — refused there
+  too, every call output required to name a call written before it, and a receipt that declares no
+  occurrences refused before any comparison). The identity the receipt is matched on is the member the
+  artifact **writes** — a call's `arguments` read exactly as written, so this route's writer's deliberate
+  `"{}"` is not the carried read's empty answer — and a call or result substituted under an unchanged
+  `call_id` is a different occurrence. It
   needs no harness, no source transcript and no selection semantics: its input is the artifact's text, so
   a reduced (selective) artifact is validated with the source absent from the process. Its verdict line is
   the last one printed — `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — …` —
