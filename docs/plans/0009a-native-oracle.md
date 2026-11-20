@@ -53,10 +53,10 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
 | `oracle.clock` | envelope instants never decrease |
 | `oracle.message` | a `response_item` message: non-empty `role`; a non-empty `content` whose blocks are typed `input_text`/`output_text`/`text` with string `text`, at least one non-blank |
 | `oracle.event-message` | a `user_message`/`agent_message` event carries a non-empty string `message` |
-| `oracle.call-pairing` | call ids are non-empty and unique; every call output names a call the artifact carries **before it** — an output written first attaches to nothing in the carried reader |
+| `oracle.call-pairing` | call ids are non-empty and unique and a call carries the non-empty `name` the carried reader registers — a record without one is no call, so an output naming it attaches to nothing; every call output names a call the artifact carries **before it** |
 | `oracle.receipt` | the receipt is an object whose `occurrences` are well-formed entries (`kind`, the identity its kind needs — a result's is its call id **and its recorded text**, a call's its call id, name and recorded input, the receipt's `arguments` member naming whichever of the artifact's `arguments`/`input` members wrote it, read exactly as written — `disposition` ∈ `emitted`/`omitted`); a receipt that declares no occurrences is refused rather than compared |
 | `oracle.plan-emitted` | every occurrence the receipt marks emitted is present in the artifact, as many times as it is marked — a dialogue message in both of the artifact's channels (the model-visible `response_item` and the turn-view `event_msg`) |
-| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, an occurrence it names nowhere, a compaction boundary's `replacement_history`, a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name (an inter-agent `agent_message` addressed to the session's own agent path, another payload type carrying a `user`/`assistant` role and readable text, an `image_generation_call`), and a shape whose own read this oracle does not model (a call carrying both `arguments` and `input`, an object-valued `content` a read iterates the member values of) are equally refused, in both dialogue channels |
+| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, an occurrence it names nowhere, a compaction boundary's `replacement_history`, a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name (an inter-agent `agent_message` addressed to the session's own agent path, another payload type carrying a `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside the writer's two carrying readable text, a `custom_tool_call_output` whose carried read answers the result's outcome the receipt's identity cannot state), and a shape whose own read this oracle does not model (a call carrying both `arguments` and `input`, an object-valued `content` a read iterates the member values of) are equally refused, in both dialogue channels |
 | `oracle.plan-order` | the emitted occurrences stand in the artifact in the receipt's own order — a compaction boundary moved past later turns compacts a different history with every count unchanged |
 | `oracle.plan-pairs` | a call and its recorded result carry the same disposition |
 
@@ -104,6 +104,30 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   keeps the last value for a repeated name and the carried reader's `gjson` the first, so such a line is
   one two readers answer differently for; the receipt document is read through the same rule, a repeated
   receipt member making the document unreadable rather than compared (review round r5's finding).
+- *A `message` in a role the receipt cannot name is refused where a plan is compared* — developer-role
+  messages are a native shape Codex's own files carry (57 across the measured 25 sessions), so the
+  structural `oracle.message` rule admits any non-empty role; the occurrence vocabulary names the
+  writer's two roles, so a `message` carrying readable text in any other role is one the plan cannot
+  account for and is refused where a receipt is compared, silent without one (review round r6's finding
+  wrote the reduced plan's omitted prompt into a `developer`-role message).
+- *A result in the custom tool family is refused where a plan is compared* — `handleFunctionCallOutput`
+  answers a `custom_tool_call_output`'s result with an outcome (the record's own `status`, `completed`
+  where it holds none) while this route's writer's result record, `function_call_output`, carries no
+  outcome member at all (its `tool_result_outcomes` loss states that), so the receipt's
+  `call_id`/recorded-text identity cannot state what a read of the artifact answers: refused rather than
+  certified, silent without a plan (review round r6's finding, whose mutation keeps the call id and the
+  output text).
+- *A call without a usable name owns no output* — `handleFunctionCall` reads the payload's `name` first
+  and returns on an empty answer, so a record whose `name` is not a non-empty string (its `gjson` `.Str`
+  answer empty for a missing or non-string member) is no call of the artifact: refused structurally with
+  its orphaned output, and no receipt — the fixture's own or one edited to `name: ""` — certifies the
+  pair (review round r6's finding). The gate is the read's empty-string test, not a trimming one: a
+  whitespace-only string name is what the read registers.
+- *Every arm a rule states carries its own negative fixture* — the positional arm of
+  `oracle.session-meta` ("the artifact opens with its one metadata record") is reached by a mutation that
+  moves the metadata record behind another record with each slot keeping the instant it held, so the
+  clock stays legal and no other rule can fail; the deleted, duplicated and emptied fixtures all fail
+  without it (review round r6's finding).
 - *Unknown payload types are accepted* (Codex's own event and item vocabulary is open and measured);
   unknown **envelope** types are refused, because this build writes five and reads a measured eight.
 - The oracle judges this route's occurrence vocabulary — a message (the writer's own two roles, user and
@@ -155,9 +179,9 @@ measurements the rules rest on (§0); the oracle's positive fixtures and the mut
 (§1–§2); D2's reduced-artifact validation with the source absent (§2, the reduced-fixture run); the
 unflagged Codex acceptance run taken **before and after** this increment (§3); `--validate` runs over a
 real converted artifact (§5); and, for the review fix rounds, the gate and citations runs (§6–§7) and one
-executed revert-mutation per fix for the r3 round (§8) and the r4 round (§9) — whose instant-revert fix
-re-derives §8's own recipe with the group count preserved — each from the scratch tree its section spells
-out.
+executed revert-mutation per fix for the r3 round (§8), the r4 round (§9) — whose instant-revert fix
+re-derives §8's own recipe with the group count preserved — the r5 round (§10) and the r6 round (§11),
+each from the scratch tree its section spells out.
 
 **The manifest's own rows — an ambiguity, decided.** `docs/conventions.md` holds a citations row to be one
 gate-runnable **Go** test, while this increment makes no Go change at all; the goal's acceptance surface names
@@ -212,7 +236,7 @@ stating what holds, not what would be nice to hold):
   PR #16's, to be rebuilt in 0009d against this frozen oracle.
 
 **The review fix rounds moved the oracle while the increment was still under review** (the freeze binds the
-rest of goal 0009, not this increment's own fix stage). The r1, r2, r3, r4 and r5 findings and their fixes are
+rest of goal 0009, not this increment's own fix stage). The r1, r2, r3, r4, r5 and r6 findings and their fixes are
 enumerated in the stage reports; the shape the freeze now holds is the one above: a result's identity
 includes its recorded text and a call's its name and recorded input (a same-id substitution of either is
 refused, and the recorded input is the member the artifact **writes** — `arguments` then `input`, read
@@ -220,11 +244,15 @@ exactly as written, so the writer's own `"{}"` is not the carried read's empty a
 own projection stays its answer for dialogue; and a call carrying **both** members is refused where a plan
 is compared, review round r5's finding), every `response_item` a read turns into an occurrence the
 receipt's vocabulary cannot name — the inter-agent `agent_message` addressed to the session's own agent
-path, another payload type carrying a `user`/`assistant` role and readable text, and an
-`image_generation_call` — is refused where a plan is compared, an object-valued `content` a read iterates
+path, another payload type carrying a `user`/`assistant` role and readable text, an
+`image_generation_call`, a `message` in a role outside the writer's two carrying readable text, and a
+`custom_tool_call_output` whose read answers an outcome this route's writer's own results have no member
+for — is refused where a plan is compared, an object-valued `content` a read iterates
 the member values of is refused the same way (review round r5's finding), a line whose object writes a
 member name twice — and a receipt whose object does — is refused before comparison because this oracle's
 decoder and the carried reader's `gjson` answer a repeated name differently (review round r5's finding),
+a call whose `name` is not the non-empty string the carried reader registers is refused with its orphaned
+output, and no receipt naming the empty name certifies the pair (review round r6's finding),
 a dialogue message is read against both of
 the artifact's channels
 (`oracle.plan-emitted`/`oracle.plan-accounted`), `oracle.plan-order` refuses a moved
@@ -240,5 +268,5 @@ reads the artifact's own bytes (LF split, no
 non-JSON constants, no replacement-decoded text), an unreadable-by-nesting receipt is `INCOMPLETE` rather
 than a traceback, a decoded string strict UTF-8 cannot encode is named by a digest that never raises
 where the diagnostic needs one, and default diagnostics name occurrences and refused values by type and
-by digest without echoing their text. The evidence record's §1–§10 carry the re-run outputs for that state,
-with one executed revert-mutation per fix (§8 for r3's, §9 for r4's, §10 for r5's).
+by digest without echoing their text. The evidence record's §1–§11 carry the re-run outputs for that state,
+with one executed revert-mutation per fix (§8 for r3's, §9 for r4's, §10 for r5's, §11 for r6's).

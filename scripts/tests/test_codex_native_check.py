@@ -1709,6 +1709,27 @@ def _mutation_session_meta_duplicated(text: str, receipt: dict | None) -> tuple[
     return "\n".join([lines[0], lines[0]] + lines[1:]) + "\n", receipt
 
 
+def _mutation_session_meta_not_first(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The artifact's one metadata record standing second, behind a record of another type.
+
+    The first two records trade bodies while each slot keeps the instant it held, so the clock stays
+    nondecreasing and every other rule still holds — the metadata record is present, it is the only one,
+    and its own members are untouched. Only the positional arm of `oracle.session-meta` ("the artifact
+    opens with its one metadata record") can refuse the artifact, which is the arm no mutation reached
+    before review round r6: the deleted, duplicated and emptied fixtures all fail without it.
+    """
+    lines = text.splitlines()
+    if len(lines) < 2:
+        raise AssertionError("the fixture holds fewer than two records")
+    first, second = json.loads(lines[0]), json.loads(lines[1])
+    if first.get("type") != "session_meta" or second.get("type") == "session_meta":
+        raise AssertionError("the fixture no longer opens with a session_meta then another record")
+    moved, kept = dict(second), dict(first)
+    moved["timestamp"], kept["timestamp"] = first["timestamp"], second["timestamp"]
+    lines[0], lines[1] = oracle_quote(moved), oracle_quote(kept)
+    return "\n".join(lines) + "\n", receipt
+
+
 def _mutation_every_record_deleted(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """The artifact holds no records at all, its metadata record among them: nothing to open with."""
     if not text.strip():
@@ -1918,6 +1939,37 @@ def _mutation_plan_omitted_unknown_item(text: str, receipt: dict | None) -> tupl
                                "content": [{"type": "input_text", "text": omitted["text"]}]}), receipt
 
 
+def _mutation_plan_omitted_developer_message(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The plan's own omitted prompt written into an appended `message` in the role `developer`.
+
+    Developer-role messages are a native shape Codex's own files carry (57 across the 25 measured
+    sessions, §0 of the evidence record), so the structural `oracle.message` rule admits the record;
+    the receipt's occurrence vocabulary names only the writer's own two roles, so a plan cannot account
+    for the message, and the prompt survives in the model-visible channel while every identity, count
+    and order the accounting rules compare is unchanged (review round r6's finding).
+    """
+    assert receipt is not None
+    omitted = oracle_omitted_message(receipt)
+    return _append_item(text, {"type": "message", "role": "developer",
+                               "content": [{"type": "input_text", "text": omitted["text"]}]}), receipt
+
+
+def _mutation_plan_custom_tool_call_output(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The recorded result's own record rewritten into the other result family, its members untouched.
+
+    `handleFunctionCallOutput` answers a `custom_tool_call_output`'s result with an outcome — the
+    record's own `status`, or `completed` where it holds none — while this route's writer's result
+    record, `function_call_output`, carries no outcome member at all (its `tool_result_outcomes` loss
+    states that), so the receipt's `call_id`/recorded-text identity certifies a result whose read
+    answers a member the receipt cannot state (review round r6's finding). The call id and the output
+    text stay exactly as the fixture wrote them: the same occurrence under the receipt's identity, with
+    only the read-answered outcome differing.
+    """
+    return oracle_edit(text, oracle_item_is("function_call_output", "call_oracle_0001"),
+                       change=lambda record: record["payload"].__setitem__(
+                           "type", "custom_tool_call_output")), receipt
+
+
 def _mutation_plan_image_generation_call(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """An `image_generation_call` appended, which a read turns into a tool call the receipt cannot name.
 
@@ -1940,6 +1992,21 @@ def _mutation_call_id_duplicated(text: str, receipt: dict | None) -> tuple[str, 
             continue
         return "\n".join(lines[:index + 1] + [line] + lines[index + 1:]) + "\n", receipt
     raise AssertionError("the fixture no longer holds a function_call")
+
+
+def _mutation_call_without_a_usable_name(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The call's `name` member deleted, its id, arguments and recorded output untouched.
+
+    `handleFunctionCall` reads the payload's `name` first and returns on an empty answer
+    (`internal/parser/codex.go`: `payload.Get("name").Str`, empty for a missing or non-string member),
+    so the record is no call of the artifact and the result under its id attaches to nothing — while
+    the pairing rule registered the id anyway and a receipt naming the call with `name: ""` compared
+    green (review round r6's finding). The call id, the recorded arguments and the output text stay
+    exactly as the fixture wrote them, so the name gate is the only thing that distinguishes the
+    artifact from the green one.
+    """
+    return oracle_edit(text, oracle_item_is("function_call", "call_oracle_0001"),
+                       change=lambda record: record["payload"].pop("name")), receipt
 
 
 def _mutation_plan_emitted_shortfall(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2124,6 +2191,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
         OracleMutation("the metadata record deleted", "session.jsonl", None, _mutation_session_meta_deleted),
         OracleMutation("a second metadata record", "session.jsonl", None, _mutation_session_meta_duplicated),
         OracleMutation("every record deleted", "session.jsonl", None, _mutation_every_record_deleted),
+        OracleMutation("a record standing before the metadata", "session.jsonl", None,
+                       _mutation_session_meta_not_first),
     ),
     "oracle.session-meta-members": (
         OracleMutation("an empty id", "session.jsonl", None, _mutation_session_meta_id_empty),
@@ -2150,6 +2219,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
         OracleMutation("a call id carried twice", "session.jsonl", None, _mutation_call_id_duplicated),
         OracleMutation("an output written before its call", "session.jsonl", None,
                        _mutation_output_before_its_call),
+        OracleMutation("a call without a usable name", "session.jsonl", None,
+                       _mutation_call_without_a_usable_name),
     ),
     "oracle.receipt": (
         OracleMutation("a disposition the vocabulary does not hold", "session.jsonl",
@@ -2180,6 +2251,10 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "reduced-receipt.json", _mutation_plan_omitted_agent_message),
         OracleMutation("an omitted message written into an item type the receipt cannot name",
                        "reduced.jsonl", "reduced-receipt.json", _mutation_plan_omitted_unknown_item),
+        OracleMutation("an omitted message written into a developer-role message", "reduced.jsonl",
+                       "reduced-receipt.json", _mutation_plan_omitted_developer_message),
+        OracleMutation("a recorded result rewritten into the custom tool family", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_custom_tool_call_output),
         OracleMutation("an image-generation call the receipt cannot name", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_image_generation_call),
         OracleMutation("an omitted message that survives in the turn view", "reduced.jsonl",
@@ -2730,6 +2805,136 @@ class CodexArtifactOracle(unittest.TestCase):
             with self.subTest(control=label):
                 self.assertEqual(NATIVE_CHECK.validate_artifact(artifact, receipt=plan), [],
                                  f"{label} was refused although no read of it carries an occurrence")
+
+    def test_a_developer_role_message_is_refused_with_a_plan(self) -> None:
+        """A `message` in a role the receipt does not name is refused with a plan, green without one.
+
+        Review round r6's finding: the structural `oracle.message` rule admits any non-empty role —
+        developer-role messages are a native shape Codex's own files carry (57 across the 25 measured
+        sessions, §0 of the evidence record) — and the occurrence vocabulary counts only the writer's
+        two roles, so a plan cannot account for a `message` in any other role carrying readable text,
+        and the reduced plan's omitted prompt rewritten into one survived every identity, count and
+        order the comparison read. The refusal is where a plan is compared; without one the artifact is
+        green, because a native rollout this oracle is not asked to plan against may carry the role. The
+        diagnostic names an artifact-controlled role by its kind and length, never by its characters.
+        """
+        reduced = oracle_fixture("reduced.jsonl")
+        plan = oracle_receipt("reduced-receipt.json")
+        developer = _append_item(reduced, {"type": "message", "role": "developer",
+                                           "content": [{"type": "input_text", "text": "And now?"}]})
+        self.assertNotEqual(developer, reduced, "the case's own edit changed nothing")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(developer), [],
+                         "a developer-role message is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(developer, receipt=plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the omitted prompt inside a developer-role message certified the artifact: "
+                         f"{refused}")
+        self.assertIn("And now?", developer,
+                      "the planted artifact no longer holds the dialogue the finding writes")
+        self.assertNotIn("And now?", refused[0].detail,
+                         f"a diagnostic echoed the readable text: {refused[0]}")
+        self.assertNotIn("developer", refused[0].detail,
+                         f"a diagnostic echoed an artifact-controlled role: {refused[0]}")
+        # The arm's own gate is readable text: a blank-text developer message is the structural rule's
+        # finding instead, so one defect stays one report, and the plan rule does not double it.
+        blank = _append_item(reduced, {"type": "message", "role": "developer",
+                                       "content": [{"type": "input_text", "text": "  "}]})
+        self.assertEqual(
+            [violation.rule for violation in NATIVE_CHECK.validate_artifact(blank, receipt=plan)],
+            ["oracle.message"],
+            "a blank-text developer message drew the plan rule rather than the structural one")
+
+    def test_a_custom_tool_call_output_is_refused_with_a_plan(self) -> None:
+        """A recorded result in the custom tool family is refused with a plan, green without one.
+
+        Review round r6's finding: `handleFunctionCallOutput` answers a `custom_tool_call_output`'s
+        result with an outcome — the record's own `status`, or `completed` where it holds none
+        (`internal/parser/codex.go`) — while this route's writer writes its results as
+        `function_call_output` with no outcome member at all (its `tool_result_outcomes` loss states
+        that), so a plan certifying the file could not tell a result whose read answers `completed` from
+        one whose read answers nothing. Refused where a plan is compared, green without one (Codex's own
+        files carry 174 of these records, §0). The result's call id and recorded text are exactly the
+        fixture's own, so the refusal is about the family's read-answered outcome, not the occurrence's
+        identity — and the family's call side is untouched: a `custom_tool_call`'s read answers the name
+        and recorded input the receipt already names.
+        """
+        session = oracle_fixture("session.jsonl")
+        custom = oracle_edit(session, oracle_item_is("function_call_output", "call_oracle_0001"),
+                             change=lambda record: record["payload"].__setitem__(
+                                 "type", "custom_tool_call_output"))
+        self.assertNotEqual(custom, session, "the case's own edit changed nothing")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(custom), [],
+                         "a custom_tool_call_output is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(custom, receipt=oracle_receipt("session-receipt.json"))
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the custom family result certified the artifact: {refused}")
+        self.assertIn("custom_tool_call_output", refused[0].detail, f"{refused[0]}")
+
+        def output_payload(text: str) -> dict:
+            for line in text.splitlines():
+                payload = (json.loads(line).get("payload") or {})
+                if payload.get("type") in ("function_call_output", "custom_tool_call_output"):
+                    return payload
+            raise AssertionError("the case's artifact lost the recorded output")
+
+        self.assertEqual({key: value for key, value in output_payload(custom).items() if key != "type"},
+                         {key: value for key, value in output_payload(session).items() if key != "type"},
+                         "the case's edit changed more than the result's own family")
+
+    def test_a_call_without_a_usable_name_is_no_call(self) -> None:
+        """A call whose `name` is not a non-empty string is refused, and owns no output.
+
+        Review round r6's finding: `handleFunctionCall` reads the payload's `name` first and returns on
+        an empty answer (`payload.Get("name").Str` — empty for a missing or non-string member), so the
+        record is no call of the artifact and the result under its id attaches to nothing, while the
+        pairing rule registered the id anyway and a receipt naming the call with `name: ""` compared
+        green. The deleted member leaves the call id, the arguments and the recorded output exactly as
+        the fixture wrote them: the name gate is the only thing that sees it, the output is refused
+        beside the call because it names no call written before it, and no receipt — the fixture's own
+        or one edited to the empty name — can certify the pair.
+        """
+        session = oracle_fixture("session.jsonl")
+        nameless = oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),
+                               change=lambda record: record["payload"].pop("name"))
+        self.assertNotEqual(nameless, session, "the case's own edit changed nothing")
+        refused = NATIVE_CHECK.validate_artifact(nameless)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.call-pairing"] * 2,
+                         f"the nameless call was not refused with its orphaned output: {refused}")
+        self.assertIn("`name`", refused[0].detail, f"{refused[0]}")
+        self.assertEqual([violation.line for violation in refused], [8, 9],
+                         f"the refusal does not name the call and its output: {refused}")
+
+        def call_payload(text: str) -> dict:
+            for line in text.splitlines():
+                payload = (json.loads(line).get("payload") or {})
+                if payload.get("type") == "function_call":
+                    return payload
+            raise AssertionError("the case's artifact lost the call")
+
+        self.assertEqual({key: value for key, value in call_payload(nameless).items() if key != "name"},
+                         {key: value for key, value in call_payload(session).items() if key != "name"},
+                         "the case's edit changed more than the call's own name")
+
+        crafted = oracle_receipt("session-receipt.json")
+        oracle_receipt_edit(crafted, oracle_entry_kind("tool_call"),
+                            lambda entry: entry.__setitem__("name", ""))
+        for label, plan in (("the fixture's own receipt", oracle_receipt("session-receipt.json")),
+                            ("a receipt naming the empty name", crafted)):
+            with self.subTest(plan=label):
+                with_plan = NATIVE_CHECK.validate_artifact(nameless, receipt=plan)
+                self.assertIn("oracle.call-pairing", {violation.rule for violation in with_plan},
+                              f"{label} certified the nameless call: {with_plan}")
+        # The gate is the read's own empty-string test, not a trimming one: a whitespace-only string
+        # name is a non-empty string the carried reader registers, and the record stays green.
+        spaced = oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),
+                             change=lambda record: record["payload"].__setitem__("name", " "))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(spaced), [],
+                         "a whitespace-only string name was refused although the read registers it")
+        keys = [key for key, _ in
+                NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(spaced)[0])]
+        self.assertIn(("tool_call", "call_oracle_0001", " ",
+                       '{"file_path":"/work/oracle-fixture/notes.md"}'), keys,
+                      f"the whitespace-only name is not the registered call's identity: {keys}")
 
     def test_a_compacted_record_without_a_summary_is_counted(self) -> None:
         """Every `compacted` record is a boundary occurrence, with or without a summary.

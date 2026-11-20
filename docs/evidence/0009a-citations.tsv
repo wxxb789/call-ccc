@@ -25,7 +25,7 @@
 #         receipt yet: the receipt's producer is goal 0009c/0009d (this goal's Non-scope), and the rules
 #         are stated over the synthetic receipts committed with the fixtures. Their re-derivation is the
 #         same `selftest` case's mutation table (four mutations for `oracle.receipt`, two for
-#         `oracle.plan-emitted`, eight for `oracle.plan-accounted`, two for `oracle.plan-order` and
+#         `oracle.plan-emitted`, ten for `oracle.plan-accounted`, two for `oracle.plan-order` and
 #         one for `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
 #         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
 #         refused before comparison, a metadata-only artifact included),
@@ -56,6 +56,18 @@
 #         read this oracle does not model is refused where a plan is compared); the latter two are
 #         refusals under `oracle.plan-accounted`, whose executed reverts stand in
 #         docs/evidence/0009a-native-oracle.md §10.
+#         Review round r6's refusals are pinned by
+#         `test_a_developer_role_message_is_refused_with_a_plan` and
+#         `test_a_custom_tool_call_output_is_refused_with_a_plan` (a `message` in a role outside the
+#         writer's two carrying readable text, and a result in the family whose carried read answers an
+#         outcome this route's writer's own results have no member for — each refused where a plan is
+#         compared, green without one, and counted in the ten `oracle.plan-accounted` mutations above)
+#         and by `test_a_call_without_a_usable_name_is_no_call` (a call whose `name` is not the
+#         non-empty string the carried reader registers is refused with its orphaned output, and no
+#         receipt — the fixture's own or one edited to `name: ""` — certifies the pair: the new clause
+#         of the `oracle.call-pairing` row above, whose cited Go test pins the rule's other clause),
+#         with the executed reverts of all four new mutations in
+#         docs/evidence/0009a-native-oracle.md §11.
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`, and
 #         `test_decoded_input_never_aborts_validation`: a decoded string strict UTF-8 cannot encode and a

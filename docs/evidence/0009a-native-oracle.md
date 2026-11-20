@@ -206,10 +206,10 @@ and the oracle lock, §4 below). Fourteen rules, each one sentence, each a state
 | `oracle.clock` | the envelope instants never decrease: no written record is stamped before the record written before it |
 | `oracle.message` | a `response_item` message's `role` is a non-empty string and its `content` is a non-empty list of blocks typed as text the carried reader reads (`input_text`, `output_text`, `text`), at least one of them non-blank |
 | `oracle.event-message` | a `user_message`/`agent_message` event carries a non-empty string `message` — the record the harness's own view of the turn is built from |
-| `oracle.call-pairing` | every call's `call_id` is a non-empty string no other call of the artifact carries, and every call output names a call the artifact carries **before it** — an output written first attaches to nothing in the carried reader |
+| `oracle.call-pairing` | every call's `call_id` is a non-empty string no other call of the artifact carries and the call carries the non-empty `name` the carried reader registers a call for — a record without one is no call, so an output naming it attaches to nothing — and every call output names a call the artifact carries **before it** |
 | `oracle.receipt` | a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's occurrence vocabulary, the identity that kind needs — a tool call's `call_id`, `name` and recorded input (the member the artifact writes it in, `arguments` then `input`, read exactly as written), a tool result's `call_id` and recorded text — and a `disposition` of `emitted` or `omitted`; a receipt that declares no occurrences is refused rather than compared, and an unreadable receipt is reported and not compared with the artifact |
 | `oracle.plan-emitted` | every occurrence the receipt marks `emitted` is in the artifact as many times as it is marked — a dialogue message in both of the target's channels for it: the model-visible `response_item` and the turn-view `event_msg` |
-| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks `omitted`, one it names nowhere, a compaction boundary's `replacement_history`, a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent `agent_message` addressed to the session's own agent path, any other payload type whose `user`/`assistant` role and readable text a read appends as a message, and an `image_generation_call` — and a shape whose own read this oracle does not model (a call carrying both `arguments` and `input`, which a read can answer from the second; an object-valued `content` a read iterates the member values of) are equally refused; the plan is total, in both of the target's dialogue channels |
+| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks `omitted`, one it names nowhere, a compaction boundary's `replacement_history`, a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent `agent_message` addressed to the session's own agent path, any other payload type whose `user`/`assistant` role and readable text a read appends as a message, an `image_generation_call`, a `message` in a role outside the writer's two carrying readable text (a native shape Codex's own files carry, which the vocabulary cannot name), and a `custom_tool_call_output` whose carried read answers the result's outcome (a member this route's writer's own `function_call_output` results have none) — and a shape whose own read this oracle does not model (a call carrying both `arguments` and `input`, which a read can answer from the second; an object-valued `content` a read iterates the member values of) are equally refused; the plan is total, in both of the target's dialogue channels |
 | `oracle.plan-order` | the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past later turns, or two prompts in each other's turns, compacts a different history even though every count is unchanged |
 | `oracle.plan-pairs` | a call and its recorded result carry one disposition: a `call_id` whose call and result the receipt splits is the pair the closure rule forbids |
 
@@ -290,7 +290,18 @@ as raw JSONL, is refused structurally, with its plan, and in the receipt documen
 arms inside `test_a_written_empty_object_input_is_part_of_the_identity` (a call carrying both `arguments`
 and `input`: the written identity stands and receipt mode refuses the shape) and
 `test_receipt_validation_refuses_the_occurrences_it_cannot_name` (an object-valued `content` under the
-fallback item and the addressed inter-agent message, with the read's own gates as green controls).
+fallback item and the addressed inter-agent message, with the read's own gates as green controls). The
+r6 review-fix round's tree holds twenty-three: the twenty above plus this round's three cases —
+`test_a_developer_role_message_is_refused_with_a_plan` (a `message` in a role the receipt does not name
+is refused only where a plan is compared; a native shape Codex's own files carry, admitted structurally,
+and its readable text is what makes it an occurrence),
+`test_a_custom_tool_call_output_is_refused_with_a_plan` (a result in the family whose read answers an
+outcome this route's writer's own results have no member for is refused only where a plan is compared,
+the call id and recorded text unchanged) and
+`test_a_call_without_a_usable_name_is_no_call` (a call whose `name` is not the non-empty string the
+carried reader registers is refused with its orphaned output, and no receipt — the fixture's own or one
+edited to `name: ""` — can certify the pair) — with the round's four mutations and their executed
+reverts in §11.
 
 The r2 round's own cases were also run against the r1 checker from a throw-away copy (`git show
 87d3018:scripts/codex-native-check.py` into `/tmp/probe-r1/scripts/`, with this round's test module and
@@ -302,11 +313,15 @@ found `timestamp {'prompt': 'SECRET-PROMPT-ALPHA'}` in the printed report, the n
 `RecursionError` instead of exit 2, and the mutation-table case found the two new mutations turning
 nothing red.
 
-The mutations number 43 for the 14 rules: `oracle.plan-accounted` carries eight; `oracle.envelope` six;
-`oracle.jsonl-objects` five and `oracle.receipt` four; `oracle.session-meta`, `oracle.message` and
-`oracle.call-pairing` three each; `oracle.session-meta-members`, `oracle.plan-emitted`,
+The mutations number 47 for the 14 rules: `oracle.plan-accounted` carries ten; `oracle.envelope` six;
+`oracle.jsonl-objects` five; `oracle.receipt`, `oracle.session-meta` and `oracle.call-pairing` four
+each; `oracle.message` three; `oracle.session-meta-members`, `oracle.plan-emitted`,
 `oracle.event-message` and `oracle.plan-order` two each; and `oracle.record-type`, `oracle.clock` and
-`oracle.plan-pairs` one each. The r5 round added one of them — a line holding a member name twice, under
+`oracle.plan-pairs` one each. The r6 round added four of them — a record standing before the metadata
+(`oracle.session-meta`), a call without a usable name (`oracle.call-pairing`), the plan's omitted prompt
+written into a `developer`-role message and a recorded result rewritten into the custom tool family (both
+`oracle.plan-accounted`) — and §11 shows each one red only with this round's code in place. The r5 round
+added one of them — a line holding a member name twice, under
 `oracle.jsonl-objects`, spliced into the raw JSON text because no dict can hold the repeated name — and
 §10 shows it, and the round's other two refusals, red only with this round's code in place. The r4 round
 added three of them — the omitted prompt written into an inter-agent message, into an item type the
@@ -316,7 +331,7 @@ in place; the r3 round added five — the trailing line feed and the non-ASCII d
 `oracle.envelope`, the output written before its call under `oracle.call-pairing`, the receipt that
 declares no occurrences under `oracle.receipt`, and the boundary carrying the omitted dialogue under
 `oracle.plan-accounted` — and §8 shows each one surviving its fix's absence.
-Two of the forty-three, run
+Two of the forty-seven, run
 through the shipped command rather than in-process, show what the report reads like — the first a
 structural rule, the second the plan/pair rule that is the reason the receipt exists at all (a call
 whose recorded result is left out while the call travels). Each file below is a copy of a committed
@@ -560,7 +575,10 @@ own: the conversion's `load` verification opened the installed session through C
 opening a session makes the harness record its own settings in it — measured for this route in
 `docs/evidence/0002-claude-to-codex-continuation.md`'s §2 table. The oracle takes the file as it stands;
 the appended record is an `event_msg`, not an occurrence of the receipt's vocabulary, and no receipt was
-handed in here.)
+handed in here.) Re-measured in round 6, with this record's own tree: a fresh conversion of the same
+fixture (the same `continue claude:… --to codex` invocation, into
+`/tmp/ccc-0009a-evidence/r6/conversion/home`) validates as `oracle: PASS — 17 record(s), 8 occurrence(s)`
+with exit 0 — the round's added refusals do not refuse an artifact this route installs.
 
 Second, the other direction of soundness: the oracle accepts every artifact the format's own writer
 produced on this host, not only the ones this build writes. The sweep is also the output-before-call
@@ -586,7 +604,12 @@ does not: no row claims a Go test runs the oracle. The `oracle.jsonl-objects` ro
 cited test pins the one-object clause alone — the rule's member-name-uniqueness clause is pinned by the
 `selftest` table's `a line holding a member name twice` mutation and
 `test_a_line_with_a_duplicate_member_is_refused` (review round r5's finding) — and the header names
-review round r5's other two refusals among the python halves. The five receipt rules are named there as not covered,
+review round r5's other two refusals among the python halves. The header also names this round's three
+cases and their mutations — a `message` in a role outside the writer's two and a `custom_tool_call_output`
+refused only where a plan is compared (`oracle.plan-accounted`), and a call without the non-empty `name`
+the carried reader registers refused with its orphaned output (`oracle.call-pairing`) — because each is
+re-derived by the `selftest` step's mutation table and dedicated cases (§11), not by a Go test: this
+increment adds none, since it changes no Go file. The five receipt rules are named there as not covered,
 with the reason that their producer does not exist yet — goal 0009c/0009d own it, and this goal's
 Non-scope says so — and their re-derivation is the `selftest` case of §1. Because this increment changes
 no Go file (its Bounds), no row cites a new test; the convention that a row is one gate-runnable Go test
@@ -616,7 +639,7 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 462 tests in 9.103s (rc=0)
+  PASS     selftest Ran 465 tests in 9.387s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 9 row(s) verified
   PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -625,21 +648,22 @@ $ echo $?
 0
 ```
 
-The `selftest` step's 462 tests are the whole `scripts/tests/` suite with this increment's oracle cases in
-it (§1) — twenty in the class after the r5 fix round: the nineteen of the r4 state, plus this round's
-`test_a_line_with_a_duplicate_member_is_refused` (with the round's new arms inside
-`test_a_written_empty_object_input_is_part_of_the_identity` and
-`test_receipt_validation_refuses_the_occurrences_it_cannot_name`, §1) — and the
-`citations` step's 9 rows are §6's manifest (its header names the r5 round's new cases, so the run above
+The `selftest` step's 465 tests are the whole `scripts/tests/` suite with this increment's oracle cases in
+it (§1) — twenty-three in the class after the r6 fix round: the twenty of the r5 state (the nineteen of the
+r4 state, plus the r5 round's `test_a_line_with_a_duplicate_member_is_refused`, with that round's new arms
+inside `test_a_written_empty_object_input_is_part_of_the_identity` and
+`test_receipt_validation_refuses_the_occurrences_it_cannot_name`), plus this round's three, §1 — and the
+`citations` step's 9 rows are §6's manifest (its header names the r6 round's new cases, so the run above
 is this round's). The `gofmt`, `build`, `vet` and `test` steps answer about an
 unchanged Go tree: this increment's diff holds no Go file (`git status --short | grep '\.go$'` prints
 nothing).
 
-The gate (and the citations run above) was re-run after this round's last edit to the oracle, its tests,
-the fixtures and this record's prose, so the transcript above is a run over the tree this record's other
-quotes were taken on; the `selftest` timing differs between runs (the r1 transcript's 8.871s, r2's 9.183s,
-r3's 8.964s, r4's 9.140s and this round's 9.103s), which is why the transcript is one run's own line
-rather than a rounded one. The r5 round's gate run is the transcript above; its exit code is `0` and its
+The gate (and the citations run above) was run after this round's last edit to the oracle, its tests and
+the fixtures, so the transcript above is a run over the tree this record's other quotes were taken on;
+this record's own prose was edited after it, and a re-run over the tree as it now stands prints the same
+steps — `selftest Ran 465 tests in 9.099s`, `GATE: PASS`, exit 0. The `selftest` timing differs between runs (the r1 transcript's 8.871s, r2's 9.183s,
+r3's 8.964s, r4's 9.140s, r5's 9.103s and this round's 9.387s and 9.099s), which is why each transcript is one run's own line
+rather than a rounded one. The r6 round's gate run is the transcript above; its exit code is `0` and its
 verdict line is the last one, `GATE: PASS`.
 
 ## 8. The round-3 revert-mutations
@@ -936,25 +960,47 @@ FAILED (failures=1, errors=1)
 
 **`oracle_digest` — a decoded string strict UTF-8 cannot encode.** The digest reverted to strict
 `utf-8`, and the finding's own path — an unmatched output whose `call_id` is a lone surrogate — ends the
-shipped CLI in a traceback instead of a verdict:
+shipped CLI in a traceback instead of a verdict. The surrogate-bearing artifact is generated inside the
+scratch tree first (review round r6's finding: the recipe as first printed read the input from outside
+the tree and reached the missing-artifact `INCOMPLETE` branch instead of this traceback, so the
+generation is part of the recipe now):
 
 ```
 $ fresh digest
+$ python3 - <<'PY'
+import json
+lines = open("scripts/tests/testdata/codex-oracle/session.jsonl", encoding="utf-8").read().splitlines()
+for index, line in enumerate(lines):
+    record = json.loads(line)
+    payload = record.get("payload") or {}
+    if payload.get("type") == "function_call_output" and payload.get("call_id") == "call_oracle_0001":
+        payload["call_id"] = "\ud800"
+        lines[index] = json.dumps(record, separators=(",", ":"))
+        break
+else:
+    raise SystemExit("the fixture no longer holds the output this study edits")
+open("r4-surrogate.jsonl", "w", encoding="utf-8").write("\n".join(lines) + "\n")
+PY
 $ sed -i "s/text.encode('utf-8', 'surrogatepass')/text.encode('utf-8')/" scripts/codex-native-check.py
-$ PYTHONPYCACHEPREFIX="$scratch/pyc" \
-      python3 scripts/codex-native-check.py --validate /tmp/ccc-0009a-evidence/r4-surrogate.jsonl
+$ PYTHONPYCACHEPREFIX="$scratch/pyc" python3 scripts/codex-native-check.py --validate r4-surrogate.jsonl
 Traceback (most recent call last):
   ...
-  File ".../scripts/codex-native-check.py", line 1074, in oracle_digest
+  File ".../scripts/codex-native-check.py", line 1396, in oracle_call_pairing_violations
+    f"call output names call_id {oracle_digest(call_id)}, which "
+                                 ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File ".../scripts/codex-native-check.py", line 1122, in oracle_digest
     return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}"
                                     ~~~~~~~~~~~^^^^^^^^^
 UnicodeEncodeError: 'utf-8' codec can't encode character '\ud800' in position 0: surrogates not allowed
 exit 1
 ```
 
-(The class's case fails there too, at its own digest literal — `oracle_digest("\ud800")` raises before the
-CLI arm is reached; `test_decoded_input_never_aborts_validation` is the case the CLI arm above belongs
-to.) **§8's instant recipe** is the fourth study: its revert is re-derived in §8 itself, where the exact
+(The quoted traceback is the r6 re-run's own, from the recipe above: `json.dumps` escapes the lone
+surrogate as `\ud800` in the line, this oracle's decoder turns the escape back into the code point, and
+the digest then cannot encode it — the line numbers are the tree this recipe makes. The class's case
+fails there too, at its own digest literal — `oracle_digest("\ud800")` raises before the CLI arm is
+reached; `test_decoded_input_never_aborts_validation` is the case the CLI arm above belongs to.)
+**§8's instant recipe** is the fourth study: its revert is re-derived in §8 itself, where the exact
 command and the failure it prints now stand.
 
 **The finding's own artifacts, before and after.** The three attacks and the written-input arms were also
@@ -1127,7 +1173,158 @@ Ran 20 tests in 0.083s
 FAILED (failures=1)
 ```
 
-## 11. What this record does not claim
+## 11. The round-6 revert-mutations
+
+The r6 close-out instruction was the r3–r5 one, applied to this round's surface: every rule the touched
+surface claims was reverted in a fresh, throw-away tree of its own, the case that claims it was run
+against the reverted tree, and each block below quotes the revert's own command and the failure the run
+printed — so a rule that survived its revert without failing would be visible here as an unpinned one.
+The trees are §9's `fresh` recipe with `/tmp/ccc-0009a-evidence/r6/` as the tree base (one tree per
+study, entered before the edit; each run carrying its own `PYTHONPYCACHEPREFIX`, the reason §1's r2 note
+gives), and the failure text is each run's own. The shipped tree is not one of them: the studies read the
+five files from it and wrote only the trees `fresh` created.
+
+**`oracle.session-meta` — the artifact's opening position.** The positional arm removed from the rule's
+own comparison (`elif not metas or metas[0] != records[0][0]:` → `elif not metas:`), and this round's
+mutation — the arm no mutation had reached before (the deleted, duplicated and emptied fixtures all fail
+without it) — turns nothing red:
+
+```
+$ fresh session-meta
+$ sed -i 's/elif not metas or metas\[0\] != records\[0\]\[0\]:/elif not metas:/' scripts/codex-native-check.py
+$ (cd scripts/tests && PYTHONPYCACHEPREFIX="$scratch/pyc" \
+      python3 -m unittest test_codex_native_check.CodexArtifactOracle)
+..............F........
+...
+FAIL: test_every_rule_has_a_mutation_that_turns_its_fixture_red (test_codex_native_check.CodexArtifactOracle.test_every_rule_has_a_mutation_that_turns_its_fixture_red) (rule='oracle.session-meta', mutation='a record standing before the metadata')
+...
+AssertionError: Items in the second set but not the first:
+'oracle.session-meta' : 'a record standing before the metadata' on session.jsonl turned [] red instead of only oracle.session-meta: []
+
+----------------------------------------------------------------------
+Ran 23 tests in 0.090s
+
+FAILED (failures=1)
+```
+
+**`oracle.call-pairing` — the call's usable name.** The name gate deleted, and this round's mutation,
+which removes exactly the member the gate reads and leaves the call id, the arguments and the recorded
+output untouched, turns nothing red while the nameless record is registered — with its result attached
+to it again:
+
+```
+$ fresh call-name
+$ python3 - <<'PY'
+from pathlib import Path
+path = Path("scripts/codex-native-check.py")
+text = path.read_text(encoding="utf-8")
+old = '''            if oracle_call_name(payload) == "":
+                violations.append(Violation("oracle.call-pairing", line,
+                                            f"the call's `name` is "
+                                            f"{oracle_value_text(payload.get('name'))} — the carried "
+                                            f"reader registers no call for a record without a non-empty "
+                                            f"string `name` (`handleFunctionCall`), so no output "
+                                            f"attaches to it"))
+                continue
+'''
+assert text.count(old) == 1, "the name gate is no longer spelled this way"
+path.write_text(text.replace(old, "", 1), encoding="utf-8")
+PY
+$ (cd scripts/tests && PYTHONPYCACHEPREFIX="$scratch/pyc" \
+      python3 -m unittest test_codex_native_check.CodexArtifactOracle)
+..F...........F........
+...
+FAIL: test_a_call_without_a_usable_name_is_no_call (test_codex_native_check.CodexArtifactOracle.test_a_call_without_a_usable_name_is_no_call)
+...
+AssertionError: Lists differ: [] != ['oracle.call-pairing', 'oracle.call-pairing']
+
+Second list contains 2 additional elements.
+First extra element 0:
+'oracle.call-pairing'
+
+- []
++ ['oracle.call-pairing', 'oracle.call-pairing'] : the nameless call was not refused with its orphaned output: []
+...
+FAIL: ... (rule='oracle.call-pairing', mutation='a call without a usable name')
+...
+'oracle.call-pairing' : 'a call without a usable name' on session.jsonl turned [] red instead of only oracle.call-pairing: []
+
+----------------------------------------------------------------------
+Ran 23 tests in 0.090s
+
+FAILED (failures=2)
+```
+
+**`oracle.plan-accounted` — a `message` in a role the receipt cannot name.** The role arm's readable-text
+gate neutralized (`if oracle_blank(text):` → `if True:`), and this round's mutation — the plan's omitted
+prompt written into a `developer`-role message — is again a shape nothing refuses:
+
+```
+$ fresh developer-message
+$ sed -i 's/^            if oracle_blank(text):$/            if True:  # reverted/' scripts/codex-native-check.py
+$ (cd scripts/tests && PYTHONPYCACHEPREFIX="$scratch/pyc" \
+      python3 -m unittest test_codex_native_check.CodexArtifactOracle)
+......F.......F........
+...
+FAIL: test_a_developer_role_message_is_refused_with_a_plan (test_codex_native_check.CodexArtifactOracle.test_a_developer_role_message_is_refused_with_a_plan)
+...
+AssertionError: Lists differ: [] != ['oracle.plan-accounted']
+
+Second list contains 1 additional elements.
+First extra element 0:
+'oracle.plan-accounted'
+
+- []
++ ['oracle.plan-accounted'] : the omitted prompt inside a developer-role message certified the artifact: []
+...
+FAIL: ... (rule='oracle.plan-accounted', mutation='an omitted message written into a developer-role message')
+...
+'oracle.plan-accounted' : 'an omitted message written into a developer-role message' on reduced.jsonl turned [] red instead of only oracle.plan-accounted: []
+
+----------------------------------------------------------------------
+Ran 23 tests in 0.093s
+
+FAILED (failures=2)
+```
+
+**`oracle.plan-accounted` — a result in the custom tool family.** The family's gate neutralized
+(`if oracle_blank(oracle_result_text(payload)):` → `if True:`), and this round's mutation — the recorded
+output's own line rewritten into the other family with its call id and text intact — is certified by the
+fixture's receipt again, a read of it answering an outcome the receipt cannot state:
+
+```
+$ fresh custom-output
+$ sed -i 's/^            if oracle_blank(oracle_result_text(payload)):$/            if True:  # reverted/' scripts/codex-native-check.py
+$ (cd scripts/tests && PYTHONPYCACHEPREFIX="$scratch/pyc" \
+      python3 -m unittest test_codex_native_check.CodexArtifactOracle)
+.....F........F........
+...
+FAIL: test_a_custom_tool_call_output_is_refused_with_a_plan (test_codex_native_check.CodexArtifactOracle.test_a_custom_tool_call_output_is_refused_with_a_plan)
+...
+AssertionError: Lists differ: [] != ['oracle.plan-accounted']
+
+Second list contains 1 additional elements.
+First extra element 0:
+'oracle.plan-accounted'
+
+- []
++ ['oracle.plan-accounted'] : the custom family result certified the artifact: []
+...
+FAIL: ... (rule='oracle.plan-accounted', mutation='a recorded result rewritten into the custom tool family')
+...
+'oracle.plan-accounted' : 'a recorded result rewritten into the custom tool family' on session.jsonl turned [] red instead of only oracle.plan-accounted: []
+
+----------------------------------------------------------------------
+Ran 23 tests in 0.092s
+
+FAILED (failures=2)
+```
+
+The round's fifth study — `oracle_digest`'s revert — is §9's, whose recipe this round completed (the
+surrogate-bearing artifact is generated inside the scratch tree, review round r6's finding) and re-ran,
+printing the traceback §9 quotes.
+
+## 12. What this record does not claim
 
 - **No native claim about the fixtures.** Codex never opened the synthetic fixtures or the reduced
   artifact: the oracle is the offline half, and the native half of this route stays where it was
@@ -1141,7 +1338,11 @@ FAILED (failures=1)
   input and a tool result's its `call_id` and recorded text, a dialogue message being read against both
   of the artifact's channels, and the emitted order — dialogue included — against the receipt's own in
   both channels — and 0009c/0009d must satisfy it rather than tune it: that is what the oracle
-  lock is for. Nothing in this increment emits a receipt.
+  lock is for. Nothing in this increment emits a receipt. A tool-call entry's `name` is read for its
+  type, not its emptiness: an entry naming the empty string is a receipt whose *artifact* half cannot
+  exist (the nameless call is refused structurally, so no artifact can satisfy the entry), which
+  `test_a_call_without_a_usable_name_is_no_call` pins; the schema is not narrowed beyond that, because
+  the receipt is refused by its comparison, not by its own reader.
 - **Form, not meaning.** A green artifact is one that is well-formed and (with a plan) holds exactly the
   occurrences the plan places; the oracle does not judge a conversation's meaning, and a red one names a
   rule, never a remedy.

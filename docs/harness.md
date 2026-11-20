@@ -381,12 +381,15 @@ says so.
   a summary, a boundary carrying a native `replacement_history` refused where a receipt is compared,
   a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent
   `agent_message` addressed to the session's own agent path, another payload type carrying a
-  `user`/`assistant` role and readable text, and an `image_generation_call` among them — refused there
+  `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside
+  the writer's two carrying readable text, and a `custom_tool_call_output` whose carried read answers
+  the result's outcome the receipt's identity cannot state among them — refused there
   too, a shape whose own read the oracle does not model — a call carrying both `arguments` and `input`,
   an object-valued `content` a read iterates the member values of — refused there too, a line whose
   object (or a receipt document whose object) writes a member name twice refused before comparison,
   because this oracle's decoder and the carried reader's `gjson` answer a repeated name differently,
-  every call output required to name a call written before it, and a receipt that declares no
+  every call required to carry the non-empty `name` the carried reader registers a call for and every
+  call output to name a call written before it, and a receipt that declares no
   occurrences refused before any comparison). The identity the receipt is matched on is the member the
   artifact **writes** — a call's `arguments` read exactly as written, so this route's writer's deliberate
   `"{}"` is not the carried read's empty answer — and a call or result substituted under an unchanged

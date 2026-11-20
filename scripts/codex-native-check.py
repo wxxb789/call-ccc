@@ -855,8 +855,10 @@ ORACLE_RULES: dict[str, str] = {
         "a `user_message`/`agent_message` event carries a non-empty string `message` — the record the "
         "harness's own view of the turn is built from",
     "oracle.call-pairing":
-        "every call's `call_id` is a non-empty string no other call of the artifact carries, and every "
-        "call output names a call the artifact carries before it",
+        "every call's `call_id` is a non-empty string no other call of the artifact carries, the call "
+        "carries the non-empty `name` the carried reader registers a call for — a record whose name is "
+        "not a non-empty string is no call of the artifact, so an output naming it attaches to nothing "
+        "— and every call output names a call the artifact carries before it",
     "oracle.receipt":
         "a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's "
         "occurrence vocabulary, the identity that kind needs — a tool call's `call_id`, `name` and "
@@ -873,8 +875,10 @@ ORACLE_RULES: dict[str, str] = {
         "`omitted`, one it names nowhere, a compaction boundary's `replacement_history`, a "
         "`response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the "
         "inter-agent `agent_message` addressed to the session's own agent path, any other payload type "
-        "whose `user`/`assistant` role and readable text a read appends as a message, and an "
-        "`image_generation_call` — and a shape whose own read this oracle does not model — a call "
+        "whose `user`/`assistant` role and readable text a read appends as a message, an "
+        "`image_generation_call`, a `message` in a role outside the writer's two carrying readable text, "
+        "and a `custom_tool_call_output` whose carried read answers the result's outcome — and a shape "
+        "whose own read this oracle does not model — a call "
         "carrying both `arguments` and `input` (a read skips an empty or `{}`/`[]` `arguments` and "
         "continues to `input`), and an object-valued `content` a read iterates the member values of "
         "(`ForEach`) — are equally refused; the plan is total, in both of the target's dialogue channels",
@@ -1344,6 +1348,15 @@ def oracle_call_pairing_violations(records: list[tuple[int, dict]]) -> list[Viol
     structural rule (see the section header): the writer retires such calls by design, so only a plan can
     say whether a result ever existed, and `oracle.plan-pairs` answers for that. A diagnostic names a
     `call_id` by its digest, never by its contents (`oracle_digest`).
+
+    A call is registered only where the carried reader registers one: `handleFunctionCall` reads the
+    payload's `name` first and returns on an empty answer (`internal/parser/codex.go`), before it reads
+    the `call_id` or appends the call, so a record whose `name` is not a non-empty string (its own
+    `gjson` `.Str` answer is empty for a missing or non-string member, which is why the gate is the
+    empty-string test `oracle_call_name` makes and not a trimming one) owns no output — a result under
+    its id would be kept as an unattached update — and is refused here rather than registered (review
+    round r6's finding). A whitespace-only string name is such a non-empty string and is registered,
+    exactly as the read registers it.
     """
     violations: list[Violation] = []
     calls: dict[str, int] = {}
@@ -1358,6 +1371,14 @@ def oracle_call_pairing_violations(records: list[tuple[int, dict]]) -> list[Viol
                 violations.append(Violation("oracle.call-pairing", line,
                                             f"call_id is {oracle_value_text(call_id)}, not a non-empty "
                                             f"string"))
+                continue
+            if oracle_call_name(payload) == "":
+                violations.append(Violation("oracle.call-pairing", line,
+                                            f"the call's `name` is "
+                                            f"{oracle_value_text(payload.get('name'))} — the carried "
+                                            f"reader registers no call for a record without a non-empty "
+                                            f"string `name` (`handleFunctionCall`), so no output "
+                                            f"attaches to it"))
                 continue
             if call_id in calls:
                 violations.append(Violation("oracle.call-pairing", line,
@@ -1594,11 +1615,22 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
       `extractCodexTextBlocks`), and the vocabulary names only the `message` item;
     - an `image_generation_call`, which `handleImageGenerationCall` appends as a tool call whose
       identity is read from the payload's `id` and raw text — members the receipt's
-      `call_id`/`name`/`arguments` identity has no place for.
+      `call_id`/`name`/`arguments` identity has no place for;
+    - a `message` item in a role outside the vocabulary's two carrying readable text: the format's own
+      message shape, which this route's writer writes only in the roles the receipt names, while
+      Codex's own files carry other roles in it (§0: 57 `developer` messages across the 25 measured
+      sessions) and the structural `oracle.message` rule admits any non-empty role — refused where a
+      plan is compared, never in the structural rules (review round r6's finding);
+    - a `custom_tool_call_output` whose read appends a result: `handleFunctionCallOutput` answers that
+      result's outcome from the record's own `status`, defaulting to `completed` where it holds none,
+      while this route's writer's own result record, `function_call_output`, carries no outcome member
+      at all (counted `tool_result_outcomes`) — so a read of the artifact answers an outcome the
+      receipt's `call_id`/recorded-text identity cannot state (review round r6's finding).
 
     Each is refused where a plan is compared and silent without one: a native rollout may legitimately
     carry these shapes, and the structural rules say nothing about them (measured: 19 inter-agent
-    `agent_message` records across Codex 0.170.0's own 25 host sessions, §0 of the evidence record). A
+    `agent_message` records across Codex 0.170.0's own 25 host sessions, §0 of the evidence record; 57
+    `developer` messages and 174 `custom_tool_call_output` records, the same section). A
     `reasoning` item is deliberately not one of them: the reader answers it as a thinking row with an
     explicitly empty dialogue projection (`handleReasoning`: `DialogueText: new("")`), so it carries no
     dialogue the plan's dialogue accounting could be total over.
@@ -1610,9 +1642,34 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
             continue
         payload = oracle_payload(record)
         item = payload.get("type")
-        if item == "message" or item in ORACLE_CALL_ITEMS or item in ORACLE_RESULT_ITEMS:
+        if item == "message":
+            # The vocabulary's own message item, counted by the accounting rules where its role is one
+            # of the two they name; a stated role outside them carrying readable text is refused here,
+            # because the plan states the writer's own roles and this shape is the format's message
+            # carrier. A role `oracle.message` itself refuses (missing, non-string, blank) is left to
+            # that rule, so one defect stays one finding.
+            role = payload.get("role")
+            if role in ORACLE_MESSAGE_ROLES or not isinstance(role, str) or oracle_blank(role):
+                continue
+            text = oracle_message_text(payload)
+            if oracle_blank(text):
+                continue
+            found = (f"the artifact holds a `message` in the role {oracle_value_text(role)} carrying "
+                     f"readable text ({oracle_value_text(text)}) — the vocabulary names the writer's own "
+                     f"two roles, not this one")
+        elif item in ORACLE_CALL_ITEMS:
             continue  # the vocabulary's own shapes; the accounting rules read them
-        if item == "agent_message":
+        elif item in ORACLE_RESULT_ITEMS:
+            if item != "custom_tool_call_output":
+                continue  # the writer's own result family; the accounting rules read it
+            if oracle_blank(oracle_result_text(payload)):
+                continue  # no result text: the read appends no result with an outcome
+            found = ("the artifact holds a `custom_tool_call_output`, which the carried read answers "
+                     "with the result's outcome (the record's own `status`, or `completed` where it "
+                     "holds none), a member this route's writer's `function_call_output` results have "
+                     "no place for (counted `tool_result_outcomes`) and the receipt's "
+                     "`call_id`/recorded-text identity has none either")
+        elif item == "agent_message":
             recipient = payload.get("recipient")
             delivered = oracle_agent_message_text(payload)
             if (agent_path == "" or not isinstance(recipient, str)
