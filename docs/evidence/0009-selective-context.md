@@ -2142,6 +2142,191 @@ CLI's whole-read arm names the third reduction-only row); none deleted. The thre
 `./internal/ccc` and passes, and `S2-invocation-units`/`S7-writers` were rewritten to the rules this round
 scoped. `gofmt -l ./cmd/ccc ./internal/ccc` named nothing after the round's edits.
 
+
+### The twelfth review round's findings (`2e2e8a2` + working tree), fixed and re-measured
+
+The review of `9242e49..2e2e8a2` found four items (two P1, two P2), all fixed; the review's carried-tree
+parity section found all 31 changed paths project-owned and every carried blob matching the pin, and this
+round changes no carried file either — the carried tree is untouched and `upstream-parity.py` is the gate
+step that keeps saying so. The round follows the review's systematic close-out: every rule the touched
+surface claims is proved by one executed mutation (`M1`–`M12` below), each mutation's observed failure
+recorded with the test that catches it.
+
+* **Finding 1 (P1) — a whitespace-only API selection published the whole read.**
+  `CheckSelectionOptions` trimmed its value and read a trimmed-empty string as the flag's absence when the
+  presence bit was unset, and `continueWith` tested the trimmed value as well, so an embedding caller that
+  set `ContinueOptions.Selection` to `" \t "` without `SelectionSupplied` converted and installed the whole
+  conversation with no selection report — the one thing the request was written to prevent. The flag's
+  absence is now the literal empty string with no presence bit (`CheckSelectionOptions`:
+  `supplied || selection != ""`), and `continueWith` enters the selection for any non-empty value, where
+  `Select`'s own trim refusal answers a whitespace-only value instead of the conversion skipping the
+  reduction. `TestSelectionRefusesAWhitespaceOnlyAPIRequest` pins both layers (four whitespace shapes, with
+  and without the bit; `Continue` and `continueWith` each asserted to refuse `ErrBadSelection` with the
+  target home empty, beside a well-formed control that installs) and the supplied-empty arm stays in
+  `TestCheckSelectionOptionsRefusesASpecificationWithoutARead`; mutations `M1` and `M2` fail it.
+
+* **Finding 2 (P1) — a selection could resume a tool-result branch the native Pi file left behind.** The
+  copy's appended turn hangs off the *call's* entry, so the file's own leaf path is turn → call → … and the
+  result entry stands beside the turn off that path — the shape a `/tree` switch back to the call leaves.
+  The inherited reader answers the turn's parent as the call (a result's descendants resolve to their
+  visible ancestor), so the read cannot tell that from a file whose turn hangs off the result; its
+  reconstruction chained through the result and marked it on the read's line, `--select 0-2` passed the
+  tree writers' leaf guard, and the written session's last entry stood for the result: a resumed target
+  session would continue a branch the source's file left, and the source-side leaf check (which confirms the
+  read's *last* record only) answered nothing. The conversion now reads the source file's own entries once,
+  before the selection (`readPiSourceFile`; the source-side leaf check asks the same read, so the file is
+  parsed once and the selection's refusals are still answered before the check's), and the file's own leaf
+  path — the walk from its last entry back through `parentId`, the walk the harness's own loader builds the
+  context from — is the line a selection's flags are taken from for every record the read answered an
+  identity for (`Conversation.sourceFileLine`, consumed by `Select`). The writers' tool-result place no
+  longer chains an on-line record through a result entry that stands for a record the line leaves off
+  (`resultEntryLeavesTheLine`), so `--select 0-` writes the file's own walk. A record the read gave no
+  identity for keeps the read's own order answer, an archive row and a file that cannot answer keep it, and
+  a run without a selection keeps the reconstruction's line and its projection — the bytes D4 measures.
+  `TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath` pins the refusal (Pi and Claude, naming the
+  result's identity and ordinal, nothing installed), the line target's omission and count, the window
+  ending on the file's own path, the selected whole read's model-visible history equalling the source
+  file's own (with the projection's one remaining count), and the unflagged arm (projection taken, its own
+  count); `TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities` pins the identity-less
+  boundary on a Pi v1 file. Mutations `M3`–`M6` fail them.
+
+* **Finding 3 (P2) — an unwritable event consumed a reserved OpenCode result slot.** The plan installed
+  whatever result reached a call's one slot first, so on a reduced window holding a call, an id-less
+  terminal output, a blank result naming the call and a later non-blank result naming it too, the blank
+  event took the slot, the later recorded result was counted `repeated_tool_results`, and the part was
+  dropped at write time when the stored text was read — no outcome, although one was representable (the
+  reservation that kept the id-less inference off the occurrence had assumed the writable result was the one
+  owed it). `displacingOpenCodeOutcome` lets a later writable recorded result take a slot an unwritable held
+  result occupies on a reduced document, and `countUnwritableResult` counts the displaced event exactly as
+  `toolPart` counts the same result (its unrepresentable blocks, then no text, whitespace-only text or a
+  status the tool states cannot spell) so nothing is lost; a run without a selection keeps the first
+  recorded outcome in the slot. `TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult` pins
+  the finding's window for all three unwritable shapes, the categories, and the default path's unchanged
+  answer; mutations `M7`–`M9` fail it.
+
+* **Finding 4 (P2) — an id-less progress event could erase a recorded OpenCode summary.** The progress
+  branch marked a call as having recorded result evidence through the same pairing a terminal event uses,
+  which for an id-less event is that writer's own inference (`soleOutstandingPlannedCall` when the plan is
+  reduced, the ledger otherwise), so a call whose only recorded outcome was its stored summary had the
+  summary suppressed as a view of an event the source never linked to it and the part dropped as unpaired.
+  The marking now reads the source's own link only (a non-empty `ToolUseID`), which restores 0007's
+  id-keyed rule on the default path as well;
+  `TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress` pins the finding's arm, the
+  id-recorded control (the summary is the event's view and is not written) and the unflagged arms;
+  mutations `M10`–`M12` fail it.
+
+The round's mutations, each run against the round's tree with the named test, every one failing for the
+reason its rule names and restored afterwards (the working tree's `git diff` after the round holds only the
+round's own edits):
+
+```console
+$ # M1: the presence bit alone decides the flag's absence (CheckSelectionOptions' `supplied || selection != ""` → `supplied`)
+$ go test -tags fts5 -count=1 -run TestSelectionRefusesAWhitespaceOnlyAPIRequest ./internal/ccc/
+--- FAIL: TestSelectionRefusesAWhitespaceOnlyAPIRequest (0.02s)
+    selection_test.go:4755: CheckSelectionOptions(" ", supplied=false): err = <nil>, want ErrBadSelection
+exit=1
+
+$ # M2: continueWith tests the trimmed value (`opts.Selection != ""` → `strings.TrimSpace(opts.Selection) != ""`)
+$ go test -tags fts5 -count=1 -run TestSelectionRefusesAWhitespaceOnlyAPIRequest ./internal/ccc/
+--- FAIL: TestSelectionRefusesAWhitespaceOnlyAPIRequest (0.04s)
+    selection_test.go:4794: continueWith with a whitespace-only selection: err = <nil>, want ErrBadSelection: a value that names nothing is a refused request, never the flag's absence
+exit=1
+
+$ # M3: the file's line answer not carried (continueWith assigns nil)
+$ go test -tags fts5 -count=1 -run TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath ./internal/ccc/
+--- FAIL: TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath (0.01s)
+    continue_pi_test.go:2201: pi: --select 0-2 = <nil>, want ErrUnrepresentableLeaf: the window ends on the tool result the source's file ran beside the branch the conversation continued on
+exit=1
+
+$ # M4: the membership's walk is not the file's leaf walk (every entry marked on the path)
+$ go test -tags fts5 -count=1 -run TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath ./internal/ccc/
+--- FAIL: TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath (0.11s)
+    continue_pi_test.go:2201: pi: --select 0-2 = <nil>, want ErrUnrepresentableLeaf: the window ends on the tool result the source's file ran beside the branch the conversation continued on
+exit=1
+
+$ # M5: an identity-less record answered off the file's path (the `id == "" → continue` dropped)
+$ go test -tags fts5 -count=1 -run TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities ./internal/ccc/
+--- FAIL: TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities (0.00s)
+    continue_pi_test.go:2338: pi: --select 1: the source's own loader selects a leaf this conversion cannot write as the target's: the record at ordinal 1 (the read answered no identity for it), the record the entry written last stands for, is off the line the read's last record answers, so a resumed session would continue a branch the source's conversation left
+exit=1
+
+$ # M6: the projection taken onto an off-line result (resultEntryLeavesTheLine → false)
+$ go test -tags fts5 -count=1 -run TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath ./internal/ccc/
+--- FAIL: TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath (0.11s)
+    continue_pi_test.go:2269: pi: the selected session's model-visible history = ["Where is the retry cap configured?" "I will look for the retry configuration." "internal/retry/config.go:41: maxBackoffSeconds = 30" "And the retry budget?"], want the source file's own ["Where is the retry cap configured?" "I will look for the retry configuration." "And the retry budget?"]: a resumed session must continue the source's own line, not the reconstruction's projection
+exit=1
+
+$ # M7: no displacement of an unwritable outcome (displacingOpenCodeOutcome → false)
+$ go test -tags fts5 -count=1 -run TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult ./internal/ccc/
+--- FAIL: TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult (0.00s)
+    selection_test.go:4880: an empty-text result: the written document holds no outcome for the call: the unwritable event that stood before the writable one consumed the slot the writable record is owed
+exit=1
+
+$ # M8: the displaced result not counted (countUnwritableResult returns at once)
+$ go test -tags fts5 -count=1 -run TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult ./internal/ccc/
+--- FAIL: TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult (0.00s)
+    selection_test.go:4884: an empty-text result: empty_tool_results = 0, want the one displaced event counted under the category the writer counts the same result under
+exit=1
+
+$ # M9: the displacement not scoped to the reduction (`selectionReduced() && ` dropped)
+$ go test -tags fts5 -count=1 -run TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult ./internal/ccc/
+--- FAIL: TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult (0.00s)
+    selection_test.go:4970: the unflagged document holds the later recorded result ("result toolu_unwritable_slot the later recorded result"): the first recorded outcome keeps the slot on the default path, and its bytes are what a run without a selection has always written
+exit=1
+
+$ # M10: an id-less progress event marks the call (the id guard dropped)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5038: the selected document does not hold the call's own recorded summary: the id-less progress event suppressed it through a link the source never recorded ([])
+exit=1
+
+$ # M11: no progress event marks at all (`if false {` in the guard)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5061: the selected document states tool evidence ([call toolu_summary_progress Bash {"command":"a"} result toolu_summary_progress the call's own recorded outcome]): the read's own event for the call is progress, and the summary is that event's view rather than an outcome recorded beside it
+exit=1
+
+$ # M12: the marking scoped to the reduction (`&& c.conv.selectionReduced()` added)
+$ go test -tags fts5 -count=1 -run TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress ./internal/ccc/
+--- FAIL: TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress (0.00s)
+    selection_test.go:5101: the unflagged document states tool evidence ([call toolu_summary_progress Bash {"command":"a"} result toolu_summary_progress the call's own recorded outcome]): the read's own event for the call is progress, and the summary is that event's view rather than an outcome recorded beside it
+exit=1
+```
+
+The round re-ran §4's probe revision unchanged over the two trees
+(`git worktree add --detach /tmp/ccc-d4-r11-before 9242e49b…`, the retained probe copied into both, no
+selection flag in any run): 1183 / 1308 lines, each tree's two runs byte-identical, and the shared-document
+diff **silent** — the 125 lines only this tree prints are the increment's own selection fixture
+(`claude:c1a74e28…`), which the pre-0009 tree does not hold. So the default path's bytes, reports and
+published artifacts are what the pre-0009 revision wrote, the fourth finding's restored marking and the
+guards above included; the selected documents this round changes are selections, which the probe does not
+run.
+
+The round's verification: 464 → **469** top-level `Test…` functions in the two packages' test files, the
+five new cases named above and none deleted; `0009-citations.tsv` grown 54 → **60** rows, the six new rows
+(`D5-whitespace`, `S5-file-path`, `S6-file-projection`, `S5-file-identityless`, `S7-slot-writability`,
+`S7-progress-link`) each citing a test that exists in `./internal/ccc` and passes (the citations step's own
+answer, below). `gofmt -l` names nothing; the round's documentation moves are folded into §7.
+
+```console
+$ go test -tags fts5 -count=1 ./internal/ccc/ ./cmd/ccc/
+ok  	go.kenn.io/agentsview/internal/ccc	18.669s
+ok  	go.kenn.io/agentsview/cmd/ccc	5.280s
+$ python3 scripts/gate.py; echo "exit=$?"
+gate: /home/azureuser/repos/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt    3627 file(s) gofmt-clean
+  PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
+  PASS     test     3 package(s) ok
+  PASS     selftest Ran 442 tests in 8.801s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5727 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009-citations.tsv: 60 row(s) verified
+  PASS     secrets  no leaks found in 196 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+exit=0
+```
+
 ## 7. Docs, rules and bookkeeping
 
 * `AGENTS.md` — a new binding bullet ("A conversion carries only what the caller selected …") outside the
@@ -2188,7 +2373,17 @@ scoped. `gofmt -l ./cmd/ccc ./internal/ccc` named nothing after the round's edit
   event's omission to the progress clause (`nonterminal_tool_events`, scoped to the reduction as
   `coalesced_tool_call_projections` is, with the unflagged run keeping the event and its category list),
   and the reduction scoping of the invocation-unit fold plus the fold's attribution rule and the installed
-  entry chain to the offline-half sentence.
+  entry chain to the offline-half sentence. The twelfth fix round added the file-backed line rule to the
+  line sentence (a Pi-family read whose own file stands behind it takes that file's own leaf path as the
+  selection's line for the records the read answered an identity for, while an unreduced read keeps the
+  reconstruction and its projection), the projection's yield to that sentence's own offline half (the
+  tool-result place is not taken where the result's entry stands for a record the line leaves off while the
+  record being written is one the line holds), the same writability rule to the reserved-slot sentence (an
+  event the part cannot state is counted as the writer counts the same result and yields the slot to a
+  later recorded outcome the part can state), the id-recorded marking to the progress clause (an id-less
+  event, a link only that writer's inference makes, does not suppress the call's stored summary), and the
+  whitespace-alone refusal to the refusal list (the flag's absence being the literal empty string with no
+  presence bit).
 * `docs/conventions.md` — the layout block names `selection.go`; a new rule under "Rules of the work"
   states the specification's grammar, the seam, the refusals and the report's classes, with the second
   round's refinements (order pairing, progress, ancestry, supplied blank) folded into the same rule, the
@@ -2210,16 +2405,22 @@ scoped. `gofmt -l ./cmd/ccc ./internal/ccc` named nothing after the round's edit
   the writable summary's written-path answer, and the reduction-scoped generated-id walk) folded in as
   well, and the eleventh round's (the reduction-scoped *verdict* of that comparison, the fold's
   attribution rule, the installed-chain owner walk, the reserved slot a written recorded result is owed,
-  and the omitted progress event on the reduced writers' side) folded in beside them.
+  and the omitted progress event on the reduced writers' side) folded in beside them, and the twelfth
+  round's (the file-backed Pi read's line as the source file's own leaf path with the unreduced
+  reconstruction kept, the outcome slot's writability on a reduced document, the id-recorded progress
+  marking, and the whitespace-alone refusal beside the supplied-empty one) folded in as well.
 * `docs/plans/0009-selective-context.md` — §11 records the increment's numbered departures with the
   measurement behind each (the third round's four in §11.12) and the fourth through eleventh rounds' seven,
   five, six, three, four, five, four and five at its close (the seventh's as item 13, the eighth's as item
-  14, the ninth's as item 15, the tenth's as item 16, the eleventh's as item 17).
+  14, the ninth's as item 15, the tenth's as item 16, the eleventh's as item 17, and the twelfth's four as
+  item 18, with the twelve mutations that pin them in this record's round section).
 * `docs/goals/README.md` — 0009's row reads *Implemented on `feat/0009-selective-context`; awaiting
   operator acceptance*, and the goal file's own `Status:` line reads the same (the form 0007 and 0008
   carried while their increments awaited acceptance); nothing else was ready to archive (0008 was archived
   by the activation increment that landed this plan, and 0010–0013 are provisional while 0014–0017 are
-  ready-but-unstarted).
+  ready-but-unstarted). The twelfth fix round re-checked the goal files for the same rule and found the
+  same answer: 0009 awaits operator acceptance, 0014–0017 are Ready and unstarted, 0010–0013 provisional —
+  nothing accepted was waiting for the archive, so no goal file and no index row moved.
 * `docs/decisions/OPEN-QUESTIONS.md` — Q-0009-01 (the strict refusal's exit code); Q-0009-02 (rewritten:
   the seam pairs a result with the call the read's own ancestry establishes where it does, else the
   nearest prior call of the same id, an id-less record carries no link); Q-0009-03 (rewritten: a supplied
@@ -2261,7 +2462,13 @@ scoped. `gofmt -l ./cmd/ccc ./internal/ccc` named nothing after the round's edit
   report does not hold) with the event's continued travel nowhere else, the fold's attribution rule (rows
   the file's own records do not account for keep standing, and a record type whose call key this build does
   not restate never folds) and the installed-chain owner walk past an entry the reader merged away; the
-  reversals are the pre-fix lines this round's thirteen mutations record).
+  reversals are the pre-fix lines this round's thirteen mutations record); and Q-0009-14 (this round: the
+  file-backed Pi read's line is the file's own leaf path for a *selection* only, an identity-less record
+  keeps the read's own order answer, and the OpenCode outcome slot's writability and the id-recorded
+  progress marking are the reduction's own, with a run without a selection keeping the reconstruction's
+  line, its projection and its ledger's answers — the reversals are the pre-fix lines the round's twelve
+  mutations record, while carrying the file's answer to the default path would move its bytes, counts and
+  omissions and break what D4 measures).
 * `README.md` — an example line (`--select 0-3,7`, in range for its fixture), a paragraph on the flag and
   its report, and `Select` in the engine list. Unchanged by the third and fourth rounds: the paragraph's
   claims (the order pairing, the progress rule, the blank refusal, the ancestry rule) are still what the
@@ -2287,7 +2494,13 @@ scoped. `gofmt -l ./cmd/ccc ./internal/ccc` named nothing after the round's edit
   reserves its call's slot), the comparison sentence (rows the file's records do not account for keep
   standing, and a tree owner follows the installed file's own entry chain past an entry its reader merged
   away), and the closing sentence (the unflagged run keeps the progress event, the rows-against-items
-  verdict for a Codex session and the reduction's own loss rows).
+  verdict for a Codex session and the reduction's own loss rows). The twelfth round added the file-backed
+  line rule (a Pi-family session read from its file takes the file's own leaf path as the selection's line
+  for the records the read answered an identity for, so a result the file left beside the conversation is
+  not put back on the resumed walk and a window ending on one is refused by name), the whitespace-alone
+  refusal beside the supplied-empty one, the outcome slot's writability yield on a run that carries a
+  selection (an event the part cannot state yields the slot to a later recorded outcome it can state), and
+  the id-recorded progress marking (an id-less event does not stand in for the call's stored summary).
 * `docs/harness.md` — unchanged: this increment adds no gate step and no knob, and the citations step it
   already requires is the one that reads the new manifest.
 * The throw-away probe file (§4) and the pre-change worktree were removed before the gate run; the probe's

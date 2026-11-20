@@ -233,8 +233,10 @@ type ContinueOptions struct {
 	// DryRun converts and reports without installing anything.
 	DryRun bool
 	// Selection names which of the read's own records to carry, as a specification of ordinal values and
-	// regions ("0-5,9,12-"); empty with SelectionSupplied false means the whole read, exactly as a
-	// conversion behaved before the option existed. The ordinals are the values the read supplied
+	// regions ("0-5,9,12-"); the literal empty string with SelectionSupplied false means the whole read,
+	// exactly as a conversion behaved before the option existed, while any other value -- whitespace
+	// alone included, presence bit or not -- is a request that has to name something and is refused when
+	// it cannot (CheckSelectionOptions). The ordinals are the values the read supplied
 	// (Message.Ordinal), never a position, and a record the spec did not name is carried when a recorded
 	// call or result it is paired with is (Select).
 	Selection string
@@ -466,6 +468,18 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// finished writing, which another conversion carries.
 	result.Warnings = append(result.Warnings, boundaryWarnings(&boundary)...)
 
+	// The source file's own entries, read once before the selection runs: its leaf path is the answer to
+	// two questions this conversion asks -- which records the read's own line holds (lineMembership), which
+	// a selection's flags are taken from below, and which record the source's own loader selects as the
+	// leaf (check, after the selection). One read serves both because both are answers about the same
+	// bytes, and neither refusal changes place: the selection's own refusals are still answered before the
+	// leaf check's (check is asked where piSourceLeafCheck was), and a file that cannot be read is still
+	// answered there rather than here. A spec the read's own ordinals refuse has then paid one parse of the
+	// source file -- the parse the conversion asked for -- while the sentence it reads is still the
+	// specification's.
+	sourceFile := readPiSourceFile(conversation, readFrom, boundary)
+	conversation.sourceFileLine = sourceFile.lineMembership(conversation)
+
 	// The selection, when the caller named one, is decided here: after the read and the boundary, because
 	// it is a transformation of the *document* (the source file's bytes are measured whole and never
 	// rewritten), and *before* the source-side leaf guard below, because a specification the read's own
@@ -478,7 +492,7 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// installed before this point and a refusal returns here, so a spec this build cannot honour costs no
 	// file, no store row and no target identity.
 	conversationForWrite := conversation
-	if strings.TrimSpace(opts.Selection) != "" {
+	if opts.Selection != "" {
 		selected, report, err := Select(conversation, opts.Selection, opts.StrictSelection)
 		if err != nil {
 			return ContinueResult{}, err
@@ -497,7 +511,7 @@ func continueWith(ctx context.Context, opts ContinueOptions, route targetRoute, 
 	// into the conversion's losses below. It is asked about the read itself, never about the reduced
 	// document: which entry the source's own loader walks from is a property of the source file and the
 	// read, and a window a selection carries neither moves it nor narrows the read's own last record.
-	leaf, err := piSourceLeafCheck(conversation, readFrom, boundary)
+	leaf, err := sourceFile.check(conversation)
 	if err != nil {
 		return ContinueResult{}, err
 	}

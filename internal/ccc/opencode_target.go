@@ -683,11 +683,18 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 				// arrives). The harness's tool states are `completed` and `error`, so a progress event is
 				// no outcome this target may write -- and it must not consume the call's pending slot
 				// either, or the terminal event that follows would read as a repeat of an outcome that
-				// was never recorded. It is still marked on the call it names -- through the same pairing
-				// a terminal event's own plan uses -- because the archive's derived summary of that call
-				// is a view of this event rather than an outcome recorded beside it.
-				if entry, ok := c.pairedCallEntry(result, place); ok {
-					entry.recordedEvents = true
+				// was never recorded. It is still marked on the call it names, but only where the event
+				// records that call's own id: the archive's derived summary of a call is a view of the
+				// events the read recorded for it, and an event the read recorded no id for is paired by
+				// this writer's own inference (pairedCallEntry) -- a link the source never made may not
+				// suppress the call's own recorded summary evidence, because the summary would then be
+				// read as a view of an event that may belong to another call, the part is left with no
+				// outcome at all and the call is counted unanswered although the read holds one (round
+				// 11's fourth finding; 0007's id-keyed marking read the same rule).
+				if strings.TrimSpace(result.ToolUseID) != "" {
+					if entry, ok := c.pairedCallEntry(result, place); ok {
+						entry.recordedEvents = true
+					}
 				}
 				c.lossNonterminal++
 				continue
@@ -741,9 +748,21 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			}
 			if entry.Result != nil {
 				// The target's tool part holds one state per call, so a second outcome for the same call
-				// has no place; the first recorded outcome is the one carried.
-				c.lossRepeatedResults++
-				continue
+				// has no place; the first recorded outcome is the one carried. A held result the part
+				// cannot state is the one exception, and only on a document a selection produced: it is
+				// no answer on the written path (openCodeOutcomeWritable), and yielding it to a later
+				// result that can be written is what the slot's reservation already assumed -- an
+				// unwritable event reserves nothing (reserveResultSlots) because the part is owed the
+				// outcome the document can state. Counting the held event the way the writer would have
+				// counted it (countUnwritableResult) is what keeps the displacement from losing it:
+				// without the yield the later recorded result reads as a repeat, the held one drops the
+				// whole part at write time, and the document states no outcome although one was
+				// representable (round 11's third finding).
+				if !c.displacingOpenCodeOutcome(entry, result) {
+					c.lossRepeatedResults++
+					continue
+				}
+				c.countUnwritableResult(*entry.Result)
 			}
 			stored := result
 			entry.Result = &stored
@@ -935,6 +954,37 @@ func (c *openCodeConverter) plannedOutcomeWritable(entry *openCodeCall) bool {
 	}
 	summary, ok := derivedResultSummary(entry.Source, entry.ID)
 	return ok && openCodeResultWritable(summary)
+}
+
+// displacingOpenCodeOutcome answers whether one recorded result takes the outcome slot a planned call
+// already holds: only on a document a selection produced, where the held result is no outcome the part
+// can state (openCodeOutcomeWritable: its text is blank or its status is a word the tool states cannot
+// spell) and the new result can be written. The part states one outcome per call, and it is owed the
+// recorded outcome the document *can* state -- the same rule the slot's reservation takes
+// (reserveResultSlots: a result the part cannot write reserves nothing). A conversation the read
+// returned keeps its long-standing answer -- the first recorded outcome is the one carried and the
+// rest are counted repeats (goal 0009's D4).
+func (c *openCodeConverter) displacingOpenCodeOutcome(entry *openCodeCall, result ToolResult) bool {
+	return c.conv.selectionReduced() && !openCodeOutcomeWritable(entry) && openCodeResultWritable(result)
+}
+
+// countUnwritableResult counts one recorded result the part cannot state, under the categories toolPart
+// counts for the same result when the call holds it: the blocks no field can carry, then the guard the
+// text fails (no text at all, whitespace only) or the status word the tool states cannot spell. It is
+// what a displaced result (displacingOpenCodeOutcome) travels into the report under, so yielding the
+// slot to a later writable outcome does not lose the event that held it before.
+func (c *openCodeConverter) countUnwritableResult(result ToolResult) {
+	text, blocks := resultText(result)
+	c.lossResultBlocks += blocks
+	if strings.TrimSpace(text) == "" {
+		if text == "" {
+			c.lossEmptyResults++
+		} else {
+			c.lossWhitespaceRes++
+		}
+		return
+	}
+	c.lossStatuses++
 }
 
 // pairedCallEntry answers the planned call one recorded result event names, through the seam's own

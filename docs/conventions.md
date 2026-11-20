@@ -219,9 +219,15 @@ obligation ships no citations file, rather than an empty one.
   (OpenCode `reserveResultSlots`: a result whose record the conversion publishes evidence from and whose
   text and status the tool states can hold reserves its call occurrence, while one the conversion does not
   write — an off-line, subagent or compaction-boundary record's, one with no spellable status — reserves
-  nothing and a reserved occurrence still counts as unanswered where the id-less result stands), while a
-  run without a selection keeps the ledger's own answer (the status clears the call's id there) and keeps
-  writing the event. What a target's own format does with such a call is
+  nothing and a reserved occurrence still counts as unanswered where the id-less result stands; and on a
+  reduced document the same writability rule holds the slot itself, so an event the part cannot state — no
+  text, whitespace-only text, a status word the tool states cannot spell — is counted exactly as the
+  writer counts the same result and yields the slot to a later recorded outcome the part can state, while a
+  run without a selection keeps the first recorded outcome in it) — and only a progress event that records
+  the call's own id marks the call as one whose recorded events stand in for its archive summary, so an
+  id-less event — a link only that writer's inference makes — does not suppress the summary the read stored
+  on the call — while a run without a selection keeps the ledger's own answer (the status clears the call's
+  id there) and keeps writing the event. What a target's own format does with such a call is
   that writer's answer, named in the conversion's losses. A call or result the source
   recorded with **no** id carries no recorded link, so the seam neither invents one nor carries candidates
   for it; the target's writer applies its own rule to the selected line and discloses the pairing it
@@ -242,7 +248,14 @@ obligation ships no citations file, rather than an empty one.
   relation answers, so a parent the caller merely excluded is not one the read could not place — and the
   answer travels by the record's own
   position, so a record the read answered no identity for keeps
-  it), so the loader's walk stays the read's own line; an off-line record may keep an off-line ancestor —
+  it), so the loader's walk stays the read's own line — and where the source's own file stands behind the
+  read (a Pi-family read the conversion took from the file itself, whose bytes are the size the read's own
+  snapshot recorded), the file's own leaf path — the walk from its last entry back through `parentId`, the
+  walk the harness's own loader builds the context from — is that line for every record the read answered
+  an identity for, so the read's lossy tool-result step cannot put a result the file left beside the
+  conversation back on the resumed walk (a record the read gave no identity for, an archive row and a file
+  that cannot answer keep the read's own order answer, and a run without a selection keeps the
+  reconstruction's line and its projection, which is what D4 measures); an off-line record may keep an off-line ancestor —
   keeping a branch off the active walk is recorded history the writer reproduces — while an on-line record
   is never chained through one, a window ending on an off-line record is refused by name
   (`ErrUnrepresentableLeaf`) rather than written (the check answers by the record's own position through
@@ -264,7 +277,8 @@ obligation ships no citations file, rather than an empty one.
   second reduction would revive a branch the first left off the line; the read itself is never rewritten),
   a value the caller supplied *empty* (an unset
   variable expanded into `--select "$SPEC"` is a refusal, not the flag's absence: it must not publish the
-  whole history), and the strict refusal (each answered as the specification's own refusal even
+  whole history — and the flag's absence is the literal empty string with no presence bit, nothing else,
+  so a value holding whitespace alone is that same refusal whether or not the caller set the bit), and the strict refusal (each answered as the specification's own refusal even
   where the source would also refuse the conversion, so a run whose selection the read's own ordinals
   reject is not reported as a statement about the source file's leaf), and the report names the
   transformation on every run that had one, in the human block and in `--json`, as

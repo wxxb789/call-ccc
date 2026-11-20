@@ -2162,3 +2162,200 @@ func TestPiLoadCheckRefusesWhenTheRecordedWorkingDirectoryIsNotHere(t *testing.T
 			load.Detail, missing)
 	}
 }
+
+// TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath pins the eleventh round's second finding.
+// The copy's appended turn hangs off the *call's* entry, not off the tool result's, so the file's own leaf
+// path is turn → call → …, and the result entry stands beside the turn off that path -- the shape a
+// `/tree` switch back to the call's entry leaves. The inherited reader answers the turn's parent as the
+// call (a result's descendants resolve to their visible ancestor), so the read alone cannot tell that
+// shape from a file whose turn hangs off the result, and the read's own reconstruction chains through the
+// result and marks it on the read's line. A window ending there would therefore pass the tree writers'
+// leaf guard and write a target session resumed at a branch the source's file left. The source file's own
+// leaf path settles it for every record the read answered an identity for (sourceFileLine): a tree target
+// refuses the window by name, a line target omits the record and counts it, and a window ending on the
+// file's own path is written -- while the writers follow the file's own relation for a record the file
+// placed at the call, so the resumed context is the source's own walk. A run without a selection is
+// untouched: its line is the reconstruction's, projection included (goal 0009's D4).
+func TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath(t *testing.T) {
+	// The appended turn: an ordinary assistant record whose parentId is the call's entry b3c4d5e6.
+	const laterTurn = `{"id":"aabbccdd","message":{"api":"openai-completions","content":[{"text":"And the retry budget?","type":"text"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"stop","timestamp":1794938120000,"usage":{"cacheRead":0,"cacheWrite":0,"cost":{"cacheRead":0,"cacheWrite":0,"input":0.0000412,"output":0.0000038,"total":0.000045,"totalFromProvider":false},"input":412,"output":38,"reasoning":0,"totalTokens":450}},"parentId":"b3c4d5e6","timestamp":"2026-05-04T09:15:20.000Z","type":"message"}`
+	const (
+		resultText  = "internal/retry/config.go:41: maxBackoffSeconds = 30"
+		resultEntry = "c7d8e9fa"
+	)
+	run := func(t *testing.T, target, spec string, supplied bool) (ContinueResult, error) {
+		t.Helper()
+		cfg, ref, _ := piSourceCopy(t, piFixtureRef.ID, laterTurn)
+		return Continue(context.Background(), ContinueOptions{
+			Ref: ref, Target: target, Config: cfg,
+			TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+			Selection: spec, SelectionSupplied: supplied,
+		})
+	}
+
+	// A tree target refuses the finding's window: its last record is the result, which the file's own
+	// leaf path does not hold.
+	for _, target := range []string{TargetPi, TargetClaude} {
+		result, err := run(t, target, "0-2", true)
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Fatalf("%s: --select 0-2 = %v, want ErrUnrepresentableLeaf: the window ends on the tool "+
+				"result the source's file ran beside the branch the conversation continued on", target, err)
+		}
+		for _, want := range []string{resultEntry, "ordinal 2", "the record the entry written last stands for"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the refusal %q does not name %q", target, err, want)
+			}
+		}
+		if result.TargetSession.Path != "" {
+			t.Errorf("%s: a refused conversion reported an installed session at %s", target,
+				result.TargetSession.Path)
+		}
+	}
+
+	// A line target omits the off-line record and counts it, exactly as it does for a branch the read
+	// itself answers: the log holds no result text, and the leaf check did not refuse the run (the read's
+	// own last record *is* the file's leaf).
+	converted, err := run(t, TargetCodex, "0-2", true)
+	if err != nil {
+		t.Fatalf("codex: --select 0-2: %v", err)
+	}
+	if got := lossCount(t, converted.Conversion.Losses, "inactive_branch_records").Count; got != 1 {
+		t.Errorf("codex: inactive_branch_records = %d, want the one record the file's leaf path leaves off", got)
+	}
+	for _, warning := range converted.Warnings {
+		if strings.Contains(warning, "not established") {
+			t.Errorf("codex: warning %q says the leaf was not established, while the file's own leaf path "+
+				"was read and supports the read's last record", warning)
+		}
+	}
+	installed, err := os.ReadFile(converted.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("codex: reading the installed rollout: %v", err)
+	}
+	if strings.Contains(string(installed), resultText) {
+		t.Error("codex: the installed rollout holds the result the file's leaf path leaves off")
+	}
+
+	// A window ending on the file's own path is written: the root record's own ordinal carries nothing
+	// else, so the window's last record is one the file's walk reaches.
+	for _, target := range []string{TargetPi, TargetCodex} {
+		if _, err := run(t, target, "0", true); err != nil {
+			t.Errorf("%s: --select 0 = %v, want the window written: its last record stands on the "+
+				"file's own leaf path", target, err)
+		}
+	}
+
+	// The whole read, written as the *source's own walk*: the result stays off the walk the target's
+	// loader makes from the last entry (the exact tree the file records), while the read's reconstruction
+	// would chain the last record through the result. The default path is the other arm: unselected, the
+	// projection is taken and the result is on the walk -- the bytes a run without a selection has always
+	// written (goal 0009's D4).
+	selectedRun, err := run(t, TargetPi, "0-", true)
+	if err != nil {
+		t.Fatalf("pi: --select 0-: %v", err)
+	}
+	cfg, ref, sourcePath := piSourceCopy(t, piFixtureRef.ID, laterTurn)
+	sourceBytes, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading the source copy: %v", err)
+	}
+	installedBytes, err := os.ReadFile(selectedRun.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, sourceBytes)
+	installedWalk := transcriptWalkTexts(t, installedBytes)
+	if !slices.Equal(installedWalk, sourceWalk) {
+		t.Errorf("pi: the selected session's model-visible history = %q, want the source file's own %q: a "+
+			"resumed session must continue the source's own line, not the reconstruction's projection",
+			installedWalk, sourceWalk)
+	}
+	for _, text := range installedWalk {
+		if text == resultText {
+			t.Error("pi: the selected session's walk holds the result the file's leaf path leaves off")
+		}
+	}
+	if got := lossCount(t, selectedRun.Conversion.Losses, "unresolved_source_parents").Count; got != 1 {
+		t.Errorf("pi: --select 0- unresolved_source_parents = %d, want the one off-line record whose own "+
+			"file relation the projection still resolves", got)
+	}
+	unflaggedRun, err := Continue(context.Background(), ContinueOptions{
+		Ref: ref, Target: TargetPi, Config: cfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+	})
+	if err != nil {
+		t.Fatalf("pi: unflagged: %v", err)
+	}
+	unflaggedBytes, err := os.ReadFile(unflaggedRun.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the unflagged session: %v", err)
+	}
+	unflaggedWalk := transcriptWalkTexts(t, unflaggedBytes)
+	if slices.Equal(unflaggedWalk, sourceWalk) {
+		t.Error("pi: the unflagged session's walk equals the source's own: the default path's reconstruction " +
+			"is what a run without a selection has always written and must stay untouched")
+	}
+	if got := lossCount(t, unflaggedRun.Conversion.Losses, "unresolved_source_parents").Count; got != 2 {
+		t.Errorf("pi: unflagged unresolved_source_parents = %d, want the two projected relations a run "+
+			"without a selection has always counted", got)
+	}
+}
+
+// TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities pins the boundary of the source file's
+// own line answer: the membership is per *identity*, and a file that records none answers no tree at all
+// -- a Pi v1 session's own order is its conversation, and the read's order is that order -- so every
+// record the read gave no identity for keeps the read's own order answer. The selection's window ending
+// on the file's second message is therefore written for a tree target and a line target alike, exactly as
+// before the file's leaf path was consulted; answering an identity-less record as off the file's path
+// (the mutation this case exists to refuse) would refuse the window and omit the record from the log.
+func TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities(t *testing.T) {
+	const (
+		header = `{"type":"session","version":1,"timestamp":"2026-05-04T09:15:00.000Z","cwd":"/home/user/code/example-api"}`
+		prompt = `{"type":"message","timestamp":"2026-05-04T09:15:01.000Z","message":{"role":"user","content":"Where is the retry cap configured?"}}`
+		answer = `{"type":"message","timestamp":"2026-05-04T09:15:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"It is set in internal/retry/config.go."}],"usage":{"input":412,"output":38,"totalTokens":450}}}`
+	)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "v1-session.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join([]string{header, prompt, answer}, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the v1 session: %v", err)
+	}
+	for _, arm := range []struct {
+		target string
+		spec   string
+		lost   int
+	}{
+		{TargetPi, "1", 0},
+		{TargetCodex, "1", 0},
+	} {
+		cfg := fixtureConfig(t)
+		cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentPi: {dir}}
+		result, err := Continue(context.Background(), ContinueOptions{
+			Ref: Ref{Provider: "pi", ID: path}, Target: arm.target, Config: cfg,
+			TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+			Selection: arm.spec, SelectionSupplied: true,
+		})
+		if err != nil {
+			t.Fatalf("%s: --select %s: %v", arm.target, arm.spec, err)
+		}
+		if result.Conversion.State != ConversionStateConverted {
+			t.Errorf("%s: conversion state = %q, want the window converted", arm.target, result.Conversion.State)
+		}
+		for _, loss := range result.Conversion.Losses {
+			if loss.Category == "inactive_branch_records" || loss.Category == "unresolved_source_parents" {
+				if loss.Count != arm.lost {
+					t.Errorf("%s: %s = %d, want %d: an identity-less record's place is the read's own "+
+						"order, and the file records no tree to answer another", arm.target, loss.Category,
+						loss.Count, arm.lost)
+				}
+			}
+		}
+		installed, err := os.ReadFile(result.TargetSession.Path)
+		if err != nil {
+			t.Fatalf("%s: reading the installed session: %v", arm.target, err)
+		}
+		if !strings.Contains(string(installed), "It is set in internal/retry/config.go.") {
+			t.Errorf("%s: the written session does not hold the record the window selected: the file "+
+				"records no identities, so the read's own order is the line", arm.target)
+		}
+	}
+}

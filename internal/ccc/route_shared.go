@@ -528,11 +528,14 @@ func (t *sourceTree) wrote(id string) {
 //     answerable from the read; the entry is chained through the result -- the reading the source's own
 //     file order supports -- with the count naming the relation as one the read did not establish. Only a
 //     read that may project can reach this place (wrote, projectedParents), so an exact read's answers
-//     name the records they mean. A call's outcome the read folded onto the call's own message is what the
-//     carrier of a written result is answered from, so a sibling of the call names the call's message's
-//     *parent*, not the message, and is chained to that parent's own entry instead of through the call's
-//     result: only a record naming the call's own message can be a record the file might have placed
-//     under the outcome.
+//     name the records they mean. The place is not taken where the result's entry stands for a record the
+//     document's own line leaves off it while the record now being written is one the line holds
+//     (resultEntryLeavesTheLine): the line then already answers the record's place, and following the
+//     result would put a branch the line left back on the walk a resumed session makes. A call's outcome
+//     the read folded onto the call's own message is what the carrier of a written result is answered
+//     from, so a sibling of the call names the call's message's *parent*, not the message, and is chained
+//     to that parent's own entry instead of through the call's result: only a record naming the call's own
+//     message can be a record the file might have placed under the outcome.
 //   - the nearest retained ancestor a selection answered for the record (sourceKeptAncestor): the
 //     record's own relation steps through records the window left out to an ancestor the window carries,
 //     and the entry hangs off that ancestor's place. Not counted where the answer rests on the read's own
@@ -569,7 +572,7 @@ func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
 		// read's own order, which invents nothing.
 		return t.fallbackPlace(), id != "" && t.lastEntryID != nil
 	}
-	if entry, ok := t.toolResultEntry[parent]; ok {
+	if entry, ok := t.toolResultEntry[parent]; ok && !t.resultEntryLeavesTheLine(entry) {
 		return &entry, true
 	}
 	if entry, ok := t.writtenAncestor(parent); ok {
@@ -579,6 +582,31 @@ func (t *sourceTree) parentPlace(id, parent string) (*string, bool) {
 		return &entry, projected
 	}
 	return t.fallbackPlace(), true
+}
+
+// resultEntryLeavesTheLine answers whether the entry a written tool result stands for is one the
+// document's own line leaves off it, while the record now being walked is one that line holds: the
+// tool-result place above exists to undo the read's lossy parent answer (the read answers a record under
+// the call while the source's file runs call → result → what follows), and following the result would
+// put the result's branch back on the walk a resumed session makes. The relation the record's own answer
+// gives is then the place -- the record the read named, or the selection's retained ancestor -- exactly
+// as keptAncestorEntry refuses an off-line ancestor for an on-line record (round 11's second finding: a
+// difference the source's own file settles, carried on a reduced document per position).
+//
+// A record the line itself leaves off keeps the recorded relation: its branch is recorded history the
+// writer reproduces, and hanging it under the result its own file ran through is that history. An
+// unreduced read (a run without a selection, whose line is the reconstruction's) is untouched in
+// practice: the reconstruction's own tool-result step is what places a result on its line whenever an
+// on-line record names that result's carrier, so a result it leaves off is never the entry an on-line
+// record's carrier answers -- the condition below cannot hold there. Goal 0009's D4 is what the whole
+// branch exists under, and the writers' answers for a read nobody selected from are what the D4 probe
+// measured.
+func (t *sourceTree) resultEntryLeavesTheLine(entry string) bool {
+	if t.inactiveAt(t.record) {
+		return false
+	}
+	_, off := t.offLineEntry[entry]
+	return off
 }
 
 // keptAncestorEntry answers the written place of the nearest retained ancestor a selection answered for

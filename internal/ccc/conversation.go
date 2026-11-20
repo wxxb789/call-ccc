@@ -256,6 +256,31 @@ type Conversation struct {
 	// window happened to carry, and the writer would claim a pairing the read never recorded. nil means
 	// Messages is the read itself, and the writers resolve the pairing over it (pairedCallOccurrences).
 	sourceResultPairs map[resultOccurrence]callOccurrence
+	// sourceFileLine carries, per message of Messages, the source file's own answer about the read's
+	// line where a source file stands behind the read: whether the walk the harness's own loader makes
+	// from that file's last entry -- its leaf path -- reaches the record, for the records the read
+	// answered an identity for (sourceFileLineAnswer). It is set by the conversion path (continueWith)
+	// from the same read of the file's entries the source-side leaf check asks its own question of, and
+	// only Select consumes it: a file-backed Pi-family read is a reconstruction whose tool-result
+	// projection cannot tell a record the source placed under a call from one it placed under that call's
+	// result, and a window that ends on the result of a call the conversation continued past would write
+	// a target session whose resumed context is a branch the source's file left -- the file's own walk
+	// settles that question for every record the read answered an identity for, and nil means no file
+	// answered (no file stands behind the read, an archive row, a file that holds no entries). A record
+	// the read gave no identity for keeps the reconstruction's answer, and so does an unreduced read's
+	// whole line: the writers of a read the caller did not select from keep the reconstruction's own
+	// answer (inactiveSourceRecords), which is the line a run without a selection has always written.
+	sourceFileLine []sourceFileLineAnswer
+}
+
+// sourceFileLineAnswer is the source file's own answer about one record's place on the read's line: the
+// walk the harness's own loader makes from the file's last entry (its leaf path) reaches the record
+// (holds), and the file's entries answered for the record at all (answered: the read recorded an
+// identity for it, so the file's walk can place it by identity -- a record the read gave no identity
+// for is answered by the read's own order instead, and the conversion keeps that answer).
+type sourceFileLineAnswer struct {
+	holds    bool
+	answered bool
 }
 
 // selectionReduced answers whether this conversation is a document a selection produced rather than the

@@ -732,3 +732,69 @@ measurement that decided it, followed by the review round's own:
       writing it (D4). `TestSelectionKeepsProgressOnlyCallsOutstandingForTheWriters` pins the omission, the
       count on all five routes, the absent row on the default path and the event's continued travel there;
       two executed mutations (the guard removed; its scoping removed) fail it.
+
+18. **The twelfth review round's four findings.** The review of `9242e49..2e2e8a2` found four items (two
+    P1s, two P2s); all four are fixed, and every rule the touched surface claims is pinned by an executed
+    mutation (twelve in all, recorded in the evidence record and the stage report).
+
+    * **the flag's absence is the literal empty string with no presence bit** (review 1/4, a P1):
+      `CheckSelectionOptions` trimmed its value and treated a trimmed-empty string as the flag's absence
+      when `SelectionSupplied` was unset, and `continueWith` tested the trimmed value as well, so an
+      embedding caller that set `Selection: " \t "` converted and installed the whole conversation with no
+      selection report -- the one thing the request was written to prevent. The flag's absence is now
+      exactly the literal empty string with no presence bit (`supplied || selection != ""`), and
+      `continueWith` enters the selection for any non-empty value, where `Select`'s own trim refusal
+      answers a whitespace-only value instead of the conversion skipping the reduction.
+      `TestSelectionRefusesAWhitespaceOnlyAPIRequest` pins both layers (four whitespace shapes, with and
+      without the bit; `Continue` and `continueWith` each asserted to refuse `ErrBadSelection` with nothing
+      installed, beside a well-formed control that installs) and
+      `TestCheckSelectionOptionsRefusesASpecificationWithoutARead` keeps the supplied-empty arm. Two
+      executed mutations (the presence bit alone deciding the absence; the trimmed predicate at
+      `continueWith`) fail it.
+    * **a file-backed Pi read's line is the file's own leaf path** (review 2/4, a P1): a Pi file whose
+      result entry and whose later record are *siblings* under the same call -- the shape a `/tree` switch
+      back to the call leaves -- reads with the later record's parent answering the call, and the read's
+      reconstruction cannot tell that from a record the file placed under the result: its tool-result step
+      chained through the result and marked it on the read's line. A window ending there (`--select 0-2`)
+      then passed the tree writers' leaf guard, wrote the result as the target's last entry, and the
+      resumed session continued a branch the source's file left -- while the source-side leaf check, which
+      only confirms the read's *last* record, answered nothing. The conversion now reads the source file's
+      own entries once (readPiSourceFile, before the selection; the source-side leaf check asks the same
+      read) and its own leaf path -- the walk from the file's last entry back through `parentId`, the walk
+      the harness's own loader builds the context from -- is the line a selection's flags are taken from
+      for every record the read answered an identity for (`Conversation.sourceFileLine`, consumed by
+      `Select`; a record the read gave no identity for, an archive row and a file that cannot answer keep
+      the read's own order answer, and an unreduced read keeps the reconstruction's line, D4). The writer's
+      tool-result place then does not chain an on-line record through the result entry when that entry
+      stands for a record the line leaves off (`resultEntryLeavesTheLine`), so `--select 0-` writes the
+      file's own tree (`unresolved_source_parents` names the one off-line record whose file relation the
+      projection still resolves) and the default path keeps the projection it has always taken.
+      `TestContinueRefusesASelectedWindowOffTheSourceFilesLeafPath` pins the refusal (Pi and Claude, naming
+      the result's identity and ordinal), the line target's omission and count, the window ending on the
+      file's own path, the selected session's walk equalling the source file's own, and the unflagged arm
+      (projection taken, its own count). Four executed mutations (the file's answer not carried; the walk
+      not the file's leaf walk; an identity-less record answered off the path; the projection taken onto an
+      off-line result) fail it, and `TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities`
+      pins the identity-less boundary on a Pi v1 file whose own order is the conversation.
+    * **an unwritable event yields the OpenCode outcome slot** (review 3/4, a P2): the planner installed
+      whatever result reached a call's one slot first, so on a reduced window holding a call, an id-less
+      terminal output, a blank result naming the call and a later non-blank result naming it too, the blank
+      event took the slot, the later result was counted a repeat, and the part was dropped at write time --
+      no outcome, although one was representable (the reservation that kept the id-less inference off the
+      occurrence had assumed the writable result was the one owed it). `displacingOpenCodeOutcome` now
+      lets a later writable recorded result take a slot an unwritable held result occupies, and
+      `countUnwritableResult` counts the displaced event exactly as `toolPart` counts the same result (its
+      blocks, then no text / whitespace only / a status the tool states cannot spell) so nothing is lost;
+      the yield is the reduction's own, and a run without a selection keeps the first recorded outcome in
+      the slot. `TestSelectionYieldsAnUnwritableOutcomesSlotToALaterRecordedResult` pins the finding's
+      window for all three unwritable shapes, the categories, and the default path's unchanged answer;
+      three executed mutations (no yield; the displaced event not counted; the yield unscoped) fail it.
+    * **only an id-recorded progress event stands in for a call's summary** (review 4/4, a P2): the
+      progress branch marked the call a `running` event named through the same pairing a terminal event
+      uses, which for an id-less event is this writer's own inference (`soleOutstandingPlannedCall`), so a
+      call whose only recorded outcome was its stored summary had the summary suppressed as a view of an
+      event the source never linked to it and the part dropped as unpaired. The marking now reads the
+      source's own link only (a non-empty `ToolUseID`), restoring 0007's id-keyed rule on the default path
+      as well; `TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress` pins the finding's arm,
+      the id-recorded control (the summary is not written) and the unflagged arms. Three executed mutations
+      (an id-less event marking; no event marking; the marking scoped to the reduction) fail it.

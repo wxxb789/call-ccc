@@ -338,7 +338,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   inference may not fill the slot and leave the recorded result to be counted as a repeat), while a result
   the conversion does not write — an off-line or subagent record's, a compaction boundary's, one whose text
   or status has no shape — reserves nothing, and a reserved occurrence still counts as unanswered where the
-  id-less result stands, so an ambiguous window omits the event rather than binding it — and a written call occurrence whose
+  id-less result stands, so an ambiguous window omits the event rather than binding it; the same
+  writability rule holds the slot itself on a reduced document, where an event the part cannot state (no
+  text, whitespace-only text, a status word the tool states cannot spell) is counted exactly as the writer
+  counts the same result and yields the call's one slot to a later recorded outcome the part can state,
+  while a run without a selection keeps the first recorded outcome in the slot and its bytes and counts
+  unchanged — and a written call occurrence whose
   recorded id an
   earlier written occurrence already holds is written under an id generated from its own place
   (`colliding_call_ids`, a category the default path's report does not carry), with every result written
@@ -358,13 +363,29 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   scoped to the reduction as `coalesced_tool_call_projections` is) because Codex's `function_call_output`,
   Claude's `tool_result` block and the Pi family's toolResult message carry an outcome or nothing, so a
   written event would read back as the call's answer — while a run without a selection keeps the ledger's
-  own answer (the status clears its id there) and keeps writing the event — and an archive
+  own answer (the status clears its id there) and keeps writing the event — and only an event that records
+  the call's own id marks the call as one whose recorded events stand in for its archive summary (OpenCode's
+  plan): an id-less event is paired by that writer's own inference, a link the source never made, so the
+  summary the read stored on the call is still written rather than suppressed as a view of an event that
+  may belong to another call — and an archive
   read's own summary of an outcome on the call itself (`ToolCall.ResultContent`) is outcome evidence where
   the read holds no recorded result event of the call, so that shape is not counted; whether a
   target's own format can hold a call with no outcome is that writer's answer, named in the conversion's
   losses (`unpaired_tool_calls` on OpenCode). **The line is the read's own**: which records the source's relations place on the
   line its loader walks is a property of the read, and a selection neither moves a record onto that line nor
-  off it — a window ending on an off-line record is refused by a tree target by name
+  off it. Where the source's own file stands behind the read (a Pi-family read the conversion took from the
+  file itself, whose bytes are the size the read's own snapshot recorded), the read pass reads that file's
+  entries once and its own leaf path — the walk from the file's last entry back through `parentId`, the walk
+  the harness's own loader builds the context from — is the line the selection's flags are taken from for
+  every record the read answered an identity for; a record the read gave no identity for keeps the read's
+  own order answer, and the readers of an archive row, or of a file that cannot answer, keep it too. Without
+  that answer the read's reconstruction chains a record the file placed under the call through the result
+  standing between them (its lossy parent answer) and marks the result on the line, so a window ending there
+  would resume a branch the file's own conversation left — the file's answer settles it, a tree target then
+  refuses such a window by name like any other off-line end, and the resumed context is the file's own walk.
+  The writers of a read nobody selected from keep the reconstruction's answer, exactly as goal 0009's D4
+  requires: that line, and the projection with it, is what a run without a selection has always written. A
+  window ending on an off-line record is refused by a tree target by name
   (`ErrUnrepresentableLeaf`, below) rather than written as a file that resumes the branch (the guard
   answers by the record's own position through the entries actually written, so a record the read gave no
   identity for is refused like any other), a record whose
@@ -391,7 +412,9 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   already names (answered by the specification's own grammar, before any read is opened, so a missing or
   unreadable source cannot mask it as a source failure), a value the caller supplied **empty** (an unset
   variable expanded into `--select "$SPEC"` is a refused request, never read as the flag's absence: an
-  automation's empty variable must not publish the whole history), a document a selection already produced
+  automation's empty variable must not publish the whole history — and the flag's absence is the literal
+  empty string with no presence bit, nothing else, so a value holding whitespace alone is that same
+  refused request whether or not the caller set the bit), a document a selection already produced
   (`ErrSelectionReduced`: the line, ancestry and pairing answers a selection carries are the read's own
   and cannot be re-derived from the window, and the read itself is never rewritten), and the strict
   refusal — each answered
@@ -444,7 +467,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   own relation is reproduced as the read answered it, with the one step the read itself projects: a record
   the Pi-family readers answer as hanging off the message that made a call is chained through the tool
   result standing between them, and counted (`unresolved_source_parents`) where the projection cannot
-  settle which of the two the record named. The step is taken only where the read may project, because it
+  settle which of the two the record named — and the step is not taken where the result's entry stands for
+  a record the document's own line leaves off while the record being written is one that line holds: the
+  line then already answers the record's place, and following the result would put the branch the line left
+  back on the walk a resumed session makes. The step is taken only where the read may project, because it
   exists to undo a projection: an exact answer — a Claude transcript's `parentUuid` — names the record it
   means, and a result standing beside a record the read chains to the same message is that record's
   sibling, not its place. A record the target leaves out keeps the place its own walk resolved — the

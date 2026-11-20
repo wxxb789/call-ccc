@@ -130,13 +130,22 @@ running, or an id-less progress event — stays as it is and is counted (`calls_
 archive's own summary of an outcome stands on the call itself, and whether the target's own format can
 hold it is that writer's answer, named in the conversion's losses: on a run that carries a selection the
 progress event itself is omitted and counted (`nonterminal_tool_events`) rather than written as the call's
-answer, which is what a file whose format carries an outcome or nothing would read it as. On a target whose session is a tree, a
+answer, which is what a file whose format carries an outcome or nothing would read it as, and an event that
+records no call id of its own — a link only the writer's inference makes — does not stand in for the
+summary the read stored on the call, which is still written (only an event recording the call's own id
+suppresses it, because the summary is then that event's view). On a target whose session is a tree, a
 selection that leaves out a record's own parent hangs it off its nearest retained ancestor instead, so the
 resumed context is the read's own line and a branch the selection carried stays recorded history off that
 line (a window whose own end stands off that line is refused by name rather than written under a branch --
 the guard answers by record position, so a record the read gave no identity for is refused like any other,
 and an on-line record is never chained under an identity-less record the line leaves off
 -- and a window with no retained ancestor at all is refused the same way);
+for a source whose own file stands behind the read (a Pi-family session the conversion read from its file
+itself), that line is the file's own leaf path -- the walk its own loader makes from the file's last entry
+-- for every record the read answered an identity for: the read's lossy tool-result step cannot put a
+result the source's file left beside the conversation back on the resumed walk, and a window ending on such
+a result is refused by name rather than written; a record the read gave no identity for, an archive row and
+a file that cannot answer keep the read's own order answer, and a run without the flag keeps it too;
 a line target (a Codex rollout, an OpenCode session) instead omits the records the read's own walk does not
 reach and counts them (`inactive_branch_records`), that membership answering for an identity-less record
 too;
@@ -151,7 +160,10 @@ call; a summary the read stored on a call is written for that call's own occurre
 a writable summary answers its call on the written path, so a later id-less result is omitted rather than
 replacing it — and where the target's part holds one outcome per call, a recorded result the conversion
 publishes reserves its call's slot, so an inference may not fill it and leave the recorded result counted
-as a repeat).
+as a repeat; on a run that carries a selection an event the part cannot state — no text, whitespace-only
+text, a status word the tool states cannot spell — is counted where the writer counts the same result and
+yields that slot to a later recorded outcome the part *can* state, while a run without the flag keeps the
+first recorded outcome in the slot).
 A call occurrence whose recorded id an earlier written occurrence already holds is written under an id
 generated from its own place (counted `colliding_call_ids`), and each result is written under the owning
 occurrence's emitted id — so an id two calls share cannot rebind an output, and the round-trip check
@@ -179,7 +191,9 @@ space the spec was written against, the included and excluded records, the neces
 undischarged calls, each with counts and the ordinals it names — so a caller can see exactly which recorded
 context crossed and which stayed behind. An ill-formed specification, one whose region reaches outside the
 ordinals the read supplied, one that would carry no record at all and a value supplied empty (an unset
-variable expanded into `--select "$SPEC"`) are refused
+variable expanded into `--select "$SPEC"`) — the flag's absence being the literal empty string with no
+presence bit, so a value holding whitespace alone is that same refused request whether or not the flag was
+spelled out — are refused
 with the core's own sentence and exit code 2, before anything is written (a region that spans a gap carries
 the records it holds); a run without the flag is unchanged.
 

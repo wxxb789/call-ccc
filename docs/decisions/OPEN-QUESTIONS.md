@@ -3301,3 +3301,43 @@ supersede it with a newer one and say which it supersedes.
   the inference, a reduced document omits a progress event its format cannot carry and counts it, the fold
   folds only the rows the file's own records account for, and a tree owner follows the installed chain past
   a merged-away entry" and "each of those is decided the other way".
+
+## Q-0009-14 — A file-backed Pi read's line answers selections only, an identity-less record keeps the read's order answer, and an unwritable OpenCode event yields its slot
+
+- **Status:** open (defaults taken: where a Pi-family read's own file stands behind it, the file's own leaf
+  path — the walk from its last entry back through `parentId` — is the line a *selection's* flags are taken
+  from for every record the read answered an identity for, while a run without a selection keeps the
+  reconstruction's line and the tool-result projection it has always written, which is what goal 0009's D4
+  measures; on the writers' side the same answer stops the tool-result place from chaining an on-line record
+  through a result entry the line leaves off, on a reduced document only. A record the read gave no identity
+  for keeps the read's own order answer, because the file's walk places records by identity and nothing can
+  name an identity-less entry as a parent. On OpenCode, an event the part cannot state — no text,
+  whitespace-only text, a status word the tool states cannot spell — is counted exactly as `toolPart` counts
+  the same result and yields the call's one outcome slot to a later recorded outcome the part can state, on
+  a reduced document only; and the progress branch marks a call as having recorded result evidence only
+  where the event records that call's own id, which restores 0007's id-keyed rule on the default path too.)
+- **Question:** may the source file's own answer about the resumed line govern the *unflagged* conversion as
+  well (the file's relation is the source's own, and the read's reconstruction is the lossy one), or does
+  D4's byte-identity keep the default path on the reconstruction — and may a reduced-only rule (the
+  projection's line guard, the outcome slot's writability) act on the default path where the file's answer
+  would make it exact there too?
+- **Default taken:** each answer is scoped to what its finding measured: the review's second finding is
+  about a *selection* ending on a branch the file left, and the eleventh review round's own D4 rule (a run
+  without a selection flag is byte-identical to the same run before selections existed) is the reason the
+  default path keeps its reconstruction, its projection and its ledger's answers. Every scoped rule is
+  disclosed in the run's own surfaces where it acts (the selection report's classes, the conversion's loss
+  rows, the refusal sentences) and the D4 probe re-ran over the two trees for this round with the shared
+  diff silent (1183 shared lines, the increment's own selection fixture the only addition on this tree).
+  The alternative — carrying the file's own answer to the default path — would change written bytes, the
+  unresolved counts and the line targets' omissions for a read nobody selected from, which is the operator's
+  decision, not this build's.
+- **Reversal:** the pre-fix behaviour returns by clearing `Conversation.sourceFileLine` before `Select`, by
+  dropping `resultEntryLeavesTheLine` from `parentPlace`'s tool-result place, by removing
+  `displacingOpenCodeOutcome`/`countUnwritableResult` (and the branch that calls them), and by dropping the
+  progress branch's id guard — each reopens the failure its mutation records
+  (`docs/evidence/0009-selective-context.md`, twelfth round, `M3`–`M12`).
+- **Settled by:** an operator decision between "the file's own leaf path governs a selection's line only,
+  an identity-less record keeps the read's order answer, and the OpenCode slot's writability and the
+  progress marking are the reduction's own (the default path keeps its reconstruction, its projection and
+  its ledger)" and "the file's own answer governs the default path too (or each of those is decided the
+  other way)".

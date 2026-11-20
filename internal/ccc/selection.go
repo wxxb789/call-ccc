@@ -101,10 +101,16 @@ type SelectionNecessities struct {
 // ordinal the read's own space does not hold, a spec that selects nothing -- are Select's, because only a
 // read can answer them; Continue calls both, so a caller embedding the core and one driving the CLI are
 // told the same thing about the same request.
+//
+// The *flag's absence* is the literal empty string with no presence bit, and nothing else: a value that
+// holds whitespace alone names nothing whether or not the caller set the bit -- an API caller that hands
+// Continue `" \t "` has asked for a selection, and reading it as the flag's absence would install the
+// whole history, the one thing the request was written to prevent -- so it is refused with the same
+// sentence the empty supplied value is.
 func CheckSelectionOptions(selection string, strict, supplied bool) error {
 	spec := strings.TrimSpace(selection)
 	if spec == "" {
-		if supplied {
+		if supplied || selection != "" {
 			return emptySelectionRefusal()
 		}
 		if strict {
@@ -132,14 +138,17 @@ func emptySelectionRefusal() error {
 // the report of what the selection did, and any refusal.
 //
 // It is a pure function of the document: the messages, their own order, their recorded identities and
-// relations, their recorded tool calls and results, and the source's own provider label -- which decides
-// whether its reader may answer a projection -- and nothing else. It never reads a file, follows a linked
-// session or infers project state. The selection matches the ordinal values the read supplied, never a
-// position in the read and never the target's post-write numbering; nothing is renumbered, so the ordinals
-// a report names are the ones a caller wrote the spec with. The conversation it returns carries the read's
-// own per-record line answer (Conversation.sourceLineInactive), because the line the target's loader walks
-// is the read's and a window must not redefine it: a window ending on a record the read's walk places off
-// that line is refused by a tree target's leaf guard and omitted and counted by a line target's walk.
+// relations, their recorded tool calls and results, the source's own provider label -- which decides
+// whether its reader may answer a projection -- and, where the conversion's own read pass established it,
+// the source file's own leaf-path answer about the line (Conversation.sourceFileLine), and nothing else.
+// It never reads a file, follows a linked session or infers project state: the file's answer travels on
+// the conversation, taken by the pass that read the file (continueWith). The selection matches the ordinal
+// values the read supplied, never a position in the read and never the target's post-write numbering;
+// nothing is renumbered, so the ordinals a report names are the ones a caller wrote the spec with. The
+// conversation it returns carries the read's own per-record line answer
+// (Conversation.sourceLineInactive), because the line the target's loader walks is the read's and a
+// window must not redefine it: a window ending on a record the read's walk places off that line is
+// refused by a tree target's leaf guard and omitted and counted by a line target's walk.
 //
 // One structure is carried whole or not at all: a recorded call and the recorded result that answers it
 // are paired from the read's own relations -- a result answers the call the read's own recorded ancestry
@@ -212,7 +221,23 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	// also carries is answered per kept record (sourceKeptAncestor): a record whose own parent the
 	// selection left out is chained to that ancestor rather than to the entry written before it, which
 	// is what keeps a reduced tree the read's own line instead of reviving a branch the window carried.
+	//
+	// Where the source's own file stands behind this read, the file's own leaf path answers a record's
+	// place (sourceFileLine, established by the read pass): the reconstruction's tool-result projection
+	// cannot tell a record the source placed under a call from one it placed under that call's result, so
+	// a record standing beside the result in the file's order reads as hanging off it -- and a window that
+	// ends on the result of a call the conversation continued past would then pass the writers' leaf guard
+	// and resume a branch the source's file left (round 11's second finding). The file's own walk settles
+	// the question for every record the read answered an identity for; the reconstruction answers for the
+	// rest (and where no file stands behind the read).
 	readLineInactive, readLineHolds, _ := inactiveSourceRecords(conversation.Messages, conversation.Source.Provider)
+	for index, answer := range conversation.sourceFileLine {
+		if !answer.answered {
+			continue
+		}
+		readLineHolds[index] = answer.holds
+		readLineInactive[index] = !answer.holds
+	}
 	keptAncestors := selectionKeptAncestors(conversation, carried)
 
 	messages := make([]Message, 0, selectedCount+len(necessities))

@@ -174,38 +174,129 @@ type piSourceLeafAnswer struct {
 	Losses []Loss
 }
 
-// piSourceLeafCheck answers what one conversion could establish about the record the source's own loader
-// selects as the conversation's leaf. Three answers travel: the warning the report carries when the
-// source's own bytes were not what the check could read, the omitted records the conversion accounts for
-// (piAccountedSourceOmission), and the refusal when the file's own answer does not support the record the
-// read's last message stands for.
-//
-// The check runs where the source's own file stands behind the read: the read came from the file itself
-// (not from an archive row, which is a projection with no file open, built by the archive's own ingest)
-// and the file's bytes are the size the read's own snapshot recorded -- a size match, which is what that
-// record can show, exactly as the boundary's own use of the same number states (fillReadCoverage).
-// Anywhere else the leaf is not established, and the report says exactly that instead of presenting the
-// read's own last record as the source's leaf. An archive read is also where a system record cannot be
-// counted: the row holds the read's own answer, which never carried the record.
-func piSourceLeafCheck(conversation Conversation, readFrom string, boundary SourceBoundary) (piSourceLeafAnswer, error) {
+// piSourceFileAnswer is one read of a source session's own entries for a Pi-family conversion, and the
+// two answers the conversion takes from that read: the file's own leaf-path membership (lineMembership),
+// which a selection's line flags are taken from, and the leaf check (check). One read serves both -- the
+// conversion parses its source file once -- and the read happens before the selection runs, while the
+// answers are only returned where the conversion's own order says they are (check is asked after the
+// selection, exactly as piSourceLeafCheck was: a specification the read's own ordinals refuse is a
+// statement about the caller's command line and must not be reported as something about the source file).
+type piSourceFileAnswer struct {
+	// piFamily says the source's reader is the carried Pi parser, so a file is the question's subject at
+	// all; a provider outside the family answers nothing, silently, because its read is not a
+	// reconstruction of a file the harness's own loader walks.
+	piFamily bool
+	// readable says the file stood behind the read and its entries were read: readFrom is the source,
+	// the boundary was taken, the path is known, the file is the size the read's own snapshot recorded,
+	// and piSourceEntries could read it.
+	readable bool
+	// unestablished names why no file answered (the report's warning detail), empty when one did.
+	unestablished string
+	// path, entries and byID are the file as it was read: its path, its entries in the file's order, and
+	// the index from an identity to its entry.
+	path    string
+	entries []piConversationEntry
+	byID    map[string]int
+	// err is the file read's own failure, answered by check where piSourceLeafCheck answered it.
+	err error
+}
+
+// readPiSourceFile reads the session behind one Pi-family read, once. The gates are the leaf check's own
+// (and stated there): the read came from the file itself (not from an archive row, which is a projection
+// with no file open, built by the archive's own ingest) and the file's bytes are the size the read's own
+// snapshot recorded -- a size match, which is what that record can show, exactly as the boundary's own
+// use of the same number states (fillReadCoverage). Anywhere else no file answers, and the report says
+// exactly that instead of presenting the read's own last record as the source's leaf.
+func readPiSourceFile(conversation Conversation, readFrom string, boundary SourceBoundary) piSourceFileAnswer {
 	if !piSourceLeafProvider(conversation.Source.Provider) {
-		return piSourceLeafAnswer{}, nil
+		return piSourceFileAnswer{}
 	}
+	answer := piSourceFileAnswer{piFamily: true}
 	if readFrom != "source" || boundary.State != SourceBoundaryTaken || strings.TrimSpace(boundary.Path) == "" {
+		answer.unestablished = sourceLeafNotMeasuredDetail(readFrom, boundary)
+		return answer
+	}
+	if size := conversation.Source.FileSize; size > 0 && boundary.Bytes != size {
+		answer.unestablished = fmt.Sprintf(
+			"the source file holds %d byte(s) while the read's own snapshot of this file recorded %d, so the "+
+				"file moved while it was being read and the entry its own bytes end with is not shown to be "+
+				"the entry this read's last record stands for", boundary.Bytes, size)
+		return answer
+	}
+	entries, byID, err := piSourceEntries(boundary.Path)
+	if err != nil {
+		answer.err = err
+		return answer
+	}
+	answer.readable = true
+	answer.path = boundary.Path
+	answer.entries = entries
+	answer.byID = byID
+	return answer
+}
+
+// lineMembership answers, per record of the read, the source file's own answer about the read's line:
+// whether the walk the harness's own loader makes -- from the file's last entry back through `parentId`,
+// the walk its context is built from -- reaches the record, for the records the read answered an identity
+// for. nil where the file answered nothing (no file stands behind the read, a file that holds no
+// entries), and every record the read gave no identity for is left unanswered whoever else answered: the
+// read's own order (inactiveSourceRecords) is the only answer such a record has, because nothing can name
+// an identity-less entry as a parent -- only a file's own last entry could hold one, and a carried record
+// there is the source-side leaf check's own refusal.
+func (answer piSourceFileAnswer) lineMembership(conversation Conversation) []sourceFileLineAnswer {
+	if !answer.readable || len(answer.entries) == 0 {
+		return nil
+	}
+	onPath := make(map[string]bool, len(answer.entries))
+	current := len(answer.entries) - 1
+	// The walk is bounded by the entry count, the leaf check's own bound: a parent the file does not
+	// hold, a record naming itself and a loop each end where the count runs out -- the only bound the
+	// walk needs and the only one it has.
+	for steps := 0; steps <= len(answer.entries); steps++ {
+		if id := strings.TrimSpace(answer.entries[current].ID); id != "" {
+			onPath[id] = true
+		}
+		parent := parentOfPiEntry(answer.entries[current])
+		if parent == "" {
+			break
+		}
+		next, ok := answer.byID[parent]
+		if !ok {
+			break
+		}
+		current = next
+	}
+	line := make([]sourceFileLineAnswer, len(conversation.Messages))
+	for index, message := range conversation.Messages {
+		id := strings.TrimSpace(message.SourceUUID)
+		if id == "" {
+			continue
+		}
+		line[index] = sourceFileLineAnswer{holds: onPath[id], answered: true}
+	}
+	return line
+}
+
+// check answers what one conversion could establish about the record the source's own loader selects as
+// the conversation's leaf, from the entries readPiSourceFile read. Three answers travel: the warning the
+// report carries when the source's own bytes were not what the check could read, the omitted records the
+// conversion accounts for (piAccountedSourceOmission), and the refusal when the file's own answer does
+// not support the record the read's last message stands for. An archive read is also where a system
+// record cannot be counted: the row holds the read's own answer, which never carried the record.
+func (answer piSourceFileAnswer) check(conversation Conversation) (piSourceLeafAnswer, error) {
+	if answer.err != nil {
+		return piSourceLeafAnswer{}, answer.err
+	}
+	if !answer.readable {
+		if !answer.piFamily {
+			return piSourceLeafAnswer{}, nil
+		}
 		return piSourceLeafAnswer{Warning: fmt.Sprintf(
 			"the entry the source's own loader selects as the conversation's leaf was not established: %s, "+
 				"so the conversion writes the line of the read's own last record and no source file answers "+
-				"which entry the harness's own loader would walk from",
-			sourceLeafNotMeasuredDetail(readFrom, boundary))}, nil
+				"which entry the harness's own loader would walk from", answer.unestablished)}, nil
 	}
-	if size := conversation.Source.FileSize; size > 0 && boundary.Bytes != size {
-		return piSourceLeafAnswer{Warning: fmt.Sprintf(
-			"the entry the source's own loader selects as the conversation's leaf was not established: the "+
-				"source file holds %d byte(s) while the read's own snapshot of this file recorded %d, so the "+
-				"file moved while it was being read and the entry its own bytes end with is not shown to be "+
-				"the entry this read's last record stands for", boundary.Bytes, size)}, nil
-	}
-	omitted, err := piSourceLeafRefusal(conversation, boundary.Path)
+	omitted, err := piSourceLeafRefusalFrom(conversation, answer.path, answer.entries, answer.byID)
 	if err != nil {
 		return piSourceLeafAnswer{}, err
 	}
@@ -213,6 +304,14 @@ func piSourceLeafCheck(conversation Conversation, readFrom string, boundary Sour
 		return piSourceLeafAnswer{Losses: []Loss{piSystemRecordLoss(omitted)}}, nil
 	}
 	return piSourceLeafAnswer{}, nil
+}
+
+// piSourceLeafCheck answers what one conversion could establish about the record the source's own loader
+// selects as the conversation's leaf: one read of the file's entries (readPiSourceFile), then the check
+// asked of it. The conversion itself asks the same two steps separately, because a selection consults
+// the same read's line membership before the check runs.
+func piSourceLeafCheck(conversation Conversation, readFrom string, boundary SourceBoundary) (piSourceLeafAnswer, error) {
+	return readPiSourceFile(conversation, readFrom, boundary).check(conversation)
 }
 
 // sourceLeafNotMeasuredDetail names why no source file stood behind this read: the read's own answer when
@@ -229,8 +328,20 @@ func sourceLeafNotMeasuredDetail(readFrom string, boundary SourceBoundary) strin
 	return "no source file of its own was measured for this conversation"
 }
 
-// piSourceLeafRefusal answers whether the source file's own answer supports the record this read's last
-// message stands for: nil when it does, and a refusal naming the difference when it does not.
+// piSourceLeafRefusal reads one source session's own entries and answers whether they support the record
+// this read's last message stands for (piSourceLeafRefusalFrom, which holds the rule and every sentence
+// of the refusals). It reads the file itself, which the conversion does not need twice: continueWith hands
+// the same entries to piSourceLeafRefusalFrom through its own read (readPiSourceFile).
+func piSourceLeafRefusal(conversation Conversation, path string) (int, error) {
+	entries, byID, err := piSourceEntries(path)
+	if err != nil {
+		return 0, err
+	}
+	return piSourceLeafRefusalFrom(conversation, path, entries, byID)
+}
+
+// piSourceLeafRefusalFrom answers whether the source file's own answer supports the record this read's
+// last message stands for: nil when it does, and a refusal naming the difference when it does not.
 //
 // The file's own leaf path is walked from the file's last entry back through `parentId` -- the harness's
 // own walk -- and every entry on it is asked about:
@@ -259,12 +370,8 @@ func sourceLeafNotMeasuredDetail(readFrom string, boundary SourceBoundary) strin
 // own that could be resumed wrongly, but the file's entries are still the source's, and the harness's own
 // loader would build a context from them (piEmptyReadRefusal). A file with no entry beyond its header
 // selects nothing, and both of these answers are nil.
-func piSourceLeafRefusal(conversation Conversation, path string) (int, error) {
+func piSourceLeafRefusalFrom(conversation Conversation, path string, entries []piConversationEntry, byID map[string]int) (int, error) {
 	messages := conversation.Messages
-	entries, byID, err := piSourceEntries(path)
-	if err != nil {
-		return 0, err
-	}
 	if len(entries) == 0 {
 		// Nothing but a session header (and possibly a title slot line): the file selects no entry at all,
 		// so no branch of its own can be resumed in place of this read's last record.
