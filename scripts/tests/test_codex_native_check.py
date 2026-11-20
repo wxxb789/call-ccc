@@ -1495,6 +1495,16 @@ def _output_text_substituted(record: dict) -> None:
     record["payload"]["output"] = "# notes, but not the ones the plan read\n"
 
 
+def _call_arguments_substituted(record: dict) -> None:
+    """One call's recorded input replaced with another file's path under the same `call_id`."""
+    record["payload"]["arguments"] = '{"file_path":"/work/oracle-fixture/other.md"}'
+
+
+def _call_name_substituted(record: dict) -> None:
+    """One call's emitted tool name replaced under the same `call_id`."""
+    record["payload"]["name"] = "Write"
+
+
 def _payload_becomes_a_list(record: dict) -> None:
     record["payload"] = ["not", "an", "object"]
 
@@ -1521,6 +1531,21 @@ def _content_block_type_is_not_read(record: dict) -> None:
 
 def _content_text_becomes_blank(record: dict) -> None:
     record["payload"]["content"][0]["text"] = "   "
+
+
+def _content_text_becomes_file_separator(record: dict) -> None:
+    """One message's whole text replaced with U+001C, which Go's space set does not hold."""
+    record["payload"]["content"][0]["text"] = "\x1c"
+
+
+def _event_message_becomes_file_separator(record: dict) -> None:
+    """One turn-view event's message replaced with U+001C, which Go's space set does not hold."""
+    record["payload"]["message"] = "\x1c"
+
+
+def _event_message_becomes_blank(record: dict) -> None:
+    """One turn-view event's message replaced with a Go-blank string."""
+    record["payload"]["message"] = " "
 
 
 def _event_message_is_not_a_string(record: dict) -> None:
@@ -1673,6 +1698,17 @@ def _mutation_event_message_not_a_string(text: str, receipt: dict | None) -> tup
                        change=_event_message_is_not_a_string), receipt
 
 
+def _mutation_event_message_blank(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One turn event's message is a Go-blank string: no view record a read of it keeps.
+
+    Blank is the writer's own test (`strings.TrimSpace`), so the mutation writes a text that rule calls
+    blank — three spaces — and not one of the information separators Python's wider `str.strip` would
+    call blank while the writer preserves it.
+    """
+    return oracle_edit(text, oracle_event_is("agent_message"),
+                       change=_event_message_becomes_blank), receipt
+
+
 def _mutation_output_names_an_absent_call(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     return oracle_edit(text, oracle_item_is("function_call_output", "call_oracle_0001"),
                        change=_output_names_an_absent_call), receipt
@@ -1709,6 +1745,20 @@ def _mutation_plan_emitted_view_shortfall(text: str, receipt: dict | None) -> tu
     view no longer holds.
     """
     return _without_record(text, oracle_event_message_is("Which fixture is this?")), receipt
+
+
+def _mutation_plan_boundary_without_a_summary(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A `compacted` record appended with an empty payload, which the plan names nowhere.
+
+    The carried reader records a boundary for every `compacted` record, summary or not
+    (`internal/parser/codex.go`'s `handleCompacted`), so the artifact holds an occurrence the receipt
+    never planned although every rule that reads only string summaries — and every count — stayed
+    unchanged.
+    """
+    lines = text.splitlines()
+    stamp = json.loads(lines[-1])["timestamp"]
+    lines.append(oracle_quote({"timestamp": stamp, "type": "compacted", "payload": {}}))
+    return "\n".join(lines) + "\n", receipt
 
 
 def _mutation_plan_omitted_present(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -1769,6 +1819,25 @@ def _mutation_plan_order_boundary_moved(text: str, receipt: dict | None) -> tupl
         lines.append(oracle_quote(boundary))
         return "\n".join(lines) + "\n", receipt
     raise AssertionError("the fixture no longer holds a compacted record")
+
+
+def _mutation_plan_order_view_swapped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The two user turns' turn-view events trade their messages.
+
+    Every count is unchanged, the model-visible channel and its order are unchanged, and the clock is
+    untouched: only the turn view puts the prompts in each other's turns — the channel the harness's own
+    view of the conversation is built from, so the two prompts swapped are a different conversation.
+    """
+    lines = text.splitlines()
+    events = [index for index, line in enumerate(lines)
+              if oracle_event_is("user_message")(json.loads(line))]
+    if len(events) != 2:
+        raise AssertionError("the fixture no longer holds two user_message events")
+    first, second = (json.loads(lines[index]) for index in events)
+    first["payload"]["message"], second["payload"]["message"] = (second["payload"]["message"],
+                                                                 first["payload"]["message"])
+    lines[events[0]], lines[events[1]] = oracle_quote(first), oracle_quote(second)
+    return "\n".join(lines) + "\n", receipt
 
 
 def _mutation_plan_pair_split(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -1849,6 +1918,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
     "oracle.event-message": (
         OracleMutation("an event message that is not a string", "session.jsonl", None,
                        _mutation_event_message_not_a_string),
+        OracleMutation("an event message that is blank", "session.jsonl", None,
+                       _mutation_event_message_blank),
     ),
     "oracle.call-pairing": (
         OracleMutation("an output naming no call", "session.jsonl", None,
@@ -1874,12 +1945,16 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "session-receipt.json", _mutation_plan_omitted_present),
         OracleMutation("an occurrence the plan names nowhere", "session.jsonl", "session-receipt.json",
                        _mutation_plan_names_it_nowhere),
+        OracleMutation("a boundary the plan names nowhere", "session.jsonl", "session-receipt.json",
+                       _mutation_plan_boundary_without_a_summary),
         OracleMutation("an omitted message that survives in the turn view", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_omitted_event_survives),
     ),
     "oracle.plan-order": (
         OracleMutation("a compaction boundary moved past the later turns", "session.jsonl",
                        "session-receipt.json", _mutation_plan_order_boundary_moved),
+        OracleMutation("two prompts swapped between the turns' view events", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_order_view_swapped),
     ),
     "oracle.plan-pairs": (
         OracleMutation("a call emitted while its recorded result is omitted", "session.jsonl",
@@ -2087,6 +2162,127 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertIn("tool result 'call_oracle_0001'", by_rule["oracle.plan-accounted"].detail,
                       f"{by_rule['oracle.plan-accounted']}")
 
+    def test_a_call_substituted_under_one_call_id_is_refused(self) -> None:
+        """Two invocations under one call id are distinguishable, and name and input are the identity.
+
+        The defect this pins (review round r2's finding 1): with a call read by its `call_id` alone, the
+        same call id certified a different invocation — the recorded `arguments`, or the emitted tool
+        `name`, replaced while the call id, the output, every count and the receipt's marks stayed the
+        same. The call's own name and recorded input are part of its identity here, so the plan's
+        emitted occurrence is missing from the artifact and the substituted one is unaccounted — two
+        findings for the one substitution, the same shape a substituted result gives.
+        """
+        session = oracle_fixture("session.jsonl")
+        for label, change in (("arguments", _call_arguments_substituted),
+                              ("name", _call_name_substituted)):
+            with self.subTest(substituted=label):
+                substituted = oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),
+                                          change=change)
+                self.assertEqual(NATIVE_CHECK.validate_artifact(substituted), [],
+                                 "the substituted artifact is not structurally green")
+                self.assertEqual(
+                    [len(NATIVE_CHECK.oracle_records(text)[0]) for text in (session, substituted)],
+                    [17, 17], "the substitution changed the record count it must preserve")
+                self.assertEqual(
+                    [len(NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(text)[0]))
+                     for text in (session, substituted)],
+                    [7, 7], "the substitution changed the occurrence count it must preserve")
+                refused = NATIVE_CHECK.validate_artifact(substituted,
+                                                         receipt=oracle_receipt("session-receipt.json"))
+                by_rule = {violation.rule: violation for violation in refused}
+                self.assertEqual(sorted(by_rule), ["oracle.plan-accounted", "oracle.plan-emitted"],
+                                 f"the same-id call substitution was not refused: {refused}")
+                self.assertIn("the receipt marks 1 emitted, the artifact holds 0",
+                              by_rule["oracle.plan-emitted"].detail,
+                              f"{by_rule['oracle.plan-emitted']}")
+                self.assertIn("tool call 'call_oracle_0001'",
+                              by_rule["oracle.plan-accounted"].detail,
+                              f"{by_rule['oracle.plan-accounted']}")
+
+    def test_a_compacted_record_without_a_summary_is_counted(self) -> None:
+        """Every `compacted` record is a boundary occurrence, with or without a summary.
+
+        The carried reader appends a boundary for every `compacted` record — `handleCompacted` reads the
+        summary where there is one and records an empty boundary where there is not — so an oracle that
+        counted only records holding a string `message` let a boundary stand outside the plan: an empty
+        payload appended to the artifact left every count it read unchanged and passed with a receipt
+        that names no boundary at all (review round r2's finding 2). The boundary is counted here as the
+        empty text it reads as, and a receipt that names it accounts for it; the mutation under
+        `oracle.plan-accounted` pins the refusal when the plan names it nowhere.
+        """
+        appended = _mutation_plan_boundary_without_a_summary(oracle_fixture("session.jsonl"), None)[0]
+        self.assertEqual(NATIVE_CHECK.validate_artifact(appended), [],
+                         "the appended empty boundary is not structurally green")
+        counted = NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(appended)[0])
+        self.assertEqual(counted[-1][0], ("compaction_boundary", ""),
+                         f"the appended compacted record is not an empty boundary: {counted}")
+        self.assertEqual(len(counted), 8, f"the boundary is not counted: {counted}")
+        receipt = oracle_receipt("session-receipt.json")
+        receipt["occurrences"].append({"kind": "compaction_boundary", "text": "",
+                                       "disposition": "emitted"})
+        self.assertEqual(NATIVE_CHECK.validate_artifact(appended, receipt=receipt), [],
+                         "a receipt naming the empty boundary did not account for it")
+
+    def test_the_oracles_blank_test_is_the_writers(self) -> None:
+        """U+001C is not space to the writer, so a text of U+001C alone is dialogue, in both channels.
+
+        `strings.TrimSpace` reads Go's `unicode.IsSpace`, which does not hold the information separators
+        U+001C–U+001F that Python's `str.strip` (and `str.isspace`) call whitespace; the writer's own
+        gate on a message's text (`internal/ccc/codex_target.go`: `text != "" &&
+        strings.TrimSpace(text) == ""`) keeps such a text and writes it into the model-visible record
+        and its turn-view event, so a rule written with Python's trimming refuses an artifact this
+        writer emits (review round r2's finding 4). The case writes the same text into both channels:
+        structurally green, and the message still an occurrence whose identity is that text.
+        """
+        session = oracle_fixture("session.jsonl")
+        preserved = oracle_edit(session, oracle_item_is("message", "And now?"),
+                                change=_content_text_becomes_file_separator)
+        preserved = oracle_edit(preserved, oracle_event_message_is("And now?"),
+                                change=_event_message_becomes_file_separator)
+        self.assertNotEqual(preserved, session, "the case's two edits changed nothing")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(preserved), [],
+                         "a text the writer preserves was refused as blank")
+        keys = [key for key, _ in
+                NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(preserved)[0])]
+        self.assertIn(("message", "user", "\x1c"), keys,
+                      f"the preserved message is not an occurrence with its own text: {keys}")
+
+    def test_a_malformed_member_is_named_without_echoing_its_text(self) -> None:
+        """Default diagnostics name a malformed value by its type, never by its contents.
+
+        A malformed record can put the conversation's own words where a member belongs — an object
+        holding a prompt written into `timestamp`, the same object into a `call_id`, or into a receipt
+        entry's `disposition` — and the report is printed by default (review round r2's finding 5). The
+        case plants one marker in each shape and reads `--validate`'s own output for both documents: the
+        field is named, the marker is nowhere in it.
+        """
+        marker = "SECRET-PROMPT-ALPHA"
+        session = oracle_fixture("session.jsonl")
+        planted = oracle_edit(
+            session, oracle_event_is("user_message"),
+            change=lambda record: record.__setitem__("timestamp", {"prompt": marker}))
+        planted = oracle_edit(
+            planted, oracle_item_is("function_call_output", "call_oracle_0001"),
+            change=lambda record: record["payload"].__setitem__("call_id", {"prompt": marker}))
+        receipt = oracle_receipt("session-receipt.json")
+        receipt["occurrences"][0]["disposition"] = {"prompt": marker}
+        with tempfile.TemporaryDirectory() as scratch:
+            artifact = Path(scratch) / "planted.jsonl"
+            plan = Path(scratch) / "planted-receipt.json"
+            artifact.write_text(planted, encoding="utf-8")
+            plan.write_text(json.dumps(receipt), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(plan)])
+        self.assertEqual(code, 1, f"exit {code} for the planted documents: {output.getvalue()}")
+        printed = output.getvalue()
+        self.assertIn("oracle.envelope line 5 — timestamp is an object of 1 member(s)", printed)
+        self.assertIn("oracle.call-pairing line 9 — call output's call_id is an object of 1 member(s)",
+                      printed)
+        self.assertIn("oracle.receipt — occurrences[0].disposition is an object of 1 member(s)",
+                      printed)
+        self.assertNotIn(marker, printed, f"a diagnostic echoed the planted text: {printed}")
+
     def test_the_oracle_reads_the_artifacts_own_bytes(self) -> None:
         """The JSONL framing is the line feed and the parsing is JSON's, not Python's lenient half.
 
@@ -2249,6 +2445,16 @@ class CodexArtifactOracle(unittest.TestCase):
             self.assertEqual(code, 2, f"exit {code} for a receipt that is not JSON")
             self.assertIn("oracle: INCOMPLETE", errors.getvalue(),
                           f"a receipt that is not JSON is not INCOMPLETE: {errors.getvalue()}")
+
+            plan.write_text("[" * 200000 + "]" * 200000, encoding="utf-8")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(plan)])
+            self.assertEqual(code, 2,
+                             f"exit {code} for a receipt nested past reading: {errors.getvalue()}")
+            self.assertIn("oracle: INCOMPLETE", errors.getvalue(),
+                          f"a receipt nested past reading is not INCOMPLETE: {errors.getvalue()}")
+            self.assertIn("nested too deeply to read", errors.getvalue(), errors.getvalue())
 
             errors = io.StringIO()
             with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:

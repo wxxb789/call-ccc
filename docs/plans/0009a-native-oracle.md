@@ -98,11 +98,12 @@ increment's evidence record.
   break.
 - *The receipt's schema is frozen here, minimal*: per-occurrence kind + identity + disposition, no source
   semantics, no per-record fates (0009c's triple carries those; the oracle only compares plan and artifact).
-  A result's identity is its call **and its recorded text**, so one output substituted for another under the
-  same call id is caught; a dialogue message is read against both of the artifact's channels and the
-  receipt's own order. This is the increment's most speculative surface and is deliberately the smallest one
-  that can catch "the wrong result was omitted" — the review fix round (r1) is what moved it from its first
-  to this shape.
+  A result's identity is its call **and its recorded text**, and a call's its call id, tool name and recorded
+  arguments, so one output — or one invocation — substituted for another under the same call id is caught; a
+  dialogue message is read against both of the artifact's channels and the receipt's own order, in both of
+  them. This is the increment's most speculative surface and is deliberately the smallest one
+  that can catch "the wrong result was omitted" — the review fix rounds (r1 and r2) are what moved it from
+  its first to this shape.
 - *The oracle is not wired into the native path in this increment*: D3 makes the acceptance path's verdict a
   regression clause, and 0009d consumes the oracle from its own lowering checks.
 
@@ -173,12 +174,16 @@ stating what holds, not what would be nice to hold):
   A2-1 may not touch Go and the `--select` CLI only arrives with 0009d. The native arm itself stays
   PR #16's, to be rebuilt in 0009d against this frozen oracle.
 
-**The review fix round moved the oracle while the increment was still under review** (the freeze binds the
-rest of goal 0009, not this increment's own fix stage). The r1 findings and their fixes are enumerated in
-the stage report; the shape the freeze now holds is the one above: a result's identity includes its
-recorded text (a same-id output substitution is refused), a dialogue message is read against both of the
-artifact's channels (`oracle.plan-emitted`/`oracle.plan-accounted`), `oracle.plan-order` refuses a moved
-compaction boundary whose counts are unchanged, `oracle.envelope` refuses the leap second `60` instead of
-remapping it, `oracle.jsonl-objects` reads the artifact's own bytes (LF split, no non-JSON constants, no
-replacement-decoded text) and default diagnostics name occurrences without echoing their text. The
-evidence record's §1–§7 carry the re-run outputs for that state.
+**The review fix rounds moved the oracle while the increment was still under review** (the freeze binds the
+rest of goal 0009, not this increment's own fix stage). The r1 and r2 findings and their fixes are
+enumerated in the stage reports; the shape the freeze now holds is the one above: a result's identity
+includes its recorded text and a call's its name and recorded input (a same-id substitution of either is
+refused), a dialogue message is read against both of the artifact's channels
+(`oracle.plan-emitted`/`oracle.plan-accounted`), `oracle.plan-order` refuses a moved
+compaction boundary whose counts are unchanged and a turn-view dialogue order that is not the receipt's,
+every `compacted` record is a boundary occurrence (an empty summary included), the oracle's blank test is
+the writer's own (`strings.TrimSpace`, not Python's wider `str.strip`), `oracle.envelope` refuses the leap
+second `60` instead of remapping it, `oracle.jsonl-objects` reads the artifact's own bytes (LF split, no
+non-JSON constants, no replacement-decoded text), an unreadable-by-nesting receipt is `INCOMPLETE` rather
+than a traceback, and default diagnostics name occurrences and refused values by type without echoing
+their text. The evidence record's §1–§7 carry the re-run outputs for that state.

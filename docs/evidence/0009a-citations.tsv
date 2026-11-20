@@ -25,11 +25,13 @@
 #         receipt yet: the receipt's producer is goal 0009c/0009d (this goal's Non-scope), and the rules
 #         are stated over the synthetic receipts committed with the fixtures. Their re-derivation is the
 #         same `selftest` case's mutation table (three mutations for `oracle.receipt`, two for
-#         `oracle.plan-emitted`, three for `oracle.plan-accounted`, one each for `oracle.plan-order` and
-#         `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
-#         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total) and
+#         `oracle.plan-emitted`, four for `oracle.plan-accounted`, two for `oracle.plan-order` and
+#         one for `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
+#         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total),
 #         `test_a_result_substituted_under_one_call_id_is_refused` (a result's identity is its call and
-#         its recorded text).
+#         its recorded text) and `test_a_call_substituted_under_one_call_id_is_refused` (a call's
+#         identity is its call id, name and recorded input) — the two substitution cases, beside the
+#         mutation table's own pinned refusals.
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`); no native-or-Go half exists for it.
 #   D1 — every rule has its own negative fixture: the `selftest` case named above.

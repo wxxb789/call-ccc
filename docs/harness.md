@@ -375,8 +375,10 @@ says so.
   [--receipt <document>] [--json]` — judges a Codex session **artifact** against fourteen stated rules,
   from the artifact's own bytes and, at most, an explicit **manifest receipt** (the plan's per-occurrence
   dispositions: `emitted` / `omitted` over messages, tool calls, results and compaction boundaries, with a
-  tool result's recorded text part of its identity, a dialogue message read against both of the artifact's
-  dialogue channels and the emitted order read against the receipt's own). It
+  tool call's name and recorded input and a tool result's recorded text part of their identities, a
+  dialogue message read against both of the artifact's dialogue channels, the emitted order read against
+  the receipt's own in both channels, and every `compacted` record an occurrence whether or not it carries
+  a summary). It
   needs no harness, no source transcript and no selection semantics: its input is the artifact's text, so
   a reduced (selective) artifact is validated with the source absent from the process. Its verdict line is
   the last one printed — `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — …` —

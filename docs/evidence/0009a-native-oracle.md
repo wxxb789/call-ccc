@@ -25,6 +25,19 @@ below was taken again on the fixed tree; §1's run, §2's failure list, §3's be
 gate are the fixed state, and the probe of §0 is the corrected one (its invocation now names its
 argument, and its counters include the pre-`turn_context` record counts the prose cites).
 
+**The review fix round (r2).** The oracle's second review found seven defects, all in the oracle half: a
+call identity that ignored the emitted tool name and input (the same `call_id` could certify a different
+invocation); a `compacted` record without a summary standing outside receipt accounting although the
+carried reader records a boundary for every one of them; a turn-view dialogue order that was counted but
+not checked (two prompts swapped between turns passed); a blank test using Python's wider `str.strip`
+where the writer's own test is Go's `strings.TrimSpace`, so U+001C dialogue the writer preserves was
+refused; default diagnostics that interpolated malformed member values (a prompt written into
+`timestamp` or `call_id` was echoed into a report printed by default); a deeply nested receipt whose
+`RecursionError` escaped instead of ending `INCOMPLETE`; and §5's probe reading `"$artifact"` without
+ever assigning it. Every quoted run below was taken again on the fixed tree: §1's case run and its
+mutation counts, §1's and §2's `--validate` runs, §3's unflagged native check, §5's converted-artifact
+probe (whose commands now derive the path from the conversion report) and §7's gate.
+
 ## 0. What was measured before anything was written
 
 The rules are statements about the Codex rollout format, so they were measured first on the format's own
@@ -160,10 +173,10 @@ and the oracle lock, §4 below). Fourteen rules, each one sentence, each a state
 | `oracle.message` | a `response_item` message's `role` is a non-empty string and its `content` is a non-empty list of blocks typed as text the carried reader reads (`input_text`, `output_text`, `text`), at least one of them non-blank |
 | `oracle.event-message` | a `user_message`/`agent_message` event carries a non-empty string `message` — the record the harness's own view of the turn is built from |
 | `oracle.call-pairing` | every call's `call_id` is a non-empty string no other call of the artifact carries, and every call output names a call the artifact carries |
-| `oracle.receipt` | a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's occurrence vocabulary, the identity that kind needs and a `disposition` of `emitted` or `omitted`; an unreadable receipt is reported and not compared with the artifact |
+| `oracle.receipt` | a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's occurrence vocabulary, the identity that kind needs — a tool call's `call_id`, `name` and `arguments`, a tool result's `call_id` and recorded text — and a `disposition` of `emitted` or `omitted`; an unreadable receipt is reported and not compared with the artifact |
 | `oracle.plan-emitted` | every occurrence the receipt marks `emitted` is in the artifact as many times as it is marked — a dialogue message in both of the target's channels for it: the model-visible `response_item` and the turn-view `event_msg` |
 | `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark `emitted`: an occurrence the receipt marks `omitted` and one it names nowhere are both refused — the plan is total, in both of the target's dialogue channels |
-| `oracle.plan-order` | the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order — a compaction boundary moved past later turns compacts a different history even though every count is unchanged |
+| `oracle.plan-order` | the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past later turns, or two prompts in each other's turns, compacts a different history even though every count is unchanged |
 | `oracle.plan-pairs` | a call and its recorded result carry one disposition: a `call_id` whose call and result the receipt splits is the pair the closure rule forbids |
 
 Its inputs are committed, hand-constructed synthetic Codex JSONL under
@@ -179,6 +192,12 @@ turn *its* rule red and no other, with the rule table and the mutation table ass
 
 ```
 $ cd scripts/tests && python3 -m unittest test_codex_native_check.CodexArtifactOracle -v
+test_a_call_substituted_under_one_call_id_is_refused (test_codex_native_check.CodexArtifactOracle.test_a_call_substituted_under_one_call_id_is_refused)
+Two invocations under one call id are distinguishable, and name and input are the identity. ... ok
+test_a_compacted_record_without_a_summary_is_counted (test_codex_native_check.CodexArtifactOracle.test_a_compacted_record_without_a_summary_is_counted)
+Every `compacted` record is a boundary occurrence, with or without a summary. ... ok
+test_a_malformed_member_is_named_without_echoing_its_text (test_codex_native_check.CodexArtifactOracle.test_a_malformed_member_is_named_without_echoing_its_text)
+Default diagnostics name a malformed value by its type, never by its contents. ... ok
 test_a_receipt_that_declares_nothing_cannot_pass (test_codex_native_check.CodexArtifactOracle.test_a_receipt_that_declares_nothing_cannot_pass)
 A plan that accounts for no occurrence, and one that cannot be read, both refuse the artifact. ... ok
 test_a_reduced_artifact_is_validated_from_the_artifact_alone (test_codex_native_check.CodexArtifactOracle.test_a_reduced_artifact_is_validated_from_the_artifact_alone)
@@ -197,27 +216,44 @@ test_the_instant_reader_dates_an_offset_by_its_sign (test_codex_native_check.Cod
 `oracle_instant` dates the format's numeric offsets by their sign, not only its `Z`. ... ok
 test_the_oracle_reads_the_artifacts_own_bytes (test_codex_native_check.CodexArtifactOracle.test_the_oracle_reads_the_artifacts_own_bytes)
 The JSONL framing is the line feed and the parsing is JSON's, not Python's lenient half. ... ok
+test_the_oracles_blank_test_is_the_writers (test_codex_native_check.CodexArtifactOracle.test_the_oracles_blank_test_is_the_writers)
+U+001C is not space to the writer, so a text of U+001C alone is dialogue, in both channels. ... ok
 test_the_validate_mode_reports_a_verdict (test_codex_native_check.CodexArtifactOracle.test_the_validate_mode_reports_a_verdict)
 `--validate` answers for one artifact (and its plan): PASS, FAIL and INCOMPLETE, with the ... ok
 
 ----------------------------------------------------------------------
-Ran 10 tests in 0.041s
+Ran 14 tests in 0.055s
 
 OK
 ```
 
-The quote is this review-fix round's re-run, over the tree whose class holds ten cases: the four carried
-from the increment and its earlier stages (among them the numeric offset's sign,
+The quote is the r2 review-fix round's re-run, over the tree whose class holds fourteen cases: the ten
+carried from the increment and the two earlier fix rounds (among them the numeric offset's sign,
 `test_the_instant_reader_dates_an_offset_by_its_sign`, and occurrence multiplicity,
 `test_occurrence_identity_is_counted_not_deduplicated` — the two that pin what the mutation table cannot
-see), and this round's two: `test_a_result_substituted_under_one_call_id_is_refused` (a result's identity
-is its call and its recorded text) and `test_the_oracle_reads_the_artifacts_own_bytes` (the line-feed
-split, and invalid UTF-8 reported rather than repaired).
+see; r1's `test_a_result_substituted_under_one_call_id_is_refused` and
+`test_the_oracle_reads_the_artifacts_own_bytes`), and this round's four:
+`test_a_call_substituted_under_one_call_id_is_refused` (a call's identity is its call id, name and
+recorded input), `test_a_compacted_record_without_a_summary_is_counted` (every `compacted` record is a
+boundary occurrence), `test_the_oracles_blank_test_is_the_writers` (U+001C is dialogue in both channels)
+and `test_a_malformed_member_is_named_without_echoing_its_text` (default diagnostics name a value's type
+and never echo it).
 
-The mutations number 31 for the 14 rules: `oracle.jsonl-objects` and `oracle.envelope` carry four each,
-`oracle.session-meta`, `oracle.message`, `oracle.receipt` and `oracle.plan-accounted` three each,
-`oracle.session-meta-members`, `oracle.call-pairing` and `oracle.plan-emitted` two each, and the
-remaining five one each. Two of them, run
+The r2 round's own cases were also run against the r1 checker from a throw-away copy (`git show
+87d3018:scripts/codex-native-check.py` into `/tmp/probe-r1/scripts/`, with this round's test module and
+fixtures beside it), so each one is a case about its finding rather than a restatement of the shipped
+code: all six fail there with the defect's own signature — the call substitution refused nothing
+(`[] != ['oracle.plan-accounted', 'oracle.plan-emitted']`), the appended empty boundary was not the last
+occurrence, U+001C dialogue drew `oracle.message`/`oracle.event-message` violations, the no-echo case
+found `timestamp {'prompt': 'SECRET-PROMPT-ALPHA'}` in the printed report, the nesting arm ended in
+`RecursionError` instead of exit 2, and the mutation-table case found the two new mutations turning
+nothing red.
+
+The mutations number 34 for the 14 rules: `oracle.jsonl-objects` and `oracle.envelope` carry four each;
+`oracle.plan-accounted` four; `oracle.session-meta`, `oracle.message` and `oracle.receipt` three each;
+`oracle.session-meta-members`, `oracle.call-pairing`, `oracle.plan-emitted`, `oracle.event-message` and
+`oracle.plan-order` two each; and `oracle.record-type`, `oracle.clock` and `oracle.plan-pairs` one each.
+Two of them, run
 through the shipped command rather than in-process, show what the report reads like — the first a
 structural rule, the second the plan/pair rule that is the reason the receipt exists at all (a call
 whose recorded result is left out while the call travels). Each file below is a copy of a committed
@@ -253,7 +289,7 @@ while its receipt marks the `tool_result` occurrence `omitted`:
 
 ```
 $ python3 scripts/codex-native-check.py --validate /tmp/ccc-0009a-evidence/cli-version-dropped.jsonl
-oracle: oracle.session-meta-members line 1 — session_meta.cli_version is None, not a non-empty string
+oracle: oracle.session-meta-members line 1 — session_meta.cli_version is null, not a non-empty string
 oracle: FAIL — 17 record(s), 7 occurrence(s), 1 violation(s)
 $ echo $?
 1
@@ -389,12 +425,12 @@ PASS: no pre-existing session in the target home changed — 0 pre-existing sess
 26 check(s) passed, 0 failed, 2 skipped
 ```
 
-This round's review findings changed the oracle section, its tests and its fixtures, and no Go file (the
-increment's Bounds; `git status --short | grep '\.go$'` prints nothing): the same unflagged command was
-run once more over the fixed tree, and its 28 check lines' names and states are identical to the
-before-run's and to the increment's earlier after-runs, with the same closing count
-(`26 check(s) passed, 0 failed, 2 skipped`) and exit 0 — so D3's claim holds for the increment's final
-bytes.
+The r1 and r2 review fix rounds changed the oracle section, its tests and its fixtures, and no Go file
+(the increment's Bounds; `git status --short | grep '\.go$'` prints nothing): the same unflagged command
+was run once more over each fixed tree (most recently r2's), and each run's 28 check lines' names and
+states are identical to the before-run's and to the increment's earlier after-runs, with the same closing
+count (`26 check(s) passed, 0 failed, 2 skipped`) and exit 0 — so D3's claim holds for the increment's
+final bytes.
 
 ## 4. D4 — the freeze, stated where a later lane reads it
 
@@ -418,7 +454,8 @@ gate/checker script alongside production code) are both written down rather than
 
 A fixture is not evidence that the oracle reads what the writer installs. Both directions were measured
 on this host. First, a fresh conversion of the committed Claude fixture — the same route the unflagged
-acceptance runs — validated where it landed:
+acceptance runs — validated where it landed (the probe derives the artifact's path from the conversion
+report, r2's finding 7: it was first written reading `"$artifact"` without ever assigning it):
 
 ```
 $ go build -tags=fts5 -o /tmp/ccc-0009a-evidence/ccc ./cmd/ccc      # exit 0
@@ -427,8 +464,10 @@ $ CLAUDE_PROJECTS_DIR=$PWD/internal/ccc/testdata/fixtures/claude \
       --target-home /tmp/ccc-0009a-evidence/conversion/home --target-binary codex --json \
       > /tmp/ccc-0009a-evidence/conversion/document.json ; echo $?
 0
-$ python3 scripts/codex-native-check.py --validate \
-      /tmp/ccc-0009a-evidence/conversion/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1fa9e-a598-7326-943c-822aa0668c97.jsonl --json
+$ artifact=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["target_session"]["path"])' \
+      /tmp/ccc-0009a-evidence/conversion/document.json) && echo "$artifact"
+/tmp/ccc-0009a-evidence/conversion/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1fa9e-a598-7326-943c-822aa0668c97.jsonl
+$ python3 scripts/codex-native-check.py --validate "$artifact" --json
 {
   "artifact": "/tmp/ccc-0009a-evidence/conversion/home/sessions/2026/05/04/rollout-2026-05-04T09-15-00-01a1fa9e-a598-7326-943c-822aa0668c97.jsonl",
   "receipt": null,
@@ -498,7 +537,7 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go targets=./c
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 452 tests in 8.871s (rc=0)
+  PASS     selftest Ran 456 tests in 9.183s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes ver…
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 9 row(s) verified
   PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -507,18 +546,18 @@ $ echo $?
 0
 ```
 
-The `selftest` step's 452 tests are the whole `scripts/tests/` suite with this increment's oracle cases in
-it (§1) — ten in the class after this fix round: the eight implemented and applied earlier, plus the two
-this round added (a same-id output substitution refused through both accounting rules, and the artifact
-read as its own bytes) — and the `citations` step's 9 rows are §6's manifest. The `gofmt`, `build`, `vet`
-and `test` steps answer about an unchanged
+The `selftest` step's 456 tests are the whole `scripts/tests/` suite with this increment's oracle cases in
+it (§1) — fourteen in the class after the r2 fix round: the ten carried from the increment and the two
+earlier fix rounds, plus this round's four (a same-id call substitution refused through both accounting
+rules, a `compacted` record without a summary counted and required of the plan, U+001C dialogue preserved
+in both channels, and a malformed member named without echoing its text) — and the `citations` step's 9
+rows are §6's manifest. The `gofmt`, `build`, `vet` and `test` steps answer about an unchanged
 Go tree: this increment's diff holds no Go file (`git status --short | grep '\.go$'` prints nothing).
 
-The gate (and the citations run above) was re-run last, after this round's last edit to the oracle, its
-tests, the fixtures and this record's prose — none of them a gate input the `selftest` cases read, which
-is why the transcript above is the run over the tree this record's other quotes were taken on; the
-`selftest` timing differs between runs, which is why the transcript is one run's own line rather than a
-rounded one.
+The gate (and the citations run above) was re-run after this round's last edit to the oracle, its tests,
+the fixtures and this record's prose, so the transcript above is a run over the tree this record's other
+quotes were taken on; the `selftest` timing differs between runs (the r1 transcript's 8.871s and this
+round's 9.183s), which is why the transcript is one run's own line rather than a rounded one.
 
 ## 8. What this record does not claim
 
@@ -529,10 +568,11 @@ rounded one.
   refuse a legitimate file; that is disclosed in the rule's own sentence and in the plan's trade-offs, and
   it is the cheaper defect — an oracle whose rules cannot be broken cannot judge anything.
 - **The receipt's schema is this increment's freeze of a producer that does not exist yet.** It is
-  deliberately the smallest schema that can catch "the wrong result was omitted" (per-occurrence kind,
-  identity and disposition) — a tool result's identity being its `call_id` and its recorded text, a
-  dialogue message being read against both of the artifact's channels, and the emitted order against the
-  receipt's own — and 0009c/0009d must satisfy it rather than tune it: that is what the oracle
+  deliberately the smallest schema that can catch "the wrong call or result was omitted" (per-occurrence
+  kind, identity and disposition) — a tool call's identity being its `call_id`, `name` and recorded
+  input and a tool result's its `call_id` and recorded text, a dialogue message being read against both
+  of the artifact's channels, and the emitted order — dialogue included — against the receipt's own in
+  both channels — and 0009c/0009d must satisfy it rather than tune it: that is what the oracle
   lock is for. Nothing in this increment emits a receipt.
 - **Form, not meaning.** A green artifact is one that is well-formed and (with a plan) holds exactly the
   occurrences the plan places; the oracle does not judge a conversation's meaning, and a red one names a
