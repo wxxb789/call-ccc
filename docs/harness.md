@@ -341,7 +341,7 @@ says so.
   named as excluded — and holds the report to the window it was asked for (`included`/`excluded`/
   `undischarged`, and the installed path the conversion reports), then reads **both** installed sessions
   through the harness's own loader and asserts each view holds the kept turn's words and not the
-  excluded ones; it runs the same selection command a third time and shows the run installs its own
+  excluded ones; it runs the same selection command a second time and shows that run installs its own
   **fresh** session rather than writing twice into one (the same snapshot-succeeds-by-repeating rule the
   repeat scenario measures on the ordinary path), and the ids it installed are named in the summary
   line and in `--json` (`selected_sessions`). A requested real turn in a selection arm is one turn per

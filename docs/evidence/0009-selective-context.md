@@ -6,8 +6,10 @@ Claude Code → Codex). Plan: [`docs/plans/0009-selective-context.md`](../plans/
 [`0009-citations.tsv`](0009-citations.tsv).
 
 The tree this record measures is the working tree of branch `feat/0009-selective-context` at base revision
-`f3e9ec8`, Go 1.27.4, uncommitted (19 changed/added paths). Every command below was run in the repository
-root unless its own `$` line says otherwise. Nothing was committed, pushed or rewritten.
+`f3e9ec8`, Go 1.27.4, 24 changed/added paths, since committed as `3b71614` (unmerged — the operator owns
+the merge and the archive move). Every command below was run in the repository root unless its own `$`
+line says otherwise; the transcripts below are that working tree's, taken before the commit, and nothing
+was pushed or rewritten.
 
 ## 0. What was measured before the increment was written
 
@@ -260,7 +262,8 @@ D4 in the manifest header instead of a citation row.
 conversion/load checks it converts the fixture twice with `--select 0,4` (a window holding the first user
 turn and the last assistant turn, excluding the middle by name), reads both installed rollouts through
 Codex's own app-server (`thread/resume`), and asserts the loader's own view holds the kept marker and not
-the excluded one — then converts a third time to prove the same command re-runs into its own fresh session.
+the excluded one; the two invocations installing two distinct fresh session ids is what proves the same
+command re-runs into its own fresh session.
 Run against the host's Codex:
 
 ```
@@ -318,7 +321,9 @@ this increment's 20 rows in this very run — the cited test exists in the named
 
 Before this final run the tree was formatted (`gofmt -w internal/ccc/fixturegen/main.go`, whose earlier
 miss was the gate's own `gofmt` step catching it) and the throw-away probe file was removed; the run
-above is the tree as it stands, working tree uncommitted.
+above is that working tree as it stood, before the increment was committed as `3b71614` (on the committed
+tree the same `gofmt` step lists `3627` file(s): the three new `.go` files were untracked when the
+transcript ran).
 
 ## 7. Bookkeeping
 
@@ -335,4 +340,5 @@ above is the tree as it stands, working tree uncommitted.
 - `docs/goals/README.md` carries this increment's row; the goal file stays in `docs/goals/` (the increment
   is not merged; the operator owns the merge and archive move).
 - No other tree was touched: the source fixtures are read-only to this build, the scratch homes under
-  `/tmp` were created by these runs, and nothing was committed, pushed or rewritten.
+  `/tmp` were created by these runs, and nothing was pushed or rewritten — the increment's own commit is
+  `3b71614`.

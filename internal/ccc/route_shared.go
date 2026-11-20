@@ -544,18 +544,16 @@ func readLineAnswers(messages []Message, provider string) ([]bool, []bool, int) 
 // A document a selection produced carries its own answers (Conversation.sourceLineInactive and
 // sourceLineUnresolved, taken over the *read* before the cut), and the writer consumes those: re-walking
 // the window would make its last record the line's end, so a window ending on a record the read's line
-// placed off it would activate a branch the source's conversation left.
+// placed off it would activate a branch the source's conversation left. Every place the read's walk flags
+// is a record the walk itself reached and marked on the line, so the carried count is the flags' own
+// number and needs no line filter of its own.
 func sourceLineAnswers(conversation Conversation) ([]bool, int) {
 	if conversation.selectionReduced() {
 		unresolved := 0
-		for index, flag := range conversation.sourceLineUnresolved {
-			if !flag {
-				continue
+		for _, flag := range conversation.sourceLineUnresolved {
+			if flag {
+				unresolved++
 			}
-			if index < len(conversation.sourceLineInactive) && conversation.sourceLineInactive[index] {
-				continue
-			}
-			unresolved++
 		}
 		return conversation.sourceLineInactive, unresolved
 	}

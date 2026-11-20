@@ -207,9 +207,9 @@ func CheckSelectionOptions(selection string, strict, supplied bool) error {
 // core and one driving the CLI are told the same sentence.
 func CheckSelectionPair(ref Ref, target string) error {
 	provider := strings.ToLower(strings.TrimSpace(ref.Provider))
-	if owner, known := storedAgentOwner(parser.AgentType(provider)); known {
-		provider = string(owner)
-	}
+	// No stored-label normalization applies: every registered provider is its own owner, and the one
+	// provider with a second stored label is Codebuff→Freebuff, so a label that is not `claude` is not
+	// this pair. Re-check this if an upstream update ever gives Claude a stored alias.
 	if provider == string(parser.AgentClaude) && strings.EqualFold(strings.TrimSpace(target), TargetCodex) {
 		return nil
 	}
@@ -357,7 +357,9 @@ func checkSelectionRegions(regions []selectionRegion, space OrdinalSpace, spelle
 					"names the values this read supplied, never a position in it", ErrBadSelection,
 				region.Lo, spelled)
 		}
-		if !region.open && (region.Hi < space.Min || region.Hi > space.Max) {
+		// An inverted range is refused at parse time (Hi >= Lo) and Lo is in the space by the guard
+		// above, so only the upper endpoint can still fall outside it.
+		if !region.open && region.Hi > space.Max {
 			return fmt.Errorf(
 				"%w: the ordinal %d is outside the read's own ordinal values (%s): a specification "+
 					"names the values this read supplied, never a position in it", ErrBadSelection,
@@ -537,7 +539,7 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 	// never recorded.
 	lineInactive, lineUnresolved, _ := readLineAnswers(messages, conversation.Source.Provider)
 	paired := pairedCallOccurrences(conversation)
-	carried, necessities, err := selectionClosure(
+	carried, necessityAt, err := selectionClosure(
 		conversation, selected, selectionPairs(conversation, paired), strict, lineInactive)
 	if err != nil {
 		return Conversation{}, SelectionReport{}, err
@@ -594,9 +596,14 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		}
 	}
 
+	// The report's rows are built in the document's own order, one per carried record -- the order the
+	// reduced document holds its records and the writer's walk answers its fates in -- because the
+	// ordinal value cannot identify a row: the read's own text allows two records to share one, and the
+	// position is what pairs each row with the record it came from.
 	included := make([]int, 0, selectedCount)
 	excluded := make([]int, 0, len(messages)-selectedCount)
 	records := make([]SelectionRecord, 0, len(reducedMessages))
+	added := make([]SelectionNecessity, 0, len(reducedMessages)-selectedCount)
 	for index, message := range messages {
 		switch {
 		case selected[index]:
@@ -604,17 +611,15 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 			records = append(records, SelectionRecord{Ordinal: message.Ordinal})
 		case !carried[index]:
 			excluded = append(excluded, message.Ordinal)
+		default:
+			// Carried because a recorded structure pulled it in: the row names the record that did.
+			pulledBy := messages[necessityAt[index]].Ordinal
+			records = append(records, SelectionRecord{
+				Ordinal: message.Ordinal, Necessity: true, PulledBy: &pulledBy,
+			})
+			added = append(added, SelectionNecessity{Ordinal: message.Ordinal, PulledBy: pulledBy})
 		}
 	}
-	for _, necessity := range necessities {
-		pulledBy := necessity.PulledBy
-		records = append(records, SelectionRecord{
-			Ordinal: necessity.Ordinal, Necessity: true, PulledBy: &pulledBy,
-		})
-	}
-	sort.Ints(included)
-	sort.Ints(excluded)
-	sort.SliceStable(records, func(i, j int) bool { return records[i].Ordinal < records[j].Ordinal })
 
 	undischarged, undischargedCount := undischargedClass(messages, carried, finality)
 	return reduced, SelectionReport{
@@ -623,7 +628,7 @@ func Select(conversation Conversation, spec string, strict bool) (Conversation, 
 		Space:             space,
 		Included:          SelectionClass{Count: len(included), Regions: spellOrdinalRuns(included)},
 		Excluded:          SelectionClass{Count: len(excluded), Regions: spellOrdinalRuns(excluded)},
-		NecessitiesAdded:  SelectionNecessities{Count: len(necessities), Added: necessities},
+		NecessitiesAdded:  SelectionNecessities{Count: len(added), Added: added},
 		CallsUndischarged: SelectionClass{Count: undischargedCount, Regions: spellOrdinalRuns(undischarged)},
 		Records:           records,
 	}, nil
@@ -699,9 +704,11 @@ func selectionPairs(conversation Conversation, paired map[resultOccurrence]callO
 
 // selectionClosure answers which messages the selection carries: the selected ones, plus the counterparts
 // a recorded pair requires. It walks the carried set to a fixed point, because a counterpart can itself
-// hold a pair whose other half lies outside the selection, and each addition is reported with the ordinal
-// that pulled it in. The walk is deterministic: messages are visited in read order, so the same document
-// and spec always answer the same report.
+// hold a pair whose other half lies outside the selection, and each addition is recorded at the added
+// record's own read position (necessityAt: the index of the record that pulled it in, -1 for every other
+// record), because the report's rows pair with the writer's walk by position and two records may share an
+// ordinal value. The walk is deterministic: messages are visited in read order, so the same document and
+// spec always answer the same report.
 //
 // With strict, the first separating pair refuses by name instead, before anything is carried and long
 // before anything is installed. Without it, a counterpart the read's line leaves inactive refuses the
@@ -710,7 +717,7 @@ func selectionPairs(conversation Conversation, paired map[resultOccurrence]callO
 // off-line counterpart to satisfy closure would activate a branch the source's conversation left.
 func selectionClosure(
 	conversation Conversation, selected []bool, pairs []selectionPair, strict bool, lineInactive []bool,
-) ([]bool, []SelectionNecessity, error) {
+) ([]bool, []int, error) {
 	carried := append([]bool(nil), selected...)
 	if strict {
 		for _, pair := range pairs {
@@ -725,7 +732,10 @@ func selectionClosure(
 		counterparts[pair.call] = append(counterparts[pair.call], pair.result)
 		counterparts[pair.result] = append(counterparts[pair.result], pair.call)
 	}
-	necessities := []SelectionNecessity{}
+	necessityAt := make([]int, len(conversation.Messages))
+	for index := range necessityAt {
+		necessityAt[index] = -1
+	}
 	for {
 		changed := false
 		for index := range conversation.Messages {
@@ -740,10 +750,7 @@ func selectionClosure(
 					return nil, nil, unrepresentableCounterpartRefusal(conversation, index, member)
 				}
 				carried[member] = true
-				necessities = append(necessities, SelectionNecessity{
-					Ordinal:  conversation.Messages[member].Ordinal,
-					PulledBy: conversation.Messages[index].Ordinal,
-				})
+				necessityAt[member] = index
 				changed = true
 			}
 		}
@@ -751,7 +758,7 @@ func selectionClosure(
 			break
 		}
 	}
-	return carried, necessities, nil
+	return carried, necessityAt, nil
 }
 
 // strictSelectionRefusal words the refusal for one separated pair, naming the call and the result it
@@ -992,38 +999,32 @@ func selectionKeptAncestors(conversation Conversation, carried []bool) []int {
 
 // fillSelectionRecords pairs the selection's carried records with the writer's own fates: what became
 // of each record, the category a lost one was counted under, and the item kinds the target wrote for it.
-// A record the writer's walk did not answer for -- a route whose writer keeps no fates, a record the
-// walk somehow never reached -- is named as such rather than left reading like a record that became
-// history: the table's own contract is that every carried record is accounted for.
+// The pairing is positional -- the report's rows and the writer's fates are both in the document's own
+// order, one per carried record -- because the ordinal value cannot identify a record: the read's own
+// text allows two records to share one. A route whose writer keeps no fates, or a walk that did not
+// answer one per carried record, is named as that on every row rather than mispaired: the table's own
+// contract is that every carried record is accounted for.
 func fillSelectionRecords(report *SelectionReport, fates []RecordFate) {
-	byOrdinal := make(map[int][]RecordFate, len(fates))
-	for _, fate := range fates {
-		byOrdinal[fate.Ordinal] = append(byOrdinal[fate.Ordinal], fate)
+	if len(fates) != len(report.Records) {
+		for index := range report.Records {
+			report.Records[index].Became = BecameLost
+			report.Records[index].Reason = "the writer's walk answered no fate for this record"
+		}
+		return
 	}
 	for index := range report.Records {
 		record := &report.Records[index]
-		answered := byOrdinal[record.Ordinal]
-		if len(answered) == 0 {
-			record.Became = BecameLost
-			record.Reason = "the writer's walk answered no fate for this ordinal"
-			continue
-		}
+		fate := fates[index]
 		record.Written = record.Written[:0]
-		lost := ""
-		for _, fate := range answered {
-			for _, kind := range fate.Items {
-				record.Written = append(record.Written, string(kind))
-			}
-			if len(fate.Items) == 0 && lost == "" {
-				lost = fate.Reason
-			}
+		for _, kind := range fate.Items {
+			record.Written = append(record.Written, string(kind))
 		}
 		if len(record.Written) > 0 {
 			record.Became = BecameNativeHistory
 			continue
 		}
 		record.Became = BecameLost
-		record.Reason = lost
+		record.Reason = fate.Reason
 	}
 }
 

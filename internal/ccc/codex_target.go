@@ -106,11 +106,12 @@ type CodexRollout struct {
 // RecordFate is what the writer's own walk made of one source record of a document a selection produced:
 // the item kinds it wrote for the record -- empty when the target holds nothing of it -- and the loss
 // category that explains a record nothing was written for. It is D1's per-record accounting, taken from
-// the walk itself rather than re-derived by a reader of the target bytes.
+// the walk itself rather than re-derived by a reader of the target bytes. The walk answers one fate per
+// record of the reduced document, in the document's own order -- the order the report's rows are built in
+// and pair with these positionally, because an ordinal value cannot identify a record two records share.
 type RecordFate struct {
-	Ordinal int
-	Items   []TargetItemKind
-	Reason  string
+	Items  []TargetItemKind
+	Reason string
 }
 
 // CodexTargetOptions configures one conversion. SessionID and CLIVersion are normally left empty: the
@@ -483,10 +484,11 @@ func (b *codexRolloutBuilder) writeConversation(conv Conversation) {
 		if !b.selectionReduced {
 			continue
 		}
-		// D1's accounting, taken from this walk: the item kinds the record wrote, or the category the
-		// record was counted under. A record the walk wrote nothing for and never charged is named as
-		// that, rather than leaving a fate with no reason.
-		fate := RecordFate{Ordinal: message.Ordinal}
+		// D1's accounting, taken from this walk, one fate per record in the document's own order: the
+		// item kinds the record wrote, or the category the record was counted under. A record the walk
+		// wrote nothing for and never charged is named as that, rather than leaving a fate with no
+		// reason.
+		fate := RecordFate{}
 		for _, item := range b.items[itemsBefore:] {
 			fate.Items = append(fate.Items, item.Kind)
 		}

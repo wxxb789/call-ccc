@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +110,7 @@ func TestSelectionMatchesTheOrdinalValuesTheReadSupplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selecting the Shelley space 1-5: %v", err)
 	}
-	if got := selectionOrdinals(selected); !equalInts(got, []int{1, 2, 3, 4, 5}) {
+	if got := selectionOrdinals(selected); !slices.Equal(got, []int{1, 2, 3, 4, 5}) {
 		t.Errorf("carried ordinals = %v, want the five values the read supplied", got)
 	}
 	if report.Space.Min != 1 || report.Space.Max != 5 || report.Space.Records != 5 ||
@@ -124,19 +125,6 @@ func TestSelectionMatchesTheOrdinalValuesTheReadSupplied(t *testing.T) {
 			t.Errorf("Select(%q) refusal does not name the space: %v", spec, err)
 		}
 	}
-}
-
-// equalInts answers whether two int slices hold the same values in the same order.
-func equalInts(got, want []int) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for index := range got {
-		if got[index] != want[index] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestSelectionRefusesABadSpecificationByName pins D5's three refusals and the grammar: a malformed token
@@ -188,7 +176,8 @@ func TestSelectionRefusesABadSpecificationByName(t *testing.T) {
 	}
 
 	// CheckSelectionOptions answers the same refusals before any read, and refuses a supplied value that
-	// names nothing (an unset shell variable) as well as the strict arm without a selection.
+	// names nothing (an unset shell variable), a value that holds whitespace alone whatever the presence
+	// bit says, as well as the strict arm without a selection.
 	if err := CheckSelectionOptions("", false, true); !errors.Is(err, ErrBadSelection) {
 		t.Errorf("a supplied empty specification: err = %v, want ErrBadSelection", err)
 	}
@@ -200,6 +189,9 @@ func TestSelectionRefusesABadSpecificationByName(t *testing.T) {
 	}
 	if err := CheckSelectionOptions("", false, false); err != nil {
 		t.Errorf("the flag's absence: err = %v, want nil", err)
+	}
+	if err := CheckSelectionOptions("   ", false, false); !errors.Is(err, ErrBadSelection) {
+		t.Errorf("whitespace alone without the presence bit: err = %v, want ErrBadSelection", err)
 	}
 }
 
@@ -249,6 +241,43 @@ func TestSelectionCarriesTheCounterpartOfASeparatedPair(t *testing.T) {
 	}
 }
 
+// TestSelectionWarningsNameTheWindow pins D2.2's warning channel: a window that leaves records behind
+// says how many of the read's records travelled and where the rest sat, a carried counterpart is named
+// with the ordinal that pulled it in, and a call the source never answered is named as the source's own
+// state -- each line on the condition that makes it true, with the arithmetic the report's own classes
+// state.
+func TestSelectionWarningsNameTheWindow(t *testing.T) {
+	conversation := selectionFixtureConversation(t)
+	_, report, err := Select(conversation, "2", false)
+	if err != nil {
+		t.Fatalf("selecting the call: %v", err)
+	}
+	warnings := strings.Join(selectionWarnings(&report), "\n")
+	for _, want := range []string{
+		`the selection carried 2 of the read's 11 record(s); 9 record(s) at 0-1,4-10 did not travel ` +
+			`(specification "2")`,
+		"the selection carried 1 record(s) the specification did not name",
+		"ordinals 3 (pulled by 2)",
+	} {
+		if !strings.Contains(warnings, want) {
+			t.Errorf("the warnings do not hold %q:\n%s", want, warnings)
+		}
+	}
+	if strings.Contains(warnings, "undischarged") {
+		t.Errorf("a window that holds no undischarged call still warns about one:\n%s", warnings)
+	}
+
+	// The undischarged arm: ordinal 5's call is the one the source never answered.
+	_, report, err = Select(conversation, "5", false)
+	if err != nil {
+		t.Fatalf("selecting the undischarged call: %v", err)
+	}
+	if warnings := strings.Join(selectionWarnings(&report), "\n"); !strings.Contains(warnings,
+		"the source left 1 call(s) undischarged in the carried records (ordinals 5)") {
+		t.Errorf("the undischarged warning is absent or miscounted:\n%s", warnings)
+	}
+}
+
 // TestSelectionRefusesASeparatedPairUnderStrictSelection pins D3's strict arm: the same specification is
 // refused by name before anything is converted, naming the call, the result and both ordinals -- from
 // either side of the pair -- and a specification that holds both records is accepted under the same flag.
@@ -279,7 +308,7 @@ func TestSelectionRefusesASeparatedPairUnderStrictSelection(t *testing.T) {
 	if !report.Strict || report.Included.Count != 2 || report.NecessitiesAdded.Count != 0 {
 		t.Errorf("report = %+v, want the two named records and no necessity", report)
 	}
-	if got := selectionOrdinals(selected); !equalInts(got, []int{2, 3}) {
+	if got := selectionOrdinals(selected); !slices.Equal(got, []int{2, 3}) {
 		t.Errorf("carried ordinals = %v, want the pair's two records", got)
 	}
 }
@@ -360,7 +389,7 @@ func TestSelectionAccountsForEveryCarriedRecord(t *testing.T) {
 				record.Reason)
 			continue
 		}
-		if !equalStrings(record.Written, want) {
+		if !slices.Equal(record.Written, want) {
 			t.Errorf("record %d: written %v, want %v", record.Ordinal, record.Written, want)
 		}
 	}
@@ -399,17 +428,54 @@ func TestSelectionAccountsForEveryCarriedRecord(t *testing.T) {
 	}
 }
 
-// equalStrings answers whether two string slices hold the same values in the same order.
-func equalStrings(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
+// TestSelectionAccountsForRecordsSharingAnOrdinal pins D1 for the shape the space's own text allows: two
+// records may share one ordinal value, and each still gets its own fate -- the report's rows and the
+// writer's fates are both in the document's own order, and the table pairs them by position rather than
+// by a value two records share, so neither row receives the other record's items.
+func TestSelectionAccountsForRecordsSharingAnOrdinal(t *testing.T) {
+	conversation := testConversation(
+		Message{Ordinal: 0, Role: "user", Content: "a", Dialogue: "a", SourceUUID: "a0"},
+		Message{Ordinal: 1, Role: "assistant", Content: "b", Dialogue: "b", SourceUUID: "b1",
+			SourceParentUUID: "a0"},
+		Message{Ordinal: 1, Role: "user", Content: "c", Dialogue: "c", SourceUUID: "c1",
+			SourceParentUUID: "b1"},
+	)
+	selected, report, err := Select(conversation, "0-1", false)
+	if err != nil {
+		t.Fatalf("selecting the whole space: %v", err)
 	}
-	for index := range got {
-		if got[index] != want[index] {
-			return false
+	if report.Space.Records != 3 || report.Space.Min != 0 || report.Space.Max != 1 ||
+		!report.Space.Contiguous {
+		t.Errorf("ordinal space = %+v, want three records over 0..1 with no gap", report.Space)
+	}
+	if len(report.Records) != 3 {
+		t.Fatalf("the report accounts for %d record(s), want the three the specification named",
+			len(report.Records))
+	}
+	rollout, err := ConvertToCodexRollout(selected, testOptions())
+	if err != nil {
+		t.Fatalf("converting the window: %v", err)
+	}
+	fillSelectionRecords(&report, rollout.RecordFates)
+	// Each row holds its own record's item kind, in the document's own order: the two records sharing
+	// ordinal 1 must not each receive both fates.
+	wantItems := []string{"user_message", "assistant_message", "user_message"}
+	for index, record := range report.Records {
+		if record.Became != BecameNativeHistory ||
+			!slices.Equal(record.Written, []string{wantItems[index]}) {
+			t.Errorf("record %d (ordinal %d): became %q written %v, want the one item %s", index,
+				record.Ordinal, record.Became, record.Written, wantItems[index])
 		}
 	}
-	return true
+	// The rollup reconciles: every item the writer placed in the file is paired with exactly one record.
+	paired := 0
+	for _, record := range report.Records {
+		paired += len(record.Written)
+	}
+	if paired != len(rollout.Items) {
+		t.Errorf("%d written item(s) are paired to records, but the writer placed %d in the file",
+			paired, len(rollout.Items))
+	}
 }
 
 // siblingShape is the exact-parent shape internal/ccc/codex_target_test.go pins, as a read the selection
@@ -443,7 +509,7 @@ func TestSelectionEndsAWindowOffTheReadsLineWithoutMovingIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selecting the window: %v", err)
 	}
-	if got := selectionOrdinals(selected); !equalInts(got, []int{0, 1, 2}) {
+	if got := selectionOrdinals(selected); !slices.Equal(got, []int{0, 1, 2}) {
 		t.Fatalf("carried ordinals = %v, want the three the specification named", got)
 	}
 	rollout, err := ConvertToCodexRollout(selected, testOptions())
@@ -732,7 +798,7 @@ func TestSelectionRefusesACounterpartOffTheReadsLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selecting the linear call: %v", err)
 	}
-	if got := selectionOrdinals(selected); !equalInts(got, []int{1, 2}) {
+	if got := selectionOrdinals(selected); !slices.Equal(got, []int{1, 2}) {
 		t.Errorf("carried ordinals = %v, want the call and its counterpart", got)
 	}
 	if report.NecessitiesAdded.Count != 1 {
@@ -877,12 +943,12 @@ func TestSelectionKeepsTheNearestCarriedAncestor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selecting the chain's ends: %v", err)
 	}
-	if got := selectionOrdinals(selected); !equalInts(got, []int{0, 3}) {
+	if got := selectionOrdinals(selected); !slices.Equal(got, []int{0, 3}) {
 		t.Fatalf("carried ordinals = %v, want the two the specification named", got)
 	}
 	// a's own ancestry is outside the read (it names none) -> -1; d's parent chain runs through the
 	// excluded b and c to the carried a -> position 0 in the reduced document.
-	if got := selected.sourceKeptAncestor; !equalInts(got, []int{-1, 0}) {
+	if got := selected.sourceKeptAncestor; !slices.Equal(got, []int{-1, 0}) {
 		t.Errorf("kept ancestors = %v, want [-1 0]: d chains to the nearest carried ancestor a", got)
 	}
 	// A record whose whole ancestry lies outside the window answers no ancestor, and so does a record the
@@ -891,15 +957,15 @@ func TestSelectionKeepsTheNearestCarriedAncestor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selecting the tail: %v", err)
 	}
-	if got := selected.sourceKeptAncestor; !equalInts(got, []int{-1, -1}) {
+	if got := selected.sourceKeptAncestor; !slices.Equal(got, []int{-1, -1}) {
 		t.Errorf("kept ancestors = %v, want [-1 -1]: neither record's ancestry is carried", got)
 	}
 }
 
 // TestSelectionTimeStampsAreNeverOlderThanTheReadsRecord pins that a selected window's written records
 // keep the read's own instants: the selection changes which records travel, never when they were
-// recorded, so the target's own clock rule sees instants the source recorded and never one this build
-// invented.
+// recorded, so every written message record is stamped with an instant the read recorded for one of its
+// records and never one this build invented.
 func TestSelectionTimeStampsAreNeverOlderThanTheReadsRecord(t *testing.T) {
 	conversation := selectionFixtureConversation(t)
 	selected, _, err := Select(conversation, "0-4", false)
@@ -909,6 +975,14 @@ func TestSelectionTimeStampsAreNeverOlderThanTheReadsRecord(t *testing.T) {
 	rollout, err := ConvertToCodexRollout(selected, testOptions())
 	if err != nil {
 		t.Fatalf("converting the window: %v", err)
+	}
+	// Every instant the read recorded for its own records: the window's messages are 08:00:00..08:00:36,
+	// and the writer's clock rule substitutes the previous written record's instant where the document's
+	// order disagrees with its clock -- also an instant the read recorded. The citation claims the
+	// writing keeps the read's own instants, so the case asks membership in this set rather than a bound.
+	recorded := make(map[int64]struct{}, len(conversation.Messages))
+	for _, message := range conversation.Messages {
+		recorded[message.Timestamp.UnixNano()] = struct{}{}
 	}
 	lines := decodeRollout(t, rollout.Data)
 	for _, line := range lines {
@@ -922,14 +996,12 @@ func TestSelectionTimeStampsAreNeverOlderThanTheReadsRecord(t *testing.T) {
 		if payload["type"] != codexItemMessage {
 			continue
 		}
-		// The instants the window holds are the fixture's own 08:00:00..08:00:36; the writer's clock
-		// never invents one, so each written record's instant is in that range and never before it.
 		at, err := time.Parse(time.RFC3339Nano, line.Timestamp)
 		if err != nil {
 			t.Fatalf("parsing %q: %v", line.Timestamp, err)
 		}
-		if at.Before(time.Date(2026, 5, 8, 8, 0, 0, 0, time.UTC)) {
-			t.Errorf("a written record is stamped before the source recorded it: %s", line.Timestamp)
+		if _, ok := recorded[at.UnixNano()]; !ok {
+			t.Errorf("a written record is stamped %s, which is no instant the read recorded", line.Timestamp)
 		}
 	}
 }

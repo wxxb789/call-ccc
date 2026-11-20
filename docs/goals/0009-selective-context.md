@@ -1,7 +1,8 @@
 # 0009 — Select which recorded context crosses a harness boundary
 
 **Status:** Refined 2026-11-20 (owner fork A) and **implemented 2026-11-20** on
-`feat/0009-selective-context` (uncommitted, unmerged — the operator owns the merge and the archive move):
+`feat/0009-selective-context` (committed as `3b71614`, unmerged — the operator owns the merge and the
+archive move):
 `--select`/`--strict-selection` on the reference pair, the read→selection seam of D6, and the evidence
 record [`docs/evidence/0009-selective-context.md`](../evidence/0009-selective-context.md) with its citation
 manifest. The four route increments (0018–0021) follow once this increment is accepted. The increment is

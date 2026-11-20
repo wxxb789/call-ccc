@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -166,13 +167,13 @@ func TestContinueWithASelectionReportsTheClassesAndFates(t *testing.T) {
 		t.Fatalf("records = %+v, want the pair's two records accounted for", selection.Records)
 	}
 	if selection.Records[0].Ordinal != 2 || selection.Records[0].Became != "native_history" ||
-		!equalKinds(selection.Records[0].Written, []string{"tool_call"}) {
+		!slices.Equal(selection.Records[0].Written, []string{"tool_call"}) {
 		t.Errorf("record 2 = %+v, want it written as the call", selection.Records[0])
 	}
 	if selection.Records[1].Ordinal != 3 || !selection.Records[1].Necessity ||
 		selection.Records[1].PulledBy == nil || *selection.Records[1].PulledBy != 2 ||
 		selection.Records[1].Became != "native_history" ||
-		!equalKinds(selection.Records[1].Written, []string{"tool_result"}) {
+		!slices.Equal(selection.Records[1].Written, []string{"tool_result"}) {
 		t.Errorf("record 3 = %+v, want the necessity written as the result", selection.Records[1])
 	}
 	// A dry run installs nothing, and the source's own bytes are the same file afterwards.
@@ -182,19 +183,6 @@ func TestContinueWithASelectionReportsTheClassesAndFates(t *testing.T) {
 	if files := targetTreeDigest(t, targetHome); len(files) != 0 {
 		t.Errorf("a dry run wrote %d file(s) under the target home: %v", len(files), files)
 	}
-}
-
-// equalKinds answers whether two item-kind lists hold the same values in the same order.
-func equalKinds(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for index := range got {
-		if got[index] != want[index] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestContinueWithASelectionInstallsExactlyTheWindow pins the target half: a real conversion with a

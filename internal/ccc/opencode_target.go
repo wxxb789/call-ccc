@@ -611,7 +611,7 @@ func (c *openCodeConverter) planToolEvidence(inactive []bool) {
 			c.ledger.pendingCalls[id] = struct{}{}
 		}
 		for _, result := range message.ToolResults {
-			if !openCodeResultStatesAnOutcome(result.Status) {
+			if !resultStatesAnOutcome(result.Status) {
 				// The read records a call's progress as events of the call's own as well as its outcome
 				// (internal/parser/termination.go's rule reads the same events: a Codex subagent's
 				// `running` notification keeps the call pending until a notification with another status
@@ -708,16 +708,6 @@ func (c *openCodeConverter) callNamedByResult(result ToolResult) string {
 	}
 	id, _ := c.solePendingCall()
 	return id
-}
-
-// openCodeResultStatesAnOutcome answers whether one recorded result event states an outcome this target
-// can hold, as opposed to the progress a read streams while a call is still executing. It is the shared
-// rule (resultStatesAnOutcome), kept under this route's own name because the route reads it beside its
-// own status rule: a failure word is written as `error`, an absent word or `completed` as `completed`,
-// and any other word is left out and counted (tool_result_statuses) rather than given an outcome of this
-// build's making.
-func openCodeResultStatesAnOutcome(status string) bool {
-	return resultStatesAnOutcome(status)
 }
 
 // writeConversation walks the document once and writes every message it can express. inactive is the

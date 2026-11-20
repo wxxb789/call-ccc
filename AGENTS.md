@@ -265,7 +265,7 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   compaction boundary accounts for, and retained-versus-already-written ancestry. **No target writer and no
   read-back verifier may infer a cross-record fact from the reduced stream** — an inference reconstructed
   after the cut is the defect class this rule exists to keep out, not a local bug to patch. The reference
-  route carries that set as six unexported `Conversation` fields (`internal/ccc/selection.go`, nil on a
+  route carries that set as six unexported `Conversation` fields (`internal/ccc/conversation.go`, nil on a
   document that is the read itself): the read's own line membership taken before the cut, the result→call
   pairing, each carried call's finality (completed / failed / interrupted / in-progress /
   unknown-undischarged — a progress event is no pair's counterpart and no call's answer), the nearest
