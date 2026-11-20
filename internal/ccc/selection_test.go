@@ -3,6 +3,7 @@ package ccc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"os"
@@ -445,6 +446,16 @@ func TestSelectionCarriesASystemRecordAndReportsUndischargedCalls(t *testing.T) 
 	if err := os.WriteFile(existing, existingBefore, 0o600); err != nil {
 		t.Fatalf("writing the pre-existing transcript: %v", err)
 	}
+	// The source side of the same bound, digests read by the case itself: the conversion's own
+	// `source_check_state` is the writer's answer about its own run, and a write a selection-specific
+	// path made to the source would move the file this case hashes directly (round 17's fifth finding).
+	source := fixturePath(t, filepath.Join("claude", "-home-user-code-awaiting",
+		claudeSelectionFixtureRef.ID+".jsonl"))
+	sourceBefore, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("reading the source transcript before the install: %v", err)
+	}
+	sourceDigest := sha256.Sum256(sourceBefore)
 	install, err := Continue(context.Background(), ContinueOptions{
 		Ref: claudeSelectionFixtureRef, Target: TargetCodex, Config: fixtureConfig(t),
 		TargetHome: home, TargetBinary: missingTargetBinary,
@@ -456,6 +467,18 @@ func TestSelectionCarriesASystemRecordAndReportsUndischargedCalls(t *testing.T) 
 	if install.Installation.State != InstallationStateInstalled || install.TargetSession.Path == "" {
 		t.Fatalf("installation = %+v, want the selected window installed as a session of its own",
 			install.Installation)
+	}
+	sourceAfter, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("the source transcript does not exist after a successful selected install: %v", err)
+	}
+	if after := sha256.Sum256(sourceAfter); after != sourceDigest {
+		t.Errorf("the source transcript changed across a successful selected install: sha256 %x before, "+
+			"%x after -- a conversion is a snapshot of the source and never writes it", sourceDigest, after)
+	}
+	if !bytes.Equal(sourceAfter, sourceBefore) {
+		t.Errorf("the source transcript's own bytes changed across a successful selected install: %d "+
+			"byte(s) before, %d after", len(sourceBefore), len(sourceAfter))
 	}
 	if filepath.Dir(install.TargetSession.Path) != filepath.Dir(existing) {
 		t.Errorf("the install published at %s, want a sibling of the pre-existing transcript %s: the "+
@@ -848,7 +871,7 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 			},
 			absent: []string{selectionQuestion, "Starting the build now.", "The build finished.",
 				selectionReadCallID, selectionCapCallID, selectionFollowup, selectionAnswer, selectionSummary,
-				claudeSubtypeCompactBoundary},
+				"compact_boundary"},
 		},
 		{
 			// The undischarged call alone: it travels, and nothing else does -- except on OpenCode,
@@ -859,7 +882,7 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 			},
 			routeEvidence: map[string][]string{TargetOpenCode: nil},
 			absent: []string{selectionBuildCallID, selectionCapCallID, selectionFollowup, selectionAnswer,
-				claudeSubtypeCompactBoundary},
+				"compact_boundary"},
 			omitted: map[string]omission{
 				TargetOpenCode: {evidence: selectionReadCallID, category: "unpaired_tool_calls"},
 			},
@@ -875,7 +898,7 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 				result(selectionCapCallID, selectionCapResult),
 			},
 			absent: []string{selectionBuildCallID, selectionBuildResult, selectionFollowup, selectionAnswer,
-				selectionBoundarySummary, claudeSubtypeCompactBoundary},
+				selectionBoundarySummary, "compact_boundary"},
 		},
 		{
 			// The boundary alone: every route writes it as the record that truncates the model-visible
@@ -887,7 +910,7 @@ func TestSelectionWritesExactlyTheSelectedOrdinals(t *testing.T) {
 				"compaction " + selectionBoundarySummary,
 			},
 			routeEvidence: map[string][]string{TargetClaude: {
-				"boundary " + claudeSubtypeCompactBoundary,
+				"boundary compact_boundary",
 				"compaction " + selectionBoundarySummary,
 			}},
 			absent: []string{selectionBuildCallID, selectionBuildResult, selectionReadCallID,
@@ -974,10 +997,14 @@ func selectionEvidence(t *testing.T, target string, data []byte) []string {
 				// of the boundary beside that record, in the file's own order. A message-less record of
 				// any other shape is one this extractor does not know, and the extractor fails on it
 				// rather than skipping it: a writer that renames the marker must not pass the comparison.
-				if record["type"] != claudeTypeSystem || record["subtype"] != claudeSubtypeCompactBoundary {
+				// The native wire values themselves, not the writer's shared constants: the harness's
+				// loader acts on these two fields, and an assertion built from the same constants a
+				// writer emits from would rename itself with them, so a changed marker would pass the
+				// comparison (round 17's fourth finding).
+				if record["type"] != "system" || record["subtype"] != "compact_boundary" {
 					t.Fatalf("%s: unhandled message-less record %v", target, record)
 				}
-				evidence = append(evidence, "boundary "+claudeSubtypeCompactBoundary)
+				evidence = append(evidence, "boundary compact_boundary")
 				continue
 			}
 			// The summary record of a compaction boundary is evidence of its own kind: the loader
@@ -5600,5 +5627,92 @@ func TestSelectionWritesASummaryAnIDLessProgressEventDoesNotSuppress(t *testing.
 	if got := lossCount(t, unflaggedControl.Losses, "unpaired_tool_calls").Count; got != 1 {
 		t.Errorf("unflagged id-recorded unpaired_tool_calls = %d, want the call counted: its only recorded "+
 			"event is progress", got)
+	}
+
+	// The same-record arm (round 17's second finding): one record holds *two* id-less calls -- one with
+	// the archive's summary -- and an id-less progress event on that same record. The message-local
+	// question read the event's empty id as equal to the call's empty id and suppressed the summary; the
+	// occurrence pairing has no entry for an id-less event at all (the read recorded no link), so the
+	// summary stays the summary-carrying call's outcome evidence -- in the report (one call undischarged:
+	// the call with no evidence of its own) and in every writer that asks the pairing.
+	twoCalls := func(progress ToolResult) Conversation {
+		return testConversation(
+			Message{Ordinal: 0, Role: "assistant", Content: "calls", Dialogue: "calls",
+				ToolCalls: []ToolCall{
+					{ToolUseID: "", Name: "Bash", InputJSON: `{"command":"a"}`,
+						ResultContent: summary, ResultContentSize: len(summary)},
+					{ToolUseID: "", Name: "Bash", InputJSON: `{"command":"b"}`},
+				},
+				ToolResults: []ToolResult{progress}},
+		)
+	}
+	sameSelected, sameReport, err := Select(twoCalls(ToolResult{Status: "running",
+		ContentRaw: progressText, ContentSize: len(progressText)}), "0", false)
+	if err != nil {
+		t.Fatalf("selecting the two id-less calls with an id-less progress event: %v", err)
+	}
+	if sameReport.CallsUndischarged.Count != 1 ||
+		strings.Join(sameReport.CallsUndischarged.Regions, ",") != "0" {
+		t.Errorf("calls_undischarged = %+v, want the one call with no outcome evidence of its own at "+
+			"ordinal 0: the summary-carrying call's outcome is its own summary, which the id-less event "+
+			"cannot stand in for", sameReport.CallsUndischarged)
+	}
+	for _, target := range []string{TargetOpenCode, TargetCodex, TargetClaude, TargetPi, TargetOMP} {
+		targetRoute, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		targetConverted, err := targetRoute.Convert(sameSelected, selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the two id-less calls: %v", target, err)
+		}
+		carried := false
+		for _, line := range selectionCallAndResultLines(t, target, targetConverted.Data) {
+			if strings.HasPrefix(line, "result ") && strings.HasSuffix(line, " "+summary) {
+				carried = true
+			}
+		}
+		if !carried {
+			t.Errorf("%s: the converted document holds no outcome for the summary-carrying call: the "+
+				"id-less progress event on the same record suppressed it through an id equality the "+
+				"source never recorded (%v)", target,
+				selectionCallAndResultLines(t, target, targetConverted.Data))
+		}
+	}
+	// A run without a selection keeps the message-local rule this writer has always had (goal 0009's D4):
+	// the id-less event matches the call's own empty id, so the summary is that event's view and is not
+	// written as an outcome -- and it is never routed to the writer as an outcome it would have to pair,
+	// which is the shape the separate-record arm cannot show (there the call's own record holds no result,
+	// so the message-local question answers no and the summary is written on either reading). The
+	// default-path assertion therefore uses the one-record shape: a call whose own record carries both
+	// the summary and the id-less progress event.
+	sameRecord := func(progress ToolResult) Conversation {
+		return testConversation(
+			Message{Ordinal: 0, Role: "assistant", Content: "call", Dialogue: "call",
+				ToolCalls: []ToolCall{{ToolUseID: "", Name: "Bash", InputJSON: `{"command":"a"}`,
+					ResultContent: summary, ResultContentSize: len(summary)}},
+				ToolResults: []ToolResult{progress}},
+		)
+	}
+	for _, target := range []string{TargetCodex, TargetClaude, TargetPi, TargetOMP} {
+		targetRoute, err := targetRouteFor(target)
+		if err != nil {
+			t.Fatalf("route %s: %v", target, err)
+		}
+		targetUnflagged, err := targetRoute.Convert(sameRecord(ToolResult{Status: "running",
+			ContentRaw: progressText, ContentSize: len(progressText)}), selectionProbeOptions())
+		if err != nil {
+			t.Fatalf("%s: converting the one-record shape without a selection: %v", target, err)
+		}
+		if strings.Contains(string(targetUnflagged.Data), summary) {
+			t.Errorf("%s: the unflagged document states the call's summary: the default path keeps the "+
+				"message-local rule, under which the id-less event on the call's own record is that call's "+
+				"event", target)
+		}
+		if got := lossCount(t, targetUnflagged.Losses, "unpaired_tool_results").Count; got != 0 {
+			t.Errorf("%s: unflagged unpaired_tool_results = %d, want 0: the message-local rule answers "+
+				"the summary question before the writer sees the result, so no summary is routed to the "+
+				"pairing as an outcome it cannot place", target, got)
+		}
 	}
 }

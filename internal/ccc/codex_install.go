@@ -659,12 +659,15 @@ func codexRoundTripReader(reduced bool) roundTripReader {
 
 // codexInstalledCallUnit is one invocation unit the installed file's own records state: the id its record
 // registers the call under and, where this build can state it, the call key the comparison uses. The
-// writer writes every call as a `function_call` record, so a unit of that type is keyed; a record of
-// another type the inherited reader reads as a call (`custom_tool_call`, `image_generation_call`) is a
-// unit all the same -- the file states an invocation there -- but its key is the reader's own reading of
-// the record's fields, which this build does not restate. An unkeyed unit is never folded
-// (codexFoldableRows), so the read-back's rows stand for that id rather than disappearing behind a fold
-// the comparison cannot attribute (round 10's finding 4).
+// writer writes every call as a `function_call` record whose `arguments` member is the string this build
+// spells, so a unit of that shape is keyed; a record of another type the inherited reader reads as a call
+// (`custom_tool_call`, `image_generation_call`) is a unit all the same -- the file states an invocation
+// there -- but its key is the reader's own reading of the record's fields, which this build does not
+// restate, and so is a `function_call` whose `arguments` member is an object rather than the string this
+// writer writes (the inherited reader accepts both spellings, so the record is an invocation wherever it
+// came from). An unkeyed unit is never folded (codexFoldableRows), so the read-back's rows stand for that
+// id rather than disappearing behind a fold the comparison cannot attribute (round 10's finding 4; round
+// 17's first finding for the object-form duplicate whose key a fold would otherwise hide).
 type codexInstalledCallUnit struct {
 	id    string
 	key   string
@@ -677,6 +680,14 @@ type codexInstalledCallUnit struct {
 // inherited reader projects one `apply_patch` record into one call row per file it names, so the
 // read-back's rows are the reader's view of these records; the records themselves are what the file
 // holds, and a file holding two call records under one id states two units (round 9's finding 2).
+//
+// A `function_call` record whose `arguments` member this build's written records do not spell as a
+// string -- the inherited reader accepts an object as well (internal/parser's parseCodexFunctionArgs),
+// and so does a file an older writer or another tool left -- is still one unit: the record states an
+// invocation, so the walk keeps its id and leaves the unit unkeyed. Dropping it entirely (the reading
+// this walk took before round 18) let a same-key duplicate written in the object form disappear behind
+// the fold, whose units then accounted for rows of an invocation the document never wrote (round 17's
+// first finding).
 func codexInstalledCallUnits(installed []byte) []codexInstalledCallUnit {
 	var units []codexInstalledCallUnit
 	for _, line := range bytes.Split(installed, []byte("\n")) {
@@ -692,11 +703,12 @@ func codexInstalledCallUnits(installed []byte) []codexInstalledCallUnit {
 		}
 		switch record.Payload.Type {
 		case codexItemFunctionCall:
-			units = append(units, codexInstalledCallUnit{
-				id:    record.Payload.CallID,
-				key:   roundTripCallKey(record.Payload.CallID, record.Payload.Name, record.Payload.Arguments),
-				keyed: true,
-			})
+			unit := codexInstalledCallUnit{id: record.Payload.CallID}
+			if arguments, ok := codexInstalledCallArguments(record.Payload.Arguments); ok {
+				unit.key = roundTripCallKey(record.Payload.CallID, record.Payload.Name, arguments)
+				unit.keyed = true
+			}
+			units = append(units, unit)
 		case codexItemCustomToolCall:
 			units = append(units, codexInstalledCallUnit{id: record.Payload.CallID})
 		case codexItemImageGenerationCall:
@@ -704,6 +716,21 @@ func codexInstalledCallUnits(installed []byte) []codexInstalledCallUnit {
 		}
 	}
 	return units
+}
+
+// codexInstalledCallArguments answers the argument text one installed `function_call` record holds, and
+// whether this build can read it: the member is the JSON string this writer writes, and nothing else --
+// an object (the inherited reader accepts one) is a call key this build does not restate, so the unit
+// stays unkeyed and the fold leaves the read-back's rows for that id standing.
+func codexInstalledCallArguments(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var arguments string
+	if err := json.Unmarshal(raw, &arguments); err != nil {
+		return "", false
+	}
+	return arguments, true
 }
 
 // codexCallEvidence answers the read-back's call evidence as the installed file's own invocation units:
@@ -808,15 +835,17 @@ func codexFoldableRows(units []codexInstalledCallUnit, rows []readBackCall) bool
 // codexInstalledCallRecord is the part of one installed line the invocation-unit walk reads: the
 // record's own type, its function call's id, name and arguments, and the `id` an image generation call
 // registers its call under. It declares no field for anything else, so reading a large session copies no
-// payload the walk does not ask about.
+// payload the walk does not ask about. Arguments is read as the raw member: a record whose member is not
+// the string this writer writes still states an invocation, and the walk keeps its id
+// (codexInstalledCallUnits) rather than dropping the record because of the member's shape.
 type codexInstalledCallRecord struct {
 	Type    string `json:"type"`
 	Payload struct {
-		Type      string `json:"type"`
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-		CallID    string `json:"call_id"`
-		ID        string `json:"id"`
+		Type      string          `json:"type"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		CallID    string          `json:"call_id"`
+		ID        string          `json:"id"`
 	} `json:"payload"`
 }
 

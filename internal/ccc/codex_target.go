@@ -659,14 +659,18 @@ func (b *codexRolloutBuilder) writeToolEvidence(message Message) {
 		// The summary is the call's own evidence, so it is paired with the call occurrence the walk just
 		// wrote rather than with a document occurrence: there is no recorded result here.
 		place := callOccurrence{message: b.messageIndex, call: entry.index}
-		// A document a selection produced asks the read's own pairing: a recorded result event the read
-		// holds for this call occurrence -- wherever its record sits -- is the event the archive derived
-		// the summary from, so the summary is that event's view and the call's disposition follows the
-		// event's own (round 15's finding 3). A run without a selection keeps the message-local answer.
-		if b.selectionReduced && callHasPairedRecordedEvent(b.pairings, place) {
-			continue
-		}
-		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
+		// A document a selection produced asks the read's own pairing, and only it: a recorded result
+		// event the read pairs with this call occurrence -- wherever its record sits -- is the event the
+		// archive derived the summary from, so the summary is that event's view and is not written as an
+		// outcome of its own (round 15's finding 3), while an event the pairing names no occurrence for
+		// (an id-less progress event on the call's own record, whose link only a writer's inference could
+		// invent) leaves the summary as the call's outcome evidence (round 17's second finding). A run
+		// without a selection keeps the message-local answer (goal 0009's D4).
+		if b.selectionReduced {
+			if callHasPairedRecordedEvent(b.pairings, place) {
+				continue
+			}
+		} else if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
 		b.toolResult(&place, result, message.Timestamp)
@@ -702,12 +706,14 @@ func (b *codexRolloutBuilder) projectedCalls(message Message) []codexProjectedCa
 }
 
 // derivedResultSummary answers the archive read's own summary of one call as the ToolResult a writer may
-// carry where the call has no recorded result of its own (callHasRecordedResult): the summary is a view
-// of the outcome only where there is no result to carry instead, and the boolean answers whether the read
-// holds a summary at all (neither text nor a size). toolUseID is the id the result is written under -- the
-// call's own recorded id, or the one a conversion minted for a call that recorded none. The guard and the
-// value are one function because every writer of this family applies them together; which of a record's
-// results is "recorded" stays each writer's own decision, made by the caller.
+// carry where the call the writer is asking about has no recorded result of its own: the summary is a
+// view of the outcome only where there is no result to carry instead, and the boolean answers whether the
+// read holds a summary at all (neither text nor a size). toolUseID is the id the result is written under
+// -- the call's own recorded id, or the one a conversion minted for a call that recorded none. The guard
+// and the value are one function because every writer of this family applies them together; which of a
+// record's results counts as "recorded" stays each writer's own decision, made by the caller: the
+// message-local question (callHasRecordedResult) on a document the read returned, and the read's own
+// pairing (callHasPairedRecordedEvent) on one a selection produced.
 func derivedResultSummary(call ToolCall, toolUseID string) (ToolResult, bool) {
 	if strings.TrimSpace(call.ResultContent) == "" && call.ResultContentSize == 0 {
 		return ToolResult{}, false
@@ -730,10 +736,13 @@ func derivedResultSummary(call ToolCall, toolUseID string) (ToolResult, bool) {
 // happens to be; a summary whose call carries no result at all is the only evidence the read holds of
 // the outcome, and it is written.
 //
-// The question reads the call's own record. A document a selection produced asks the read's own pairing
-// instead (callHasPairedRecordedEvent): the events the read recorded for the call may sit on records the
-// window's walk does not reach at the call's own message, and the declaration above is about the read's
-// events, not about one record. A run without a selection keeps this message-local answer.
+// The question reads the call's own record, and it is the default path's whole answer: a document a
+// selection produced asks the read's own pairing instead (callHasPairedRecordedEvent) and never this
+// question beside it -- the events the read recorded for the call may sit on records the window's walk
+// does not reach at the call's own message, and an id-less result is no event the read linked to the call
+// at all, so an empty recorded id must not read as the call's own (round 17's second finding). The
+// narrowed question stays for a run without a selection, which keeps its bytes and its whole report
+// (goal 0009's D4).
 func callHasRecordedResult(results []ToolResult, callID string) bool {
 	for _, result := range results {
 		if result.ToolUseID == callID {
@@ -747,9 +756,12 @@ func callHasRecordedResult(results []ToolResult, callID string) bool {
 // call occurrence, wherever that event's record sits. The archive's derived summary of a call is a view
 // of the read's events (callHasRecordedResult's declaration), so a summary whose call occurrence the
 // pairing names an event for is not the outcome evidence and the call's disposition follows the event's
-// own: an event that states an outcome answers, and a progress event leaves the call unanswered. The
-// narrowed, message-local question (callHasRecordedResult) stays the default path's answer, because a run
-// without a selection keeps its bytes and its whole report (goal 0009's D4).
+// own: an event that states an outcome answers, and a progress event leaves the call unanswered. On a
+// document a selection produced this is the writer's whole answer -- the message-local question is not
+// asked beside it -- so a result the pairing names no occurrence for (an id-less event, a link only a
+// writer's inference could invent) does not suppress the summary. The narrowed, message-local question
+// (callHasRecordedResult) stays the default path's answer, because a run without a selection keeps its
+// bytes and its whole report (goal 0009's D4).
 func callHasPairedRecordedEvent(pairings map[resultOccurrence]callOccurrence, call callOccurrence) bool {
 	for _, paired := range pairings {
 		if paired == call {

@@ -655,14 +655,18 @@ func (b *claudeTranscriptBuilder) writeToolEvidence(message Message) {
 		// record: the pairing to hand the writer is that occurrence, so the ancestry check asks about the
 		// one place the pair really stands at.
 		place := callOccurrence{message: b.messageIndex, call: entry.index}
-		// A document a selection produced asks the read's own pairing: a recorded result event the read
-		// holds for this call occurrence -- wherever its record sits -- is the event the archive derived
-		// the summary from, so the summary is that event's view and the call's disposition follows the
-		// event's own (round 15's finding 3). A run without a selection keeps the message-local answer.
-		if b.selectionReduced && callHasPairedRecordedEvent(b.pairings, place) {
-			continue
-		}
-		if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
+		// A document a selection produced asks the read's own pairing, and only it: a recorded result
+		// event the read pairs with this call occurrence -- wherever its record sits -- is the event the
+		// archive derived the summary from, so the summary is that event's view and is not written as an
+		// outcome of its own (round 15's finding 3), while an event the pairing names no occurrence for
+		// (an id-less progress event on the call's own record, whose link only a writer's inference could
+		// invent) leaves the summary as the call's outcome evidence (round 17's second finding). A run
+		// without a selection keeps the message-local answer (goal 0009's D4).
+		if b.selectionReduced {
+			if callHasPairedRecordedEvent(b.pairings, place) {
+				continue
+			}
+		} else if callHasRecordedResult(message.ToolResults, call.ToolUseID) {
 			continue
 		}
 		block, ok := b.toolResult(&place, result, message.Timestamp)

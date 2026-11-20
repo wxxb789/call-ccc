@@ -3112,3 +3112,154 @@ func TestContinueKeepsTheReadsOrderForAFileRecordingNoEntryIdentities(t *testing
 		}
 	}
 }
+
+// TestContinueRefusesAWindowChainingAnOnLineRecordToAnOffLineResult pins the writers' tool-result place
+// against a window that leaves an on-line record's whole ancestry out (round 17's third finding). The
+// fixture copy appends, after the committed session, call D under the fixture's call, an id-less result
+// of that call's (off the file's own leaf path) and the record X under the fixture's *result* -- the
+// file's last entry, so X is the leaf its loader walks from. The read answers X as hanging off the call
+// (a result's descendants resolve to their visible ancestor), while the file's own chain runs X → the
+// result → the call; the window carries D, the off-line result and X, so the record's whole retained
+// ancestry is outside it. The tool-result place would chain X through the written result -- an entry
+// standing for a record the read's line leaves off -- and the writers' guard refuses that place, the
+// resolution falls through to the entry written before X, and the revival check refuses the window by
+// name instead of writing the entry the off-line result stands for: the same refusal a record whose
+// retained ancestry is gone earns (the fallback may not put an abandoned record on the walk a resumed
+// session makes). The guard's other answer is the counter-arm the mutation measures: with the place
+// taken (resultEntryLeavesTheLine answering false), the conversion writes X under the off-line result's
+// own entry and the target's loader walks through the abandoned result -- the revival this case exists
+// to refuse. The carried-ancestry control converts the same file: the window that also carries the
+// fixture's call and result writes X under the result's entry, the file's own relation.
+func TestContinueRefusesAWindowChainingAnOnLineRecordToAnOffLineResult(t *testing.T) {
+	const (
+		promptText = "Where is the retry cap configured?"
+		callText   = "I will look for the retry configuration."
+		resultText = "internal/retry/config.go:41: maxBackoffSeconds = 30"
+		dText      = "D's own turn."
+		r3Text     = "D's own recorded output"
+		xText      = "X's own answer."
+	)
+	// The appended records, in the file's own order: call D under the fixture's call (b3c4d5e6), an
+	// id-less result of that call's under the same record (off the leaf path the last appended record's
+	// chain below runs through), and X under the fixture's result (c7d8e9fa) -- the file's last entry.
+	const (
+		d  = `{"id":"dddd0001","message":{"api":"openai-completions","content":[{"text":"D's own turn.","type":"text"},{"arguments":{"pattern":"d"},"id":"call_D_offline","name":"grep","type":"toolCall"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"toolUse","timestamp":1794938110000},"parentId":"b3c4d5e6","timestamp":"2026-05-04T09:16:00.000Z","type":"message"}`
+		r3 = `{"id":"r3r3r3r3","message":{"content":[{"text":"D's own recorded output","type":"text"}],"isError":false,"role":"toolResult","timestamp":1794938111000,"toolName":"grep"},"parentId":"b3c4d5e6","timestamp":"2026-05-04T09:16:01.000Z","type":"message"}`
+		x  = `{"id":"xxxx0001","message":{"api":"openai-completions","content":[{"text":"X's own answer.","type":"text"}],"model":"example-model-2","provider":"example-proxy","role":"assistant","stopReason":"stop","timestamp":1794938112000},"parentId":"c7d8e9fa","timestamp":"2026-05-04T09:16:02.000Z","type":"message"}`
+	)
+	cfg, ref, sourcePath := piSourceCopy(t, piFixtureRef.ID, d, r3, x)
+	sourceBytes, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading the source copy: %v", err)
+	}
+	sourceWalk := transcriptWalkTexts(t, sourceBytes)
+	if !slices.Contains(sourceWalk, xText) || slices.Contains(sourceWalk, r3Text) ||
+		slices.Contains(sourceWalk, dText) {
+		t.Fatalf("the source file's own walk = %q, want X and the fixture's own records on it and the "+
+			"appended result beside it: the fixture copy does not hold the shape under test", sourceWalk)
+	}
+	// The read's own answers, asserted rather than assumed: the appended records hold ordinals 5-7, the
+	// read answers X as hanging off the call (the projection the file's own chain corrects), and the
+	// id-less result is off the read's line -- the file's leaf path runs X → the fixture's result → the
+	// call.
+	read, err := NewSourceReader(cfg).Read(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("reading the appended fixture: %v", err)
+	}
+	if got := selectionOrdinals(read); !slices.Equal(got, []int{0, 1, 2, 3, 4, 5, 6, 7}) {
+		t.Fatalf("the read's ordinals = %v, want the fixture's five records and the three appended ones", got)
+	}
+	if len(read.Messages) != 8 {
+		t.Fatalf("the read holds %d record(s), want the eight its file carries", len(read.Messages))
+	}
+	byText := map[string]Message{}
+	for _, message := range read.Messages {
+		if text := strings.TrimSpace(message.Content); text != "" {
+			byText[text] = message
+		}
+	}
+	xRecord, ok := byText[dText+"\n[Tool: grep]"]
+	if !ok {
+		t.Fatalf("the read holds no record for D's turn: the fixture copy does not hold the shape under test")
+	}
+	if xRecord.SourceUUID != "dddd0001" {
+		t.Fatalf("D's record reads as %q, want dddd0001", xRecord.SourceUUID)
+	}
+	xMessage, ok := byText[xText]
+	if !ok {
+		t.Fatalf("the read holds no record for %q: the fixture copy does not hold the shape under test", xText)
+	}
+	if want := byText[callText+"\n[Tool: grep]"].SourceUUID; xMessage.SourceParentUUID != want {
+		t.Fatalf("X's read parent = %q, want the call's own identity %q: the read's projection is the "+
+			"answer the file's own chain corrects", xMessage.SourceParentUUID, want)
+	}
+	window, report, err := Select(read, "5-7", false)
+	if err != nil {
+		t.Fatalf("selecting 5-7: %v", err)
+	}
+	if got := selectionOrdinals(window); !slices.Equal(got, []int{5, 6, 7}) {
+		t.Fatalf("the window carries ordinals %v, want the three selected records and no necessity: the "+
+			"appended result records no id the read could pair with a call", got)
+	}
+	if report.NecessitiesAdded.Count != 0 {
+		t.Fatalf("necessities = %+v, want none: the id-less result records no link", report.NecessitiesAdded)
+	}
+	if report.CallsUndischarged.Count != 1 ||
+		strings.Join(report.CallsUndischarged.Regions, ",") != "5" {
+		t.Fatalf("calls_undischarged = %+v, want D's call at ordinal 5: the id-less result states no "+
+			"recorded outcome for it", report.CallsUndischarged)
+	}
+
+	// The tree targets refuse the window by name: the record the window holds would be chained to the
+	// entry of the result the read's line leaves off, which would put that result on the walk a resumed
+	// session makes.
+	for _, target := range []string{TargetPi, TargetClaude} {
+		refused, err := Continue(context.Background(), ContinueOptions{
+			Ref: ref, Target: target, Config: cfg,
+			TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+			Selection: "5-7", SelectionSupplied: true,
+		})
+		if !errors.Is(err, ErrUnrepresentableLeaf) {
+			t.Fatalf("%s: --select 5-7 = %v, want ErrUnrepresentableLeaf: X's whole retained ancestry is "+
+				"outside the window, so taking the tool-result place would chain it through the entry of "+
+				"the record the read's line leaves off", target, err)
+		}
+		for _, want := range []string{"xxxx0001", "ordinal 7", "r3r3r3r3", "ordinal 6"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: the refusal %q does not name %q", target, err, want)
+			}
+		}
+		if refused.TargetSession.Path != "" {
+			t.Errorf("%s: a refused conversion reported an installed session at %s", target,
+				refused.TargetSession.Path)
+		}
+	}
+
+	// The carried-ancestry control: the window that also carries the fixture's call and result writes
+	// X under the fixture's result's entry -- the file's own relation -- with no refusal, so the case's
+	// refusal is about the left-out ancestry and not about the shape itself.
+	controlCfg, controlRef, _ := piSourceCopy(t, piFixtureRef.ID, d, r3, x)
+	control, err := Continue(context.Background(), ContinueOptions{
+		Ref: controlRef, Target: TargetPi, Config: controlCfg,
+		TargetHome: t.TempDir(), TargetBinary: missingTargetBinary,
+		Selection: "1-2,5-7", SelectionSupplied: true,
+	})
+	if err != nil {
+		t.Fatalf("pi: --select 1-2,5-7 = %v, want the window written: the file answers every carried "+
+			"record's place", err)
+	}
+	if control.Verification.Structure.State != VerificationStateVerified {
+		t.Fatalf("pi: structure = %+v, want the installed session read back as what was written",
+			control.Verification.Structure)
+	}
+	controlBytes, err := os.ReadFile(control.TargetSession.Path)
+	if err != nil {
+		t.Fatalf("reading the installed session: %v", err)
+	}
+	controlWalk := transcriptWalkTexts(t, controlBytes)
+	wantWalk := []string{callText, resultText, xText}
+	if !slices.Equal(controlWalk, wantWalk) {
+		t.Errorf("pi: the selected session's model-visible history = %q, want %q: X hangs off the "+
+			"fixture's result's entry, the relation the file itself records", controlWalk, wantWalk)
+	}
+}

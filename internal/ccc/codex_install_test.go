@@ -421,6 +421,58 @@ func TestCodexRoundTripReportsACallRecordTheFoldCannotAttribute(t *testing.T) {
 			"the id is keyed, and the fold may take them only where every row states one of their keys",
 			objectRoundTrip.differences)
 	}
+
+	// The same-key object-form arm (round 17's first finding): a second `function_call` whose id, name
+	// and arguments are the document's own call's -- its `arguments` member stated as the JSON object the
+	// fixture itself records, so the reader's rows for the two records are equal in every field the
+	// comparison keys a call by -- placed immediately before the output record, which the inherited
+	// reader therefore attaches to the duplicate (the last call registered for the id). The unit walk's
+	// own reading of the document's string-form record was the only unit under the id; with the duplicate
+	// dropped because of its member's shape (the reading before the fix) the fold took that single unit
+	// and discarded every row, so the comparison accepted both the extra invocation and the output the
+	// document wrote for its own call. The unit has to keep the record's id and stay unkeyed, so every
+	// row stands and both differences are reported.
+	duplicate := codexInstalledLine(t, codexRecordResponseItem, map[string]any{
+		"type":      codexItemFunctionCall,
+		"call_id":   callID,
+		"name":      callName,
+		"arguments": json.RawMessage(callInput),
+	})
+	tamperedSameKey := []string{}
+	for _, line := range strings.Split(strings.TrimRight(string(installed), "\n"), "\n") {
+		if strings.Contains(line, codexItemFunctionOutput) {
+			tamperedSameKey = append(tamperedSameKey, duplicate)
+		}
+		tamperedSameKey = append(tamperedSameKey, line)
+	}
+	sameKeyBytes := []byte(strings.Join(tamperedSameKey, "\n") + "\n")
+	sameKeyRollout := CodexRollout{Directory: rollout.Directory, FileName: rollout.FileName, Data: sameKeyBytes}
+	sameKeyRoundTrip := compareCodexRoundTrip(rollout,
+		Conversation{Messages: codexReadBackMessages(t, sameKeyRollout)}, sameKeyBytes)
+	callsReported, resultsReported := false, false
+	for _, difference := range sameKeyRoundTrip.differences {
+		if strings.Contains(difference, categoryToolCall) {
+			callsReported = true
+		}
+		if strings.Contains(difference, categoryToolResult) {
+			resultsReported = true
+		}
+		if strings.Contains(difference, callInput) || strings.Contains(difference, extraCommand) {
+			t.Errorf("same-key object form: difference = %q, want the extra invocation named without its "+
+				"text", difference)
+		}
+	}
+	if !callsReported {
+		t.Errorf("same-key object form: differences = %q, want the call the file's own duplicate "+
+			"`function_call` states and the document does not: an undecodable envelope's id still states "+
+			"an invocation, and the fold may not take units the file's own records do not account for",
+			sameKeyRoundTrip.differences)
+	}
+	if !resultsReported {
+		t.Errorf("same-key object form: differences = %q, want the output the read-back attached to the "+
+			"duplicate occurrence reported: the document wrote it for the call item it states",
+			sameKeyRoundTrip.differences)
+	}
 }
 
 // TestCodexRoundTripCountsWhatTheReaderProjectsAway pins the two shapes of a written dialogue message
