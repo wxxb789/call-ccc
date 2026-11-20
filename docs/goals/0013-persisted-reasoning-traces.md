@@ -1,7 +1,7 @@
 # 0013 — Explore controlled edits to persisted reasoning traces
 
 **Status:** Provisional — refine before activation.  
-**Prerequisite:** [0009 — Select which recorded context crosses a harness boundary](0009-selective-context.md). Independent of 0010–0012.
+**Prerequisite:** [0009 — Select which recorded context crosses a harness boundary](0009-selective-context.md), then the four follow-up route increments that carry 0009's selection seam to its other routes (the 2026-11-20 fork-A sequencing; see [the index](README.md)). Independent of 0010–0012.
 
 ## Intended advance
 
