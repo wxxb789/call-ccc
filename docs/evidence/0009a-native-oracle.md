@@ -261,8 +261,8 @@ What each answer fixed, and why the rule is the one that got stated:
 | --- | --- |
 | 25/25 sessions open with `session_meta`, and every one of the 25 files holds exactly one | `oracle.session-meta` (first and only) |
 | `id`, `originator` and `cli_version` on 25/25 (`source` too — but it is an *object* on the five subagent sessions, so it is not required to be a string) | `oracle.session-meta-members` names these three and not `source` |
-| envelope types are exactly these eight | `oracle.record-type`'s closed set; payload types are open and measured (the two counters above), and the oracle enumerates none of them but the ones it reads |
-| every message's content blocks are `input_text`/`output_text`, the two types the carried reader reads text from (`internal/parser/codex.go`'s `extractCodexTextBlocks`) | `oracle.message` |
+| envelope types are exactly these eight | the 25-session sample's own count; `oracle.record-type`'s set is the version's persisted vocabulary (its `RolloutItemWire` enum), so the types this sample happened not to carry — `retained_context` among them — validate too (the review round r2 finding's correction). Payload types are open and measured (the two counters above), and the oracle enumerates none of them but the ones it reads |
+| every message's content blocks are `input_text`/`output_text`, the two types a native message carries (`codex-rs/protocol/src/models.rs`'s `ContentItem`); the carried reader also reads a third spelling, `text` (`internal/parser/codex.go`'s `extractCodexTextBlocks`) | `oracle.message` requires the native two; the third spelling is refused as a line the native decoder cannot read, while the receipt-facing identity still reads it — pinned by the same-receipt mutation `a block typed with the reader's spelling the format lacks` (review round r2's finding) |
 | no `user_message`/`agent_message` event holds a blank or non-string `message` | `oracle.event-message` |
 | no record's instant precedes the record before it (over 4 075 records) | `oracle.clock` |
 | every call id is answered exactly once, none repeats, no output names an absent call, and no output stands before its call | `oracle.call-pairing` |
@@ -272,26 +272,30 @@ What each answer fixed, and why the rule is the one that got stated:
 
 ## 1. The oracle, its rule registry, and the writer's own bytes (D1)
 
-The registry is `ORACLE_RULES` — fourteen ids, one sentence each in the checker:
+The registry is `ORACLE_RULES` — fifteen ids, one sentence each in the checker:
 
 `oracle.jsonl-objects`, `oracle.envelope`, `oracle.record-type`, `oracle.session-meta`,
 `oracle.session-meta-members`, `oracle.clock`, `oracle.message`, `oracle.event-message`,
-`oracle.call-pairing`, `oracle.receipt`, `oracle.plan-emitted`, `oracle.plan-accounted`,
-`oracle.plan-order`, `oracle.plan-pairs`.
+`oracle.call-pairing`, `oracle.call-members`, `oracle.receipt`, `oracle.plan-emitted`,
+`oracle.plan-accounted`, `oracle.plan-order`, `oracle.plan-pairs`.
 
-Nine are structural (the artifact alone), one is the receipt's own schema, and four are stated over
+Ten are structural (the artifact alone), one is the receipt's own schema, and four are stated over
 the artifact and an explicit manifest receipt. Where a plan is compared, the artifact's occurrences
 are read in both dialogue channels (the model-visible `response_item` and the turn-view `event_msg`)
 and in the receipt's own order, and the shapes whose receipt-facing identity the artifact's own bytes
-cannot state (a boundary's `replacement_history`, a boundary whose `message` member is present but not
-a string, a call's two or non-string recorded-input members, a result's non-string recorded-text
-member, a `message` whose `role` is outside the receipt's vocabulary, a `session_meta` carrying
-`forked_from_id`) are refused rather than modelled.
+cannot state (a boundary's `replacement_history` or `retained_context`, a record type whose payload
+carries dialogue no occurrence kind can name — `retained_context`, `inter_agent_communication`,
+`realtime_item` — a boundary whose `message` member is present but not a string, a call's two or
+non-string recorded-input members, a result's non-string recorded-text member, a `message` whose
+`role` is outside the receipt's vocabulary, a `session_meta` carrying `forked_from_id`) are refused
+rather than modelled.
 
 ### 1.1 The closed equality, executed
 
 ```
 $ python3 scripts/codex-native-check.py --selftest-mutations
+oracle.selftest: oracle.call-members — a call's recorded input renamed to the other family's member: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
+oracle.selftest: oracle.call-members — a call output without its `output` member: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — an output naming no call: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — a call id carried twice: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — an output written before its call: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
@@ -315,6 +319,7 @@ oracle.selftest: oracle.jsonl-objects — a line holding a member name twice: po
 oracle.selftest: oracle.jsonl-objects — two call ids distinct to Python and one to the read: positive PASS, negative FAIL (oracle.jsonl-objects cited), --disable-rule PASS
 oracle.selftest: oracle.message — a message with no content: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a block the oracle does not read: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
+oracle.selftest: oracle.message — a block typed with the reader's spelling the format lacks: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a message whose text is blank: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a message with no role: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a block whose text is not a string beside a valid one: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
@@ -322,6 +327,8 @@ oracle.selftest: oracle.plan-accounted — an occurrence the plan marks omitted 
 oracle.selftest: oracle.plan-accounted — an occurrence the plan names nowhere: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary the plan names nowhere: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary carrying the dialogue the plan omits: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
+oracle.selftest: oracle.plan-accounted — a boundary's retained checkpoint carrying the dialogue the plan omits: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
+oracle.selftest: oracle.plan-accounted — a retained_context record carrying the dialogue the plan omits: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary whose summary member is not a string: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a message role the receipt's vocabulary cannot name: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — an omitted message that survives in the turn view: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
@@ -345,7 +352,7 @@ oracle.selftest: oracle.session-meta — a record standing before the metadata: 
 oracle.selftest: oracle.session-meta-members — an empty id: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
 oracle.selftest: oracle.session-meta-members — no cli_version: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
 oracle.selftest: oracle.session-meta-members — no originator: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
-oracle.selftest: PASS — 14 rule(s), 53 fixture pair(s): positive PASS, negative FAIL (each citing its own rule), --disable-rule PASS
+oracle.selftest: PASS — 15 rule(s), 58 fixture pair(s): positive PASS, negative FAIL (each citing its own rule), --disable-rule PASS
 $ echo $?
 0
 ```
@@ -382,6 +389,17 @@ $ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-
 oracle: PASS — 12 record(s), 5 occurrence(s)
 ```
 
+The fixtures' record payloads are shapes Codex 0.170.0's own decoder accepts, not only the envelopes
+this oracle reads (review round r2's finding 5). The fixture stated a token-usage record carrying
+`thread_id`, `turn_id` and an empty `usage` object — missing `session_id`, `root_turn_id`,
+`response_id`, `turn_token_usage`, `thread_token_usage` and the `i64`s each `TokenUsage` requires — a
+token-count event whose `TokenUsageInfo` was incomplete the same way, and two `turn_context` payloads
+carrying neither `approval_policy` nor `model` nor a `permission_profile`/`sandbox_policy`, so the
+native reader would have skipped those lines. Every payload now states the members the pin's own
+definitions require (`codex-rs/protocol/src/protocol.rs`'s `TokenUsageRecord`, `TokenUsage` and
+`TokenUsageInfo`, and `TurnContextItem`'s wire decoder with its legacy `sandbox_policy` arm), so the
+positive corpus is not certified by lines the native decoder discards.
+
 The plan comparison has teeth: the *full* artifact against the *reduced* plan — the turn the plan
 marks omitted still stands in the artifact, in both dialogue channels — is refused, one finding per
 record, each naming the channel:
@@ -407,7 +425,7 @@ committed fixtures and the runs above re-derive from bytes.
 
 ### 1.3 The corpus
 
-`ORACLE_MUTATIONS` holds 53 fixture pairs across the 14 rules; each pair names its fixture (and its
+`ORACLE_MUTATIONS` holds 58 fixture pairs across the 15 rules; each pair names its fixture (and its
 manifest receipt where the rule needs one) and a change that must turn exactly its own rule red and no
 other, which is what makes a report a reading of one defect rather than a net. Every pair's three arms
 are read through the shipped command's own `--validate`/`--receipt`/`--disable-rule` path, on the
@@ -486,9 +504,9 @@ the conductor's oracle-lock signal is the enforcement, not a command in this tre
 left alone still carried the pre-repair refusal surface into the increment: `docs/harness.md`'s oracle
 paragraphs, the citations manifest's header (`docs/evidence/0009a-citations.tsv`) and this increment's
 plan (`docs/plans/0009a-native-oracle.md`). The increment's own fix pass brings all three to the
-shipped statement — the harness paragraph now names the seven receipt-mode refusals and the
+shipped statement — the harness paragraph now names the receipt-mode refusals and the
 reader-visible projection as the manifest receipt's own statement, the manifest's "deliberately not
-covered" paragraph is rewritten from the shipped corpus (14 rules, 53 fixture pairs), and the plan
+covered" paragraph is rewritten from the shipped corpus (15 rules, 58 fixture pairs), and the plan
 marks its design as the pre-repair revision with its Evidence section pointing at the record's shipped
 sections. No shipped surface still states the removed reader-modelling refusals as the design; the plan's
 pre-repair sections are marked as such and point here. The checker's own
@@ -554,6 +572,25 @@ refusals (`oracle.plan-accounted`; fixtures "a boundary whose summary member is 
 driven through the shipped command's own `--validate`/`--disable-rule` path for every rule
 (`test_the_corpus_arms_run_the_shipped_command_not_the_python_validator`).
 
+**The second post-repair review round (r2)'s five findings.** Three are contract-shaping and kept as
+the rules' own statements: a call whose native payload type states no recorded-input member
+(`arguments` on `function_call`, `input` on `custom_tool_call`) or a result with no `output` — a line
+Codex 0.170.0's decoder refuses and its rollout reader skips — is now refused by the new structural
+`oracle.call-members` (fixtures "a call's recorded input renamed to the other family's member" — pinned
+against the **unchanged** receipt — and "a call output without its `output` member"; the r4 case's
+removed-member rows now cite it); a message block typed `text`, a spelling the version's content-item
+enum does not define, is refused by `oracle.message` while the receipt-facing identity still reads it
+(the same-receipt mutation "a block typed with the reader's spelling the format lacks"); and a
+boundary's `retained_context` checkpoint, or a record of one of the vocabulary's dialogue-bearing types
+(`retained_context`, `inter_agent_communication`, `realtime_item`), is refused where a plan is compared
+(`oracle.plan-accounted`; fixtures "a boundary's retained checkpoint carrying the dialogue the plan
+omits" and "a retained_context record carrying the dialogue the plan omits", beside
+`test_a_retained_checkpoint_or_record_is_refused_with_a_plan`). The remaining two are the vocabulary
+and the corpus: `oracle.record-type`'s set is the version's `RolloutItemWire` vocabulary rather than
+the eight types the 25-session sample happened to carry (`test_the_record_vocabulary_is_the_versions_own`),
+and the positive fixtures' payloads are native-valid rather than lines the native decoder discards
+(§1.2).
+
 ## 6. Citations
 
 `docs/evidence/0009a-citations.tsv` holds this increment's rows: one row per structural oracle rule,
@@ -563,7 +600,7 @@ each naming the existing Go test that already pins the same claim about this tre
 `TestCodexRolloutDoesNotReportOmittedResultsAsCarried`), plus the header's declared list of what is
 deliberately not covered — the receipt half, whose re-derivation is now `--selftest-mutations` (§1.1)
 and the suite's corpus cases, exactly as the manifest states. The required `citations` step verifies
-every row against a running Go test: `docs/evidence/0009a-citations.tsv: 9 row(s) verified` (§7).
+every row against a running Go test: `docs/evidence/0009a-citations.tsv: 10 row(s) verified` (§7).
 
 ## 7. The gate
 
@@ -575,9 +612,9 @@ gate: go=<toolchain> targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 472 tests in 12.787s (rc=0)
+  PASS     selftest Ran 476 tests in 13.516s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 9 row(s) verified
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 10 row(s) verified
   PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 $ echo $?

@@ -21,13 +21,13 @@
 # scripts/gate-targets.txt covers, so a rule whose gate re-derivation is a python case the required
 # `selftest` step runs, or a native harness run, cannot hold one):
 #   oracle.receipt, oracle.plan-emitted, oracle.plan-accounted, oracle.plan-order, oracle.plan-pairs —
-#         the manifest-receipt half (19 of the shipped corpus's 53 fixture pairs). No Go test grounds it,
+#         the manifest-receipt half (21 of the shipped corpus's 58 fixture pairs). No Go test grounds it,
 #         because nothing in this tree produces a receipt yet: the receipt's producer is goal
 #         0009c/0009d (this goal's Non-scope), and the rules are stated over the synthetic receipts
 #         committed with the fixtures. Their re-derivation is the same `selftest` case's mutation table
 #         — `--selftest-mutations` executes it, on every arm through the shipped command's own
 #         `--validate`/`--receipt`/`--disable-rule` path, and the case's bijection asserts it from both
-#         ends (four mutations for `oracle.receipt`, two for `oracle.plan-emitted`, ten for
+#         ends (four mutations for `oracle.receipt`, two for `oracle.plan-emitted`, twelve for
 #         `oracle.plan-accounted`, two for `oracle.plan-order` and one for `oracle.plan-pairs`) —
 #         beside the surviving corpus cases:
 #         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
@@ -44,6 +44,10 @@
 #         result's recorded text written as a non-string member is refused where a plan is compared),
 #         `test_a_boundarys_replacement_history_is_refused_with_a_plan` (a boundary carrying a native
 #         `replacement_history` is refused where a plan is compared),
+#         `test_a_retained_checkpoint_or_record_is_refused_with_a_plan` (a boundary's `retained_context`
+#         checkpoint and a `retained_context`/`inter_agent_communication`/`realtime_item` record — the
+#         vocabulary's dialogue-bearing types — are refused where a plan is compared, an empty
+#         checkpoint member the green control),
 #         `test_a_boundary_with_a_non_string_summary_is_refused_with_a_plan` (a boundary whose
 #         `message` member is present but not a string is refused where a plan is compared; an absent
 #         summary — the empty boundary the plan may name — is the green control),
@@ -91,6 +95,7 @@ oracle.record-type	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracl
 oracle.session-meta	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the exact sequence opens with one `session_meta` and carries no second)
 oracle.session-meta-members	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (its `id`, `originator` and `cli_version` are asserted against the values the conversion used)
 oracle.clock	TestCodexRolloutStampsRecordsInOneOrderedRun	./internal/ccc	0009a-native-oracle.md §1 (every line's timestamp parses as RFC3339Nano and no line goes back in time)
-oracle.message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (each written message is exactly one model-visible record, under its role's own block type, holding its text)
+oracle.message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (each written message is exactly one model-visible record, under its role's own native block spelling (`input_text`/`output_text`), holding its text)
 oracle.event-message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (exactly one `user_message`/`agent_message` event per written message, carrying that message's text)
 oracle.call-pairing	TestCodexRolloutDoesNotReportOmittedResultsAsCarried	./internal/ccc	0009a-native-oracle.md §1 (a result whose call the conversion did not write is not written as an output at all)
+oracle.call-members	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the writer's own `function_call` states its recorded input in `arguments` and its `function_call_output` states its `output`, both asserted verbatim — the members Codex 0.170.0's decoder requires on those payload types)

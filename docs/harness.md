@@ -372,13 +372,16 @@ says so.
   not do the native half says so instead of reporting a pass.
   **The same file carries a second, offline half — the frozen artifact oracle (goal 0009a).**
   `validate_artifact` — reachable as `python3 scripts/codex-native-check.py --validate <artifact>
-  [--receipt <document>] [--json]` — judges a Codex session **artifact** against fourteen stated rules,
+  [--receipt <document>] [--json]` — judges a Codex session **artifact** against fifteen stated rules,
   from the artifact's own bytes and, at most, an explicit **manifest receipt** (the plan's per-occurrence
   dispositions: `emitted` / `omitted` over messages, tool calls, results and compaction boundaries, with a
   tool call's name and recorded input and a tool result's recorded text part of their identities, a
   dialogue message read against both of the artifact's dialogue channels, the emitted order read against
   the receipt's own in both channels, every `compacted` record an occurrence whether or not it carries
-  a summary, a boundary carrying a native `replacement_history` refused where a receipt is compared,
+  a summary, a boundary carrying a native `replacement_history` or `retained_context` refused where a
+  receipt is compared, a record whose `type` the format defines while its payload carries dialogue no
+  occurrence kind can name (`retained_context`, `inter_agent_communication`, `realtime_item`) refused
+  there too,
   a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent
   `agent_message` addressed to the session's own agent path, another payload type carrying a
   `user`/`assistant` role and readable text, an `image_generation_call` — is not an occurrence this
@@ -410,7 +413,11 @@ says so.
   one two JSON readers answer differently — while a receipt, read by this oracle's decoder alone, keeps
   its own reading: a surrogate identity in one is compared and named by digest, not refused;
   every call required to carry the non-empty `name` the carried reader registers a call for and every
-  call output to name a call written before it, and a receipt that declares no
+  call output to name a call written before it, every call and result required to state the member its
+  native payload type carries (`arguments`, `input`, `output` — the decoder requires each and the
+  rollout reader skips a line without it), a message's content blocks required to be the native text
+  spellings (`input_text`/`output_text`; `text` is the carried reader's spelling and a line the native
+  decoder cannot read), and a receipt that declares no
   occurrences refused before any comparison). The identity the receipt is matched on is the member the
   artifact **writes** — a call's `arguments` read exactly as written, so this route's writer's deliberate
   `"{}"` is not the carried read's empty answer — and a call or result substituted under an unchanged
