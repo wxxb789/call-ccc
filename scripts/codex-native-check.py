@@ -840,14 +840,20 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # and so is a duplicate the read suppresses rather than appends: `hasEquivalentCallResultEvent` compares
 # an event's status and its `strings.TrimSpace` content, so two result records under one call id whose
 # recorded texts trim to one are one result to every read, and a receipt naming both certifies a
-# multiplicity no read of the artifact answers (review round r8's finding); and two shapes the read's
-# own bookkeeping places outside what this oracle models are refused beside them — a repeated output
-# under a call whose written name is `apply_patch`, which the read expands into one call per file the
-# patch names (`codexApplyPatchFiles`) and attaches by pending position and fallback, so whether a
-# repetition is suppressed or kept is not answered, and an output whose written `call_id` is the
-# Go-trimmed spelling of two distinct calls the artifact carries, which the read's pending memory
-# (`rememberToolCall` keys the entry by the Go-trimmed id and replaces it; `forgetToolCall` clears one
-# by the written id it is handed) leaves without an established routing (review round r11's findings). A
+# multiplicity no read of the artifact answers (review round r8's finding); and three shapes the
+# read's own bookkeeping places outside what this oracle models are refused beside them — a call whose
+# written name is `apply_patch` whose patch names more than one file, which the read expands into one
+# call per file the patch names (`codexApplyPatchFiles`) before any output is read, so the receipt's
+# single call occurrence cannot count the calls a read answers and the call is refused with its outputs
+# unanswered beside it (review rounds r11 and r12's findings: the repeated output was the first shape
+# and the single output the second — both are the call the receipt cannot count); an output whose
+# written `call_id` is the Go-trimmed spelling of two distinct calls the artifact carries, which the
+# read's pending memory (`rememberToolCall` keys the entry by the Go-trimmed id and replaces it;
+# `forgetToolCall` clears one by the written id it is handed) leaves without an established routing;
+# and a session_meta carrying `forked_from_id`, because the fork gate (`codexForkGate.armFromMeta`)
+# suppresses the replayed records of the parent's turns when that transcript resolves, a parent
+# transcript outside this oracle's input — which records a read answers is not established from the
+# artifact and the receipt (review round r12's findings). A
 # `reasoning` item is not one of these: the reader answers it as a thinking row with an
 # explicitly empty dialogue projection, so it carries no dialogue. The structural half refuses an output
 # written before its owner in either mode: the target's own reader keeps such an event as an unattached
@@ -928,14 +934,18 @@ ORACLE_RULES: dict[str, str] = {
         "whose call the read answers elsewhere (`spawn_agent`'s output links a subagent session and "
         "appends no result; `wait`/`wait_agent` answer per-agent results from the output's own `status` "
         "object — the exec-cell poll reads as an ordinary result and is exempt, and the family is "
-        "decided by the name the read registers for the call, Go-trimmed, so a padded `wait_agent` is "
-        "answered by its trimmed spelling) or one that carries no "
+        "decided by the name the read answers for the output, its pending memory's Go-trimmed spelling "
+        "first and the raw name written beside the call second, so a padded `wait_agent` the memory "
+        "holds is answered by the trimmed spelling while a padded output id, which the memory cannot "
+        "hold, is answered by that raw name) or one that carries no "
         "output a read appends a result from, or one the carried read suppresses as equivalent — the "
         "same status and recorded text after its own trim — to the result the artifact writes before "
-        "it, and a repetition under a call whose written name is `apply_patch` is refused beside them, "
-        "because the read expands that call into one call per file the patch names "
-        "(`codexApplyPatchFiles`) and this oracle does not model which of those calls an output "
-        "attaches to, so whether the repetition is suppressed or kept is not answered; and so is an "
+        "it, and a call whose written name is `apply_patch` whose patch names more than one file is "
+        "refused beside them, because the read expands it into one call per file the patch names "
+        "(`codexApplyPatchFiles`) and the receipt's single call occurrence cannot count the calls a "
+        "read answers; and so is a session_meta carrying `forked_from_id`, because "
+        "the fork gate suppresses the replayed records of a parent transcript outside this oracle's "
+        "input; and so is an "
         "output whose written `call_id` is already the Go-trimmed spelling of two distinct calls the "
         "artifact carries — `rememberToolCall` remembers calls by the trimmed id and replaces the "
         "pending entry `toolCallNameForOutput` routes the output through, so which call, or which arm, "
@@ -994,9 +1004,10 @@ ORACLE_RESULT_ITEMS = ("function_call_output", "custom_tool_call_output")
 #: is compared (`oracle_result_read_violations`). One `wait` shape is exempt: the exec-cell poll, which
 #: `handleFunctionCall` routes as `code_mode_wait` and the output switch answers through the ordinary
 #: arm; `oracle_exec_cell_wait` mirrors that condition. The set is asked of the name the read
-#: **remembers** the call under (`oracle_call_routing_name`: `rememberToolCall` Go-trims the emitted
-#: name, so `" wait_agent "` is routed as `wait_agent`), while the written name stays the occurrence
-#: identity.
+#: **answers for one output** (`toolCallNameForOutput`: the pending memory `rememberToolCall` Go-trims a
+#: call's name into first, then the `callNames` entry written beside the call), so `" wait_agent "` under
+#: an output the memory holds is routed as `wait_agent` while the raw spelling answers an output it does
+#: not; the written name stays the occurrence identity.
 ORACLE_SPECIAL_RESULT_CALLS = ("spawn_agent", "wait", "wait_agent")
 
 #: The `event_msg` payload types that carry one message's text for the harness's own view.
@@ -1854,21 +1865,129 @@ def oracle_call_name(payload: dict) -> str:
     return name if isinstance(name, str) else ""
 
 
-def oracle_call_routing_name(name: str) -> str:
-    """The name the carried read routes a call's output by: the name it remembers the call under.
+def oracle_function_args(payload: dict) -> tuple[object, str]:
+    """The pair `parseCodexFunctionArgs` answers for a call — the value its recorded input parses to
+    (None where the members hold none the read parses) and the raw argument string it falls back to —
+    read the way the carried reader's `gjson` reads the same bytes.
 
-    `handleFunctionCall` registers the emitted name through `rememberToolCall`, which Go-trims it, and
-    `toolCallNameForOutput` answers from that remembered name before the raw `callNames` entry written
-    beside it — so a name written with surrounding whitespace is routed as its trimmed spelling, the
-    `wait_agent` branch for `" wait_agent "` (review round r10's finding: the padded name left the
-    oracle on the ordinary arm while the read answered the call's plain-text output with **no** result,
-    the wait branch's `status` gate returning before recording one). Where Go's trim leaves nothing
-    (`" "`), the registration stores no name and the read falls back to the raw spelling, which is what
-    this answers. The **written** name stays the occurrence identity (`oracle_call_name`), not this
-    routing spelling: the read answers the call itself with the name the record wrote.
+    The member preference, the blank skip and the fallback are the read's own: a member's string is
+    Go-trimmed, parsed when it is valid JSON and answered as the raw string when it is not (the only
+    path `codexApplyPatchText` can fall back from), an object or array is the decoded value, and a
+    value of another family is its JSON spelling, which is what `gjson`'s `Raw` holds for it. Validity
+    is `gjson.Valid`'s: standard JSON syntax, with the `NaN`/`Infinity` literals Python's own reader
+    would take refused (measured: `gjson.Valid("NaN")` is false, §0 of the evidence record) and a
+    string nested past this host's parser read as the raw fallback the read's own bound answers, and
+    the parse keeps a repeated member name's **first** value, which is the reader's answer for one
+    (`_oracle_first_members`, measured on the carried `gjson` v1.20.0).
     """
-    registered = oracle_go_trim(name)
-    return registered if registered != "" else name
+    for member in ("arguments", "input"):
+        if member not in payload:
+            continue
+        value = payload[member]
+        if isinstance(value, str):
+            trimmed = oracle_go_trim(value)
+            if trimmed == "":
+                continue
+            if not oracle_json_valid(trimmed):
+                return None, trimmed
+            return (json.loads(trimmed, object_pairs_hook=_oracle_first_members), "")
+        if isinstance(value, (dict, list)):
+            if not value:
+                continue
+            return value, ""
+        raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        if raw == "":
+            continue
+        return json.loads(raw), ""
+    return None, ""
+
+
+def oracle_json_valid(text: str) -> bool:
+    """Whether `text` is JSON the carried reader's `gjson.Valid` answers true for: standard syntax
+    (a repeated member name included), no `NaN`/`Infinity`/`-Infinity` literal, and nested no deeper
+    than this host's own parser reads — a string past that bound is answered invalid here, which takes
+    the read's raw-argument fallback rather than a parse this oracle cannot make.
+    """
+    try:
+        json.loads(text, parse_constant=_reject_json_constant)
+    except (ValueError, RecursionError):
+        return False
+    return True
+
+
+def oracle_arg_string_value(args: object, member: str) -> str:
+    """One parsed args member as `codexArgString` reads it: a string as written, another family's own
+    JSON spelling (`gjson`'s `Raw`), and `null` or an absent member as the empty string.
+    """
+    if not isinstance(args, dict) or member not in args:
+        return ""
+    value = args[member]
+    if isinstance(value, str):
+        return value
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return "" if raw in ("", "null") else raw
+
+
+def oracle_apply_patch_files(payload: dict) -> list[str]:
+    """The distinct files the patch an `apply_patch` call carries names, mirroring
+    `codexApplyPatchFiles` over this oracle's own reading of the recorded input
+    (`oracle_function_args`): the `patch` member of the parsed args, or the raw argument string when
+    the parsed patch is empty and the raw string carries `*** Begin Patch`.
+
+    A file is a line beginning with one of the four markers `extractPatchedFiles` reads, its path
+    Go-trimmed and deduplicated in patch order — the count is what decides whether the carried read
+    expands the call into one call per file (`handleFunctionCall` expands only a non-empty answer), so
+    the marker set and the deduplication are the read's own.
+    """
+    if oracle_call_name(payload) != "apply_patch":
+        return []
+    parsed, raw = oracle_function_args(payload)
+    patch = oracle_arg_string_value(parsed, "patch")
+    if patch == "" and "*** Begin Patch" in raw:
+        patch = raw
+    files: list[str] = []
+    for line in patch.split("\n"):
+        for prefix in ("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "):
+            if not line.startswith(prefix):
+                continue
+            file = oracle_go_trim(line[len(prefix):])
+            if file != "" and file not in files:
+                files.append(file)
+            break
+    return files
+
+
+def oracle_fork_lineage_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.plan-accounted`, for a session_meta naming an explicit fork parent.
+
+    `codexForkGate.armFromMeta` records `forked_from_id` and, when the referenced parent transcript
+    resolves, suppresses every record before the first turn id absent from that parent
+    (`internal/parser/codex.go`: the child's own `session_meta`, then the copied parent's turns and
+    messages, are replayed history). Whether that parent resolves — it is another session file, read
+    through the sessions directory — is not part of this oracle's input, so whether a read answers the
+    artifact's records at all is not established from the artifact and receipt alone: a plan that marks
+    those records `emitted` would certify history a read may suppress. Refused wherever a plan is
+    compared rather than read under either answer; silent without one, because a native forked rollout
+    may legitimately carry the member and the structural rules state nothing about suppression. The
+    parent id is not echoed: it is an artifact-controlled string, and the refusal needs to name only
+    the member (`oracle_digest` names identities the two documents are matched on).
+    """
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "session_meta":
+            continue
+        payload = oracle_payload(record)
+        parent = payload.get("forked_from_id")
+        if not isinstance(parent, str) or oracle_go_trim(parent) == "":
+            continue
+        violations.append(Violation("oracle.plan-accounted", line,
+                                    "`session_meta.forked_from_id` names a fork parent: the carried "
+                                    "read's fork gate suppresses the records of the parent's turns "
+                                    "when that transcript resolves (`codexForkGate.armFromMeta`), and "
+                                    "whether it resolves is not part of this oracle's input — which "
+                                    "records a read answers is not established, so the receipt cannot "
+                                    "certify them"))
+    return violations
 
 
 def oracle_call_input_member(payload: dict) -> tuple[str, object] | None:
@@ -2375,10 +2494,13 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
       none — so the receipt's `call_id`/recorded-text identity is not the result a read answers. One
       `wait` shape is exempt: the exec-cell poll the read routes as an ordinary result
       (`oracle_exec_cell_wait` mirrors `handleFunctionCall`'s condition). The family is decided by the
-      name the read remembers the call under, not the name as written: `rememberToolCall` Go-trims it,
-      so a padded `wait_agent` is routed by the read as one (review round r10's finding —
-      `oracle_call_routing_name` mirrors that answer, while the written name stays the occurrence
-      identity);
+      name the read answers for the output, not the name as written: `toolCallNameForOutput` asks the
+      pending memory `rememberToolCall` keys by the Go-trimmed id first and the `callNames` entry
+      written beside the call second — so a padded `wait_agent` under an output the pending memory
+      holds is routed as its trimmed spelling (review round r10's finding), while an output whose
+      written id that memory does not hold — a padded id can never be one of its keys — is routed by
+      the name written beside its own call, raw spelling included (review round r12's finding: a
+      padded id **and** a padded name together are answered by the raw name, the ordinary arm);
     - a duplicate the read suppresses rather than appends: `CodexCollectingSink.appendToolResultEvent`
       drops an event whose status and `strings.TrimSpace` content equal an event the call already
       answers (`hasEquivalentCallResultEvent`), so two result records under one call id whose recorded
@@ -2397,17 +2519,20 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
       spelling can be in this state — a padded output id is answered by the name written beside its own
       call (`callNames`), which the read consults before anything else the padded id could match — so
       the refusal is scoped to it;
-    - a repeated output under a call whose **written** name is `apply_patch`: `handleFunctionCall`
-      expands such a call into one call per file the patch names (`codexApplyPatchFiles`), the first
-      output attaches where the pending position points — the first file's call — and every later one
-      falls back to the last file's call (`CodexCollectingSink`), so a repetition the read trims to one
-      text may be two kept results on two calls rather than the one `hasEquivalentCallResultEvent`
-      suppresses. Which of those the read answers depends on the files the patch names, a projection
-      this oracle does not model, so the repetition is refused rather than answered either way (review
-      round r11's finding: a two-file `apply_patch` followed by two identical outputs keeps both, while
-      the per-call-id comparison read them as one suppressed duplicate). The gate is the written
-      spelling, because it is the read's own: a padded `" apply_patch "` is not expanded by
-      `handleFunctionCall`, so its repetition is suppressed like any ordinary call's;
+    - a call whose **written** name is `apply_patch` and whose patch names more than one file:
+      `handleFunctionCall` expands such a call into one call per file the patch names
+      (`codexApplyPatchFiles`) before any output is read, so a read of the artifact answers that many
+      calls under one call id while the receipt's single call occurrence names one, and this oracle does
+      not model the expansion — the call is refused where a plan is compared, and its outputs are not
+      answered beside it: one finding for the one defect (review round r11's finding was the repeated
+      output under one such call; round r12's is the single output — both are the call the receipt
+      cannot count). A padded `" apply_patch "` is not expanded by `handleFunctionCall`, so it is an
+      ordinary call whose repetitions the suppression rule answers;
+    - a session_meta carrying `forked_from_id`: the carried read's fork gate suppresses the replayed
+      records of the parent's turns when that transcript resolves, and whether it resolves is not part
+      of this oracle's input — which records a read answers is not established from the artifact and
+      the receipt, so a plan cannot certify them (review round r12's finding; see
+      `oracle_fork_lineage_violations`);
 
     Refused only where a plan is compared: a native rollout may legitimately carry these shapes
     (measured: twelve blank outputs across Codex 0.170.0's own 25 sessions, §0 of the evidence record;
@@ -2417,7 +2542,12 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
     written before it, the ownership `oracle.call-pairing` states: an output naming an absent call, or
     one written before it, is that rule's finding and is left alone here.
     """
-    owners: dict[str, tuple[str, bool, bool]] = {}
+    owners: dict[str, tuple[str, bool]] = {}
+    #: The name the read has remembered each call under, keyed by its Go-trimmed id and Go-trimmed
+    #: too: `rememberToolCall` sizes its pending memory from those two spellings, and
+    #: `toolCallNameForOutput` asks that memory first. State here is what the read's own calls and
+    #: outputs left behind in record order, `defer forgetToolCall` included.
+    pending: dict[str, str] = {}
     #: The written id the read has remembered under each Go-trimmed id, with its line, and the first
     #: collision under one: `toolCallNameForOutput` routes a trimmed output id through the pending memory
     #: `rememberToolCall` keys by the trimmed id, so once two distinct written ids trim to one key, no
@@ -2442,15 +2572,55 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
                 trimmed_ids[trimmed] = (call_id, line)
             elif carried[0] != call_id:
                 collisions.setdefault(trimmed, (carried[0], carried[1], call_id, line))
-            owners[call_id] = (oracle_call_routing_name(name),
-                               name == "wait" and oracle_exec_cell_wait(payload),
-                               name == "apply_patch")
+            # The name the read answers this call's output by: `callNames` holds the emitted name
+            # with the exec-cell reroute applied (`handleFunctionCall`), and `rememberToolCall` Go-trims
+            # what it stores — a padded name is routed as its trimmed spelling, and a name Go's trim
+            # empties is not stored at all, so the read falls back to the raw spelling (review round
+            # r10's finding, and round r12's: the raw spelling is what answers an output the pending
+            # memory does not hold, which is every output whose written id is not the trimmed id).
+            output_name = name
+            if name == "wait" and oracle_exec_cell_wait(payload):
+                output_name = "code_mode_wait"
+            # Whether the read answers outputs under this call translates the receipt's identities at
+            # all: a multi-file `apply_patch` expands into one call per file (`codexApplyPatchFiles`),
+            # so the receipt's single call occurrence cannot count the calls a read answers. Refused
+            # here, once, at the call the receipt names; its outputs are not answered either.
+            refused = False
+            files = oracle_apply_patch_files(payload)
+            if len(files) > 1:
+                refused = True
+                violations.append(Violation("oracle.plan-accounted", line,
+                                            f"the call {oracle_digest(call_id)}'s written name is "
+                                            f"`apply_patch` and the patch it carries names "
+                                            f"{len(files)} distinct files: "
+                                            f"the carried read expands such a call into one call "
+                                            f"per file the patch names (`codexApplyPatchFiles`), so "
+                                            f"a read of the artifact answers {len(files)} calls "
+                                            f"under this one call id while the receipt's single "
+                                            f"call occurrence names one — an expansion this oracle "
+                                            f"does not model, and the receipt cannot account for "
+                                            f"it"))
+            owners[call_id] = (output_name, refused)
+            remembered = oracle_go_trim(output_name)
+            if trimmed != "" and remembered != "":
+                pending[trimmed] = remembered
             continue
         if item not in ORACLE_RESULT_ITEMS:
             continue
         call_id = payload.get("call_id")
         if not isinstance(call_id, str):
             continue  # an output whose call_id is not a string: the pairing rule's own finding
+        owner = owners.get(call_id)
+        # `toolCallNameForOutput`, in its own order: the pending memory keyed by the Go-trimmed id
+        # answered for an output whose written id is exactly that key, and `callNames` — the name
+        # written beside the call — for every other spelling, a padded output id included. Computed
+        # before the forget below, because the read routes this output before its deferred forget runs.
+        routed = pending.get(call_id, owner[0] if owner is not None else "")
+        if call_id != "" and call_id == oracle_go_trim(call_id):
+            # `handleFunctionCallOutput`'s `defer b.forgetToolCall(callID)`: the pending entry keyed by
+            # this written id is gone before the next record, which is what routes a second output
+            # under the same call by `callNames` instead.
+            pending.pop(call_id, None)
         collision = collisions.get(call_id) if call_id == oracle_go_trim(call_id) else None
         if collision is not None:
             first_id, first_line, second_id, second_line = collision
@@ -2469,7 +2639,11 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
         owner = owners.get(call_id)
         if owner is None:
             continue  # an output before its call, or with none: the pairing rule's own finding
-        routed, exec_cell, expandable = owner
+        if owner[1]:
+            # The call is refused at its own record: the read answers calls under it that the receipt's
+            # one occurrence cannot count (an `apply_patch` the read expands), so its outputs are not
+            # answered either — one finding for the one defect.
+            continue
         output = payload.get("output")
         if "output" not in payload or (isinstance(output, str) and oracle_blank(output)):
             violations.append(Violation("oracle.plan-accounted", line,
@@ -2480,7 +2654,7 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
                                         "receipt's `call_id`/recorded-text identity names no result a "
                                         "read answers"))
             continue
-        if routed not in ORACLE_SPECIAL_RESULT_CALLS or exec_cell:
+        if routed not in ORACLE_SPECIAL_RESULT_CALLS:
             # The ordinary arm's own event: its `Content` is the recorded text after Go's trim
             # (`parseCodexFunctionOutput` reads a string member trimmed, and `TrimSpace` is applied
             # again), and its `Status` is empty for the `function_call_output` family or the custom
@@ -2500,21 +2674,6 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
             previous_line = next((earlier for earlier, earlier_signature in held
                                   if earlier_signature == signature), None)
             if previous_line is not None:
-                if expandable:
-                    violations.append(Violation("oracle.plan-accounted", line,
-                                                f"the artifact holds a second result under call "
-                                                f"{oracle_digest(call_id)} whose recorded text is the "
-                                                f"text the result on line {previous_line} answers after "
-                                                f"the read's own trim, and the call's written name is "
-                                                f"`apply_patch`: the carried read expands such a call "
-                                                f"into one call per file the patch names "
-                                                f"(`codexApplyPatchFiles`), attaches the first output "
-                                                f"by the call's pending position and each later one to "
-                                                f"the last file's call, so whether a read drops this "
-                                                f"event as equivalent or keeps it on a distinct call is "
-                                                f"a question this oracle does not model — the shape is "
-                                                f"refused rather than answered either way"))
-                    continue
                 violations.append(Violation("oracle.plan-accounted", line,
                                             f"the artifact holds a second result under call "
                                             f"{oracle_digest(call_id)} whose recorded text is the text "
@@ -2869,6 +3028,7 @@ def oracle_reading(text: str, receipt: object = _NO_RECEIPT
             view_occurrences = oracle_view_occurrences(records)
             violations += oracle_plan_violations(plan, occurrences, view_occurrences)
             violations += oracle_plan_order_violations(plan, occurrences, view_occurrences)
+            violations += oracle_fork_lineage_violations(records)
             violations += oracle_boundary_history_violations(records)
             violations += oracle_unaccounted_occurrence_violations(records)
             violations += oracle_unmodelled_shape_violations(records)

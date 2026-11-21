@@ -397,19 +397,22 @@ says so.
   carried read answers), an object-valued `content` a read iterates the member values of — refused there
   too, and so is a result the carried read does not establish — one whose call the read answers elsewhere
   (`spawn_agent` appends no result; `wait`/`wait_agent` answer per-agent results from the output's own
-  `status` object, the exec-cell poll excepted, and the family is asked of the name the read registers
-  for the call — Go-trimmed by `rememberToolCall`, so a padded `wait_agent` is answered by the read as
-  one), one carrying no output a read appends a result from, or
+  `status` object, the exec-cell poll excepted, and the family is asked of the name the read answers for
+  one output — the pending memory's Go-trimmed spelling first, then the raw name written beside the call,
+  so a padded `wait_agent` the memory holds is answered as one while a padded output id, which the memory
+  cannot hold, is answered by that raw name), one carrying no output a read appends a result from, or
   one whose recorded text is the text of the result written before it after the read's own trim
   (`hasEquivalentCallResultEvent` suppresses the duplicate: two raw texts that trim to one are one result
   to every read, and a receipt naming both certifies a multiplicity no read answers), or one whose
   written `call_id` is already the Go-trimmed spelling of two distinct calls the artifact carries (the
   read's pending memory is keyed by the trimmed id and replaced by `rememberToolCall`, so which call, or
   which arm, a read answers the output by is not established; a padded output id is answered by the name
-  written beside its own call and is not in this class), and a repetition under a call whose written
-  name is `apply_patch` is refused as a shape the oracle does not model — the read expands the call into
-  one call per file the patch names, so whether the repetition is suppressed or kept on a distinct call
-  is left unanswered —
+  written beside its own call and is not in this class), and a call whose written name is `apply_patch`
+  whose patch names more than one file is refused as a shape the oracle does not model — the read expands
+  it into one call per file the patch names before any output is read, so the receipt's single call
+  occurrence cannot count the calls a read answers, and a `session_meta` carrying `forked_from_id` is
+  refused beside them, because the read's fork gate suppresses the replayed records of a resolved
+  parent's turns and a parent transcript is outside the oracle's input —
   a line whose object writes a member name twice, or a receipt document whose object does, or an
   artifact line holding an unpaired surrogate escape (`gjson` answers U+FFFD where this decoder answers
   the code point, so two distinct spellings would be one string to a read — measured on the carried gjson
