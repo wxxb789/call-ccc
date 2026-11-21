@@ -2953,8 +2953,10 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Reversal:** delete the check and its tests in one increment; the branch-switch refusal it pins goes with
   them (the fixture covers three targets), so a continuation on an abandoned branch becomes possible again —
   the cost is a **weakened** refusal, not a larger one — and the ownership rule then reads without exception.
-- **Settled by:** an owner sentence, or a Pi-side read that answers the leaf question natively — in which case
-  the debt is discharged by **replacing** the walk, not by dropping it.
+- **Settled by:** an owner sentence, or a Pi-side read that answers the leaf question natively **and** preserves
+  the guard's other tested outcomes — the refusal of an uncarried active-path entry, the
+  `source_system_records` count, and the warning-with-no-leaf result where no source file stands behind the
+  read — in which case the debt is discharged by **replacing** the walk, not by dropping it.
 
 ## Q-0008-10 — The OpenCode source oracle's expectations are a Python reconstruction of the carried reader
 
@@ -3053,3 +3055,21 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   fixture whose first user record carries `isMeta`, and re-pin the arm's cases.
 - **Settled by:** the increment that next touches `scripts/pi-native-check.py`'s Claude arm, or an owner
   sentence.
+
+## Q-0003-12 — The Codex read-back pairing attributes carried text to written records by a local heuristic
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced by the carried reader's own
+  answer or an authoritative read).
+- **Question:** `internal/ccc/route_shared.go`'s `pairReadBackMessage` matches the Codex read-back's text to the
+  records this build wrote by a **same-role subsequence** heuristic. That is a local rule about how the carried
+  reader renders a record — the judgment the ownership rule gives to the reader — used where a projection cannot
+  establish the pairing (both prompts projected away). It is what the swapped-prompt regression depends on.
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace it now — not in this
+  increment, which changes no Go file; (c) treat it as exempt because the compared bytes are ours — refused: the
+  *comparison* is ours, the *attribution* is a claim about the reader.
+- **Default taken:** (a). Named separately so the emitted-byte exemption above stays narrow, and so the pairing
+  heuristic is visible to whoever next touches the installed-dialogue verification.
+- **Reversal:** take the pairing from an authoritative read (the read's own per-record answers) instead of a
+  subsequence match, keep a case that fails when the attribution is wrong (the swapped-prompt regression or an
+  equivalent), and only then delete the heuristic.
+- **Settled by:** the increment that next touches `pairReadBackMessage`, or an owner sentence.
