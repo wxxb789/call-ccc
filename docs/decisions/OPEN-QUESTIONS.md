@@ -2969,7 +2969,35 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Default taken:** (a). Recorded here rather than silently, so the divergence between the check's refusal
   (`Q-0008-06`'s default taken) and the reader's own reading of the same record is visible to the next lane
   that touches the OpenCode source direction.
-- **Reversal:** an increment that drives those expectations from `internal/parser/opencode_v2.go`'s own output
-  (or from the check's own conversion read-back) and re-pins the three refusal cases; the debt then becomes a
-  rule of the owned side.
+- **Reversal:** an increment that takes those expectations from an **independent AgentsView read of the
+  OpenCode source** — not from the conversion's own read-back, which opens the *installed* artifact
+  (`internal/ccc/route_shared.go`) and therefore cannot show what the source supplied — and keeps that
+  read-back on the **observed** side of the comparison, re-pinning the three refusal cases; the debt then
+  becomes a rule of the owned side.
 - **Settled by:** the increment that next touches `scripts/opencode-native-check.py`, or an owner sentence.
+
+## Q-0005-19 — The Pi/OMP target-side replay prediction is a local model of the target's own loader
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced the moment the loader answers
+  the same question itself).
+- **Question:** `internal/ccc/pi_verify.go` walks the converted file's `parentId` chain, chooses the active
+  compaction boundary and **predicts** the roles the native loader should return; the Pi and OMP verifiers then
+  accept or reject a native load by that prediction (`pi_verify.go`'s load verdict, `omp_verify.go`'s), and the
+  two Python native checks mirror it (`scripts/pi-native-check.py`, `scripts/omp-native-check.py`). That is a
+  local model of the target harness's own replay — the judgment the binding ownership rule gives to the
+  harness. May a verifier keep predicting what the loader will return?
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace the prediction now with
+  the loader's own answer — not in this increment, which changes no verifier and no script, and a change to a
+  verifier belongs to its own increment with its own two-stage review; (c) keep predicting without disclosing
+  it — refused.
+- **Default taken:** (a). The prediction is what lets the check **refuse** a load that looks natively loadable:
+  the loader's own answer alone cannot distinguish "the loader returned the wrong roles" from "we predicted
+  wrongly", so the prediction is the only side that can name a mismatch. Replacement condition: the loader's
+  own read (the `get_messages`/`get_state`-shaped call both checks already drive against a throw-away copy)
+  answers the role question directly, at which point the prediction is **deleted**, not kept as a second
+  opinion — a verifier that keeps both would re-derive the judgment the rule gives away.
+- **Reversal:** delete the prediction in one increment and compare the loader's own answer against the
+  converted document's recorded roles; the refusal surface narrows to what the loader itself reports — a
+  **weakened** refusal, not a larger one.
+- **Settled by:** the increment that next touches `internal/ccc/pi_verify.go` / `omp_verify.go`, or an owner
+  sentence.
