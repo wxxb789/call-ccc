@@ -2946,7 +2946,30 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   moves to Pi's own loader (a load/`get_state`-shaped read of the source file) or an authoritative source-side
   read the moment one answers the leaf question. Until then the contradiction is disclosed here rather than
   silently resolved in either direction.
-- **Reversal:** delete the check and its tests in one increment and accept the increased refusal surface; the
-  ownership rule then reads without exception.
+- **Reversal:** delete the check and its tests in one increment; the branch-switch refusal it pins goes with
+  them (the fixture covers three targets), so a continuation on an abandoned branch becomes possible again —
+  the cost is a **weakened** refusal, not a larger one — and the ownership rule then reads without exception.
 - **Settled by:** an owner sentence, or a Pi-side read that answers the leaf question natively — in which case
   the debt is discharged by **replacing** the walk, not by dropping it.
+
+## Q-0008-10 — The OpenCode source oracle's expectations are a Python reconstruction of the carried reader
+
+- **Status:** open (default taken: the check is **declared debt** — kept, not extended, and its expectations
+  move to the carried reader's own output).
+- **Question:** `scripts/opencode-native-check.py` computes the dialogue and tool results it expects from a
+  Python reconstruction of the carried OpenCode reader, and it already answers differently from the reader it
+  models: the check refuses a `shell` record before the import, while the carried reader
+  (`internal/parser/opencode_v2.go`) reads that record as tool-bearing history. The native Codex load check
+  does not resolve that source-side disagreement. May a native check keep its own model of a carried reader
+  where the binding ownership rule gives that judgment to the reader itself?
+- **Options:** (a) keep it as declared debt with a replacement condition — the expectations read from the
+  carried reader's own answer; (b) replace the expectations now with the reader's output — not in this
+  increment, which changes no script, and a change to a native check belongs to its own increment with its own
+  two-stage review; (c) leave the divergence undisclosed — refused.
+- **Default taken:** (a). Recorded here rather than silently, so the divergence between the check's refusal
+  (`Q-0008-06`'s default taken) and the reader's own reading of the same record is visible to the next lane
+  that touches the OpenCode source direction.
+- **Reversal:** an increment that drives those expectations from `internal/parser/opencode_v2.go`'s own output
+  (or from the check's own conversion read-back) and re-pins the three refusal cases; the debt then becomes a
+  rule of the owned side.
+- **Settled by:** the increment that next touches `scripts/opencode-native-check.py`, or an owner sentence.
