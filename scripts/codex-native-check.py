@@ -65,7 +65,9 @@ untouched by it — they are the acceptance path this increment must leave repor
 no file is edited and no shell surgery is needed — and `--selftest-mutations` executes the registry
 against its mutation corpus instead of an artifact: for every rule id `ORACLE_RULES` declares, its
 positive fixture passes, its negative fixture fails citing that rule alone, and the same fixture passes
-with that rule disabled, so the declared ids and the tested ids are one closed set. Neither mode needs
+with that rule disabled — each of the three arms read through this command's own
+`--validate`/`--receipt`/`--disable-rule` path, on the mutated artifact and receipt written under a
+scratch directory — so the declared ids and the tested ids are one closed set. Neither mode needs
 Codex, a Go toolchain or a source session.
 
 `--model-provider`/`--model` name what the throw-away Codex configuration should use, because the
@@ -87,8 +89,10 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import datetime
 import hashlib
+import io
 import json
 import os
 import queue
@@ -821,7 +825,10 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # plan by carrying no `message`; and where a plan is compared, a boundary that carries a native
 # `replacement_history` is refused as well, because dialogue that member holds is dialogue the plan
 # cannot account for — the receipt's boundary identity is the summary text alone, and this route's
-# writer emits only the summary.
+# writer emits only the summary. A boundary whose `message` member is *present* but not a string is
+# refused where a plan is compared too: the member's own bytes state that a summary is there and is
+# not text, and naming the boundary by the empty text it reads as would certify a summary the
+# artifact does not hold (an **absent** member is the empty boundary the plan can name).
 #
 # **What the oracle decides, and what it does not (the mechanism repair).** The oracle's subject is the
 # artifact's own structure: its JSONL framing, its envelope schema, its record vocabulary, its ordering,
@@ -843,10 +850,15 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # artifact's own bytes cannot state: a call whose recorded input is written as two members (`arguments`
 # and `input`) or as a member that is not a string, and a result whose recorded text is written as a
 # non-string member (the receipt's identity members are strings, and a decoded value cannot recover the
-# member's own spelling); and a `session_meta` carrying `forked_from_id`, whose own statement that its
-# history continues another transcript's leaves unstated which of its records are this session's own.
-# Each is silent without a plan — a native rollout may carry the shape, and the structural rules say
-# nothing about it.
+# member's own spelling); a `compacted` record whose `message` member is present but not a string (the
+# receipt's boundary identity is the summary text, and such a member states none); a `response_item`
+# `message` whose `role` is a non-empty string outside the receipt's vocabulary (`user`/`assistant`),
+# because the receipt names a message by its role and a record in any other role carries dialogue no
+# plan entry can account for — the role is the artifact's own bytes and not a projection of a read; and
+# a `session_meta` carrying `forked_from_id`, whose own statement that its history continues another
+# transcript's leaves unstated which of its records are this session's own. Each is silent without a
+# plan — a native rollout may carry the shape (the host's own sessions hold 57 `developer`-role
+# messages, §0 of the evidence record), and the structural rules say nothing about it.
 #
 # The structural half refuses an output written before its owner in either mode: this route's writer
 # never emits one there.
@@ -904,10 +916,12 @@ ORACLE_RULES: dict[str, str] = {
         "`omitted` or names nowhere; a compaction boundary's `replacement_history`; and the shapes whose "
         "receipt-facing identity the artifact's own bytes cannot state — a call whose recorded input is "
         "written as two members (`arguments` and `input`) or as a member that is not a string, a result "
-        "whose recorded text is written as a member that is not a string, and a `session_meta` carrying "
-        "`forked_from_id` — each refused where a comparison runs and silent without one, because a "
-        "native rollout may carry the shape and the structural rules say nothing about it; the plan is "
-        "total, in both of the target's dialogue channels",
+        "whose recorded text is written as a member that is not a string, a `compacted` record whose "
+        "`message` member is present but not a string, a `message` whose `role` is a non-empty string "
+        "outside the receipt's vocabulary, and a `session_meta` carrying `forked_from_id` — each refused "
+        "where a comparison runs and silent without one, because a native rollout may carry the shape "
+        "and the structural rules say nothing about it; the plan is total, in both of the target's "
+        "dialogue channels",
     "oracle.plan-order":
         "the occurrences the receipt marks `emitted` stand in the artifact in the receipt's own order, "
         "and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past "
@@ -1532,7 +1546,11 @@ def oracle_boundary_text(payload: dict) -> str:
     string `message` would let such a boundary stand outside the plan. A record's `replacement_history`
     is not part of this identity; a boundary carrying one is `oracle_unnameable_shape_violations`'
     refusal where a plan is compared, because the receipt's boundary identity is the summary text alone
-    and the plan cannot account for what that member holds.
+    and the plan cannot account for what that member holds. A **present but non-string** `message` also
+    reads as the empty identity here — the count stays total over every boundary — and is refused by
+    that same rule where a plan is compared: the receipt naming the empty text would otherwise certify
+    a summary the artifact's own bytes state is not text (an absent member is the empty boundary the
+    plan can name).
     """
     message = payload.get("message")
     return message if isinstance(message, str) else ""
@@ -1556,6 +1574,15 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
     - a `compacted` record carrying a `replacement_history` that holds something: the receipt's
       boundary identity is the summary text alone, so the plan cannot account for what the member
       holds (an empty list holds nothing and is not refused);
+    - a `compacted` record whose `message` member is **present but not a string**: the member's own
+      bytes state that a summary is there and is not text, and the empty identity it reads as is the
+      identity an absent summary has, so a receipt naming that empty text would certify a summary the
+      artifact does not hold (an absent member is the empty boundary the plan can name);
+    - a `response_item` `message` whose `role` is a non-empty string outside the receipt's vocabulary
+      (`user`/`assistant`): the receipt names a message by its role and its text, so a record in any
+      other role carries dialogue no plan entry can account for. The role is the artifact's own bytes
+      rather than a projection of a read — the host's own sessions hold 57 `developer`-role messages
+      (§0 of the evidence record), which is why the shape is silent without a plan;
     - a `session_meta` carrying a non-blank `forked_from_id`: the artifact's own statement that its
       history continues another transcript's leaves unstated which of its records are this session's
       own, so a receipt marking them emitted certifies a history the artifact does not establish.
@@ -1571,6 +1598,13 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
         kind = record.get("type")
         if kind == "compacted":
             payload = oracle_payload(record)
+            if "message" in payload and not isinstance(payload["message"], str):
+                violations.append(Violation("oracle.plan-accounted", line,
+                                            f"the compaction boundary's `message` is "
+                                            f"{oracle_value_text(payload['message'])}, not a string: "
+                                            f"the receipt's boundary identity is the summary text, and "
+                                            f"naming this boundary by the empty text the member reads "
+                                            f"as would certify a summary the artifact does not hold"))
             if "replacement_history" not in payload:
                 continue
             history = payload["replacement_history"]
@@ -1596,6 +1630,16 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
             continue
         payload = oracle_payload(record)
         item = payload.get("type")
+        if item == "message":
+            role = payload.get("role")
+            if isinstance(role, str) and not oracle_blank(role) and role not in ORACLE_MESSAGE_ROLES:
+                violations.append(Violation("oracle.plan-accounted", line,
+                                            f"the message's `role` is {oracle_value_text(role)}, "
+                                            f"outside the receipt's vocabulary "
+                                            f"({', '.join(ORACLE_MESSAGE_ROLES)}): the receipt names "
+                                            f"a message by its role, so this record's dialogue is one "
+                                            f"no plan entry can account for"))
+            continue
         if item in ORACLE_CALL_ITEMS:
             if "arguments" in payload and "input" in payload:
                 violations.append(Violation("oracle.plan-accounted", line,
@@ -1635,7 +1679,9 @@ def oracle_occurrences(records: list[tuple[int, dict]]) -> list[tuple[tuple, int
     the recorded text for a result (two results under one call id are two occurrences), the summary's
     text for a boundary (`""` where the record carries none — every `compacted` record is an occurrence).
     Multiplicity is part of the record: two identical messages are two occurrences, and the receipt is
-    counted the same way.
+    counted the same way. A `message` whose role is not one of the two is no occurrence of this
+    vocabulary; where a plan is compared, `oracle_unnameable_shape_violations` refuses it, because the
+    receipt names a message by its role and the record carries dialogue no entry can account for.
     """
     occurrences: list[tuple[tuple, int]] = []
     for line, record in records:
@@ -2062,7 +2108,11 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
 # that removes exactly that rule from it. It lives here, beside the registry, so `--selftest-mutations`
 # can execute the closed equality D1 states without reading the test suite: for every declared id, the
 # positive fixture passes, the negative fixture fails citing that rule alone, and the same negative
-# fixture passes when that rule is disabled. A rule id with no fixture pair, a fixture pair naming an id
+# fixture passes when that rule is disabled. Each arm is driven through this file's `main` — the shipped
+# command's own `--validate`/`--receipt`/`--disable-rule` path — with the mutated artifact (and receipt)
+# written under the run's scratch directory, so the flag the third arm names is the shipped one rather
+# than the validator's Python default (`_oracle_selftest_one`, `_oracle_cli_reading`). A rule id with no
+# fixture pair, a fixture pair naming an id
 # the registry does not declare, a mutation that changes nothing, a second rule turned red beside the
 # named one, or a negative fixture that stays red with its own rule off — each fails the command, and
 # the required `selftest` gate step runs the same corpus through the suite's own cases. The corpus
@@ -2081,19 +2131,6 @@ def oracle_fixture(name: str) -> str:
 def oracle_receipt(name: str) -> dict:
     """One committed manifest receipt, parsed."""
     return json.loads(oracle_fixture(name))
-
-
-def oracle_validate_fixture(text: str, receipt: dict | None,
-                            disabled: Iterable[str] = ()) -> list[Violation]:
-    """`validate_artifact` with this corpus' convention: `receipt=None` means none was supplied.
-
-    Not `receipt=None` handed to `validate_artifact` itself — that value is a *supplied* document that
-    is not a plan and is refused by `oracle.receipt` (a file reading `null`), which is a different
-    claim than "no plan was handed in".
-    """
-    if receipt is None:
-        return validate_artifact(text, disabled=disabled)
-    return validate_artifact(text, receipt=receipt, disabled=disabled)
 
 
 def oracle_receipt_edit(receipt: dict, match: Callable[[dict], bool],
@@ -2636,6 +2673,25 @@ def _mutation_plan_boundary_replacement_history(text: str, receipt: dict | None)
     return oracle_edit(text, oracle_record_is("compacted"), change=carry), receipt
 
 
+def _mutation_plan_unnameable_message_role(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A well-formed message in a role the receipt's vocabulary cannot name, carrying the plan's
+    omitted prompt, appended at the last record's instant.
+
+    The record is one the structural rule admits — a non-empty `role`, a readable text block — so
+    without the refusal it stands outside both compared channels (the occurrence vocabulary reads the
+    writer's two roles only) while its bytes carry dialogue the plan marks omitted. The plan is
+    untouched: the defect is an identity of the artifact's own that no receipt entry can state.
+    """
+    assert receipt is not None
+    omitted = _oracle_omitted_message(receipt)
+    lines = text.splitlines()
+    stamp = json.loads(lines[-1])["timestamp"]
+    planted = {"timestamp": stamp, "type": "response_item",
+               "payload": {"type": "message", "role": "developer",
+                           "content": [{"type": "input_text", "text": omitted["text"]}]}}
+    return "\n".join(lines + [oracle_quote(planted)]) + "\n", receipt
+
+
 def _mutation_plan_non_string_call_input(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """The call's recorded input written as a JSON object, spaces after its colons.
 
@@ -2713,6 +2769,28 @@ def _mutation_plan_boundary_without_a_summary(text: str, receipt: dict | None) -
     stamp = json.loads(lines[-1])["timestamp"]
     lines.append(oracle_quote({"timestamp": stamp, "type": "compacted", "payload": {}}))
     return "\n".join(lines) + "\n", receipt
+
+
+def _mutation_plan_boundary_non_string_summary(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A boundary's summary rewritten as an object, with the plan naming the boundary's empty text.
+
+    A non-string `message` reads as the empty occurrence identity — the same identity an absent summary
+    has — so a receipt whose boundary entry was rewritten to `text: ""` compares green, by identity,
+    count and order, against a boundary whose member the artifact states is not text. The receipt edit
+    is part of the mutation because the plan names the summary it read: the artifact-only edit would
+    turn `oracle.plan-emitted` and `oracle.plan-accounted` red over the count, not the member's type.
+    """
+    assert receipt is not None
+
+    def corrupt(record: dict) -> None:
+        if not isinstance(record["payload"].get("message"), str):
+            raise AssertionError("the fixture's boundary no longer carries its string summary")
+        record["payload"]["message"] = {"text": record["payload"]["message"]}
+
+    text = oracle_edit(text, oracle_record_is("compacted"), change=corrupt)
+    receipt = oracle_receipt_edit(receipt, oracle_entry_kind("compaction_boundary"),
+                                  lambda entry: entry.__setitem__("text", ""))
+    return text, receipt
 
 
 def _mutation_plan_omitted_present(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2931,6 +3009,10 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_plan_boundary_without_a_summary),
         OracleMutation("a boundary carrying the dialogue the plan omits", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_boundary_replacement_history),
+        OracleMutation("a boundary whose summary member is not a string", "reduced.jsonl",
+                       "reduced-receipt.json", _mutation_plan_boundary_non_string_summary),
+        OracleMutation("a message role the receipt's vocabulary cannot name", "reduced.jsonl",
+                       "reduced-receipt.json", _mutation_plan_unnameable_message_role),
         OracleMutation("an omitted message that survives in the turn view", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_omitted_event_survives),
         OracleMutation("a call whose recorded input is not a string", "session.jsonl",
@@ -2953,23 +3035,62 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
 }
 
 
-def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path) -> str | None:
-    """One fixture pair's three arms: None where all three hold, else what disagreed.
+def _oracle_cli_reading(argv: list[str]) -> tuple[int, list[dict], str | None]:
+    """One `--validate` invocation through `main` — the shipped command's own entry point.
 
-    (a) The positive fixture passes — with its plan where the pair names one. (b) The mutated pair
-    differs from it and fails citing **only** `rule`. (c) The same mutated pair, with `rule` disabled,
-    passes. The mutated artifact is materialized under `work` and read back, so the bytes judged are
-    the bytes on disk, and `work` is the only place this run writes.
+    Returns ``(exit code, violations, None)`` where the command answered a readable JSON document, and
+    ``(code, [], why)`` where it did not. The arms of `_oracle_selftest_one` are read through this
+    function, never through `validate_artifact`'s Python `disabled` default: a regression that stopped
+    `--disable-rule <RULE_ID>` from reaching the reading has to turn `--selftest-mutations` red rather
+    than stay green behind an in-process call, and the artifact and receipt each arm judges are the
+    bytes on disk a caller of the command would supply.
+    """
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        try:
+            code = main(argv)
+        except SystemExit as refusal:  # argparse refused the invocation itself
+            return int(refusal.code or 0), [], ("the command refused the invocation: "
+                                                + errors.getvalue().strip())
+    stdout = output.getvalue()
+    marker = stdout.find("\noracle: ")
+    if marker < 0 or not stdout.startswith("{"):
+        answer = (stdout.strip() or errors.getvalue().strip() or "no output")
+        return code, [], f"the command printed no JSON document (exit {code}): {answer[:200]}"
+    try:
+        document = json.loads(stdout[:marker])
+    except ValueError as failure:
+        return code, [], f"the command's JSON document cannot be read ({failure})"
+    return code, document["violations"], None
+
+
+def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path) -> str | None:
+    """One fixture pair's three arms, each through the shipped command: None where all three hold.
+
+    (a) The positive fixture passes — with its plan where the pair names one — read through the
+    command's own `--validate [--receipt]` path on the committed bytes. (b) The mutated pair differs
+    from it and fails citing **only** `rule`. (c) The same mutated pair passes with `--disable-rule`
+    for `rule`. The mutated artifact — and the mutated receipt where the pair names one — is
+    materialized under `work`, and the negative and disabled arms are the same two paths read by the
+    same command, so the flag the third arm names is the shipped one; `work` is the only place this
+    run writes.
     """
     try:
         text = oracle_fixture(mutation.artifact)
         receipt = oracle_receipt(mutation.receipt) if mutation.receipt is not None else None
     except OSError as failure:
         return f"the committed fixture cannot be read ({failure})"
-    positive = oracle_validate_fixture(text, receipt)
-    if positive:
-        return "the positive fixture is not green: " + ", ".join(
-            f"{violation.rule} at line {violation.line}" for violation in positive)
+    positive_argv = ["--validate", str(ORACLE_FIXTURE_ROOT / mutation.artifact), "--json"]
+    if mutation.receipt is not None:
+        positive_argv += ["--receipt", str(ORACLE_FIXTURE_ROOT / mutation.receipt)]
+    code, violations, problem = _oracle_cli_reading(positive_argv)
+    if problem is not None:
+        return f"the positive fixture: {problem}"
+    if code != 0 or violations:
+        hit = sorted({violation["rule"] for violation in violations})
+        return (f"the positive fixture is not green (exit {code}, citing {hit or ['no rule']}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']} — {violation['detail']}"
+                            for violation in violations))
     before = (text, json.dumps(receipt, sort_keys=True) if receipt is not None else None)
     mutated_text, mutated_receipt = mutation.mutate(
         text, oracle_receipt(mutation.receipt) if mutation.receipt is not None else None)
@@ -2977,19 +3098,31 @@ def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path) -> str
              json.dumps(mutated_receipt, sort_keys=True) if mutated_receipt is not None else None)
     if after == before:
         return "the mutation changed nothing"
-    artifact_path = work / (rule.replace(".", "-") + ".jsonl")
+    stem = rule.replace(".", "-")
+    artifact_path = work / (stem + ".jsonl")
     artifact_path.write_bytes(mutated_text.encode("utf-8"))
-    disk_text = artifact_path.read_bytes().decode("utf-8")
-    negative = oracle_validate_fixture(disk_text, mutated_receipt)
-    hit = sorted({violation.rule for violation in negative})
-    if hit != [rule]:
-        return (f"the negative fixture turned {hit} red instead of only {rule}: "
-                + "; ".join(f"{violation.rule} line {violation.line} — {violation.detail}"
-                            for violation in negative))
-    flip = oracle_validate_fixture(disk_text, mutated_receipt, disabled=[rule])
-    if flip:
-        return ("the negative fixture with `--disable-rule " + rule + "` is still not green: "
-                + "; ".join(f"{violation.rule} line {violation.line}" for violation in flip))
+    negative_argv = ["--validate", str(artifact_path), "--json"]
+    if mutated_receipt is not None:
+        receipt_path = work / (stem + ".receipt.json")
+        receipt_path.write_bytes(json.dumps(mutated_receipt, sort_keys=True).encode("utf-8"))
+        negative_argv += ["--receipt", str(receipt_path)]
+    code, violations, problem = _oracle_cli_reading(negative_argv)
+    if problem is not None:
+        return f"the negative fixture: {problem}"
+    cited = sorted({violation["rule"] for violation in violations})
+    if code != 1 or cited != [rule]:
+        return (f"the negative fixture turned {cited} red instead of only {rule} (exit {code}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']} — {violation['detail']}"
+                            for violation in violations))
+    code, violations, problem = _oracle_cli_reading(negative_argv + ["--disable-rule", rule])
+    if problem is not None:
+        return f"the negative fixture with `--disable-rule {rule}`: {problem}"
+    if code != 0 or violations:
+        cited = sorted({violation["rule"] for violation in violations})
+        return (f"the negative fixture with `--disable-rule {rule}` is still not green "
+                f"(exit {code}, citing {cited}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']}"
+                            for violation in violations))
     return None
 
 
@@ -2997,11 +3130,12 @@ def oracle_mutation_selftest() -> int:
     """The D1 proof, executed: the rule registry against the mutation corpus, closed from both ends.
 
     Every declared rule id must have at least one fixture pair, every fixture pair must name a declared
-    id, and each pair's three arms must hold (`_oracle_selftest_one`). One line per pair says so, a
-    failure names the rule and what disagreed, and the exit code is 0 only when every arm of every pair
-    held — the shape a reviewer can re-run without editing anything, which is what makes the registry a
-    finite, executed obligation rather than a claim about the checker's own code. The run creates one
-    scratch directory and removes it again; it writes nothing outside it and touches no fixture.
+    id, and each pair's three arms must hold (`_oracle_selftest_one`), each driven through the shipped
+    command's own `--validate`/`--disable-rule` path. One line per pair says so, a failure names the
+    rule and what disagreed, and the exit code is 0 only when every arm of every pair held — the shape
+    a reviewer can re-run without editing anything, which is what makes the registry a finite, executed
+    obligation rather than a claim about the checker's own code. The run creates one scratch directory
+    and removes it again; it writes nothing outside it and touches no fixture.
     """
     failures: list[str] = []
     declared, mutated = set(ORACLE_RULES), set(ORACLE_MUTATIONS)
@@ -3068,7 +3202,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="prove the rule registry against its mutation corpus and exit: for every "
                              "declared rule id its positive fixture passes, its negative fixture fails "
                              "citing that rule alone, and the same fixture passes with --disable-rule "
-                             "for it")
+                             "for it — each arm through this command's --validate path, on the mutated "
+                             "artifact and receipt written under a scratch directory")
     args = parser.parse_args(argv)
 
     if args.selftest_mutations:

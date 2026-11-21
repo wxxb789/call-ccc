@@ -283,9 +283,10 @@ Nine are structural (the artifact alone), one is the receipt's own schema, and f
 the artifact and an explicit manifest receipt. Where a plan is compared, the artifact's occurrences
 are read in both dialogue channels (the model-visible `response_item` and the turn-view `event_msg`)
 and in the receipt's own order, and the shapes whose receipt-facing identity the artifact's own bytes
-cannot state (a boundary's `replacement_history`, a call's two or non-string recorded-input members, a
-result's non-string recorded-text member, a `session_meta` carrying `forked_from_id`) are refused
-rather than modelled.
+cannot state (a boundary's `replacement_history`, a boundary whose `message` member is present but not
+a string, a call's two or non-string recorded-input members, a result's non-string recorded-text
+member, a `message` whose `role` is outside the receipt's vocabulary, a `session_meta` carrying
+`forked_from_id`) are refused rather than modelled.
 
 ### 1.1 The closed equality, executed
 
@@ -321,6 +322,8 @@ oracle.selftest: oracle.plan-accounted — an occurrence the plan marks omitted 
 oracle.selftest: oracle.plan-accounted — an occurrence the plan names nowhere: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary the plan names nowhere: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary carrying the dialogue the plan omits: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
+oracle.selftest: oracle.plan-accounted — a boundary whose summary member is not a string: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
+oracle.selftest: oracle.plan-accounted — a message role the receipt's vocabulary cannot name: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — an omitted message that survives in the turn view: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a call whose recorded input is not a string: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a call carrying both recorded-input members: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
@@ -342,7 +345,7 @@ oracle.selftest: oracle.session-meta — a record standing before the metadata: 
 oracle.selftest: oracle.session-meta-members — an empty id: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
 oracle.selftest: oracle.session-meta-members — no cli_version: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
 oracle.selftest: oracle.session-meta-members — no originator: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
-oracle.selftest: PASS — 14 rule(s), 51 fixture pair(s): positive PASS, negative FAIL (each citing its own rule), --disable-rule PASS
+oracle.selftest: PASS — 14 rule(s), 53 fixture pair(s): positive PASS, negative FAIL (each citing its own rule), --disable-rule PASS
 $ echo $?
 0
 ```
@@ -404,12 +407,16 @@ committed fixtures and the runs above re-derive from bytes.
 
 ### 1.3 The corpus
 
-`ORACLE_MUTATIONS` holds 51 fixture pairs across the 14 rules; each pair names its fixture (and its
+`ORACLE_MUTATIONS` holds 53 fixture pairs across the 14 rules; each pair names its fixture (and its
 manifest receipt where the rule needs one) and a change that must turn exactly its own rule red and no
-other, which is what makes a report a reading of one defect rather than a net. The suite's
+other, which is what makes a report a reading of one defect rather than a net. Every pair's three arms
+are read through the shipped command's own `--validate`/`--receipt`/`--disable-rule` path, on the
+mutated artifact and receipt written under the run's scratch directory: the suite's
 `test_every_rule_has_a_mutation_that_turns_its_fixture_red` asserts the bijection from both ends and
 the three arms of every pair — positive green, negative red citing its own rule alone, and the same
-negative green with `--disable-rule` for that rule — and
+negative green with `--disable-rule` for that rule —
+`test_the_corpus_arms_run_the_shipped_command_not_the_python_validator` pins that the arms go through
+`main` rather than the Python validator and that the flag is exercised for every declared rule, and
 `test_disable_rule_turns_exactly_one_rule_off` drives the flag through the CLI (a swapped-instant
 artifact fails by default, passes with `oracle.clock` disabled, an undeclared id exits 2 naming
 itself, `--disable-rule` without `--validate` is refused, and the JSON document names the rules the
@@ -425,6 +432,7 @@ a reading that reached for a source transcript, the fixture on disk or any other
 have answered. The same claim from a scratch directory that holds nothing but the two documents:
 
 ```
+$ repo=$(pwd)    # the checkout root, captured before the run changes out of it
 $ scratch=$(mktemp -d)
 $ cp scripts/tests/testdata/codex-oracle/reduced.jsonl "$scratch/artifact.jsonl"
 $ cp scripts/tests/testdata/codex-oracle/reduced-receipt.json "$scratch/receipt.json"
@@ -478,9 +486,9 @@ the conductor's oracle-lock signal is the enforcement, not a command in this tre
 left alone still carried the pre-repair refusal surface into the increment: `docs/harness.md`'s oracle
 paragraphs, the citations manifest's header (`docs/evidence/0009a-citations.tsv`) and this increment's
 plan (`docs/plans/0009a-native-oracle.md`). The increment's own fix pass brings all three to the
-shipped statement — the harness paragraph now names the five receipt-mode refusals and the
+shipped statement — the harness paragraph now names the seven receipt-mode refusals and the
 reader-visible projection as the manifest receipt's own statement, the manifest's "deliberately not
-covered" paragraph is rewritten from the shipped corpus (14 rules, 51 fixture pairs), and the plan
+covered" paragraph is rewritten from the shipped corpus (14 rules, 53 fixture pairs), and the plan
 marks its design as the pre-repair revision with its Evidence section pointing at the record's shipped
 sections. No shipped surface still states the removed reader-modelling refusals as the design; the plan's
 pre-repair sections are marked as such and point here. The checker's own
@@ -507,7 +515,7 @@ alone, and no check over them can stand in for it.
 | r5 | a line whose object writes a member name twice | kept — `oracle.jsonl-objects`; fixture "a line holding a member name twice" |
 | r5 | an object-valued `content` a read iterates | residual; on the vocabulary's own `message` item the shape is refused structurally (`oracle.message` requires a list) |
 | r5 | a call carrying both `arguments` and `input` | kept — refused where a plan is compared; fixture "a call carrying both recorded-input members" |
-| r6 | extra developer-role messages | residual — which roles a read answers is a projection of the read |
+| r6 | extra developer-role messages | kept — the post-repair review round re-opened this shape: a `response_item` `message` whose `role` is a non-empty string outside the receipt's vocabulary is refused where a plan is compared (fixture "a message role the receipt's vocabulary cannot name", `test_a_message_role_outside_the_receipts_vocabulary_is_refused_with_a_plan`); which roles a **read** answers stays a projection, but the role is the artifact's own bytes and no plan entry can name it |
 | r6 | a `custom_tool_call_output`'s read-answered outcome | residual |
 | r7 | a `wait_agent` output whose read appends no result | residual |
 | r8 | the ordinary review budget tripped (process) | this repair is the answer the rule asks for (an abstraction-boundary failure, re-decomposed); the rounds' ledger is the earlier revision of this record, and the dispatch was the conductor's |
@@ -536,6 +544,16 @@ cases. The replay-path findings (r8, r9, r11, r12 among them) are answered by de
 this record quotes only commands whose output it shows, and `--selftest-mutations` is the one
 mutation replay.
 
+The **post-repair review round's** three contract-shaping findings are kept the same way: a boundary
+whose `message` member is present but not a string certified against a plan naming the empty text, and
+the reduced plan's omitted prompt surviving as a `developer`-role message, are now receipt-mode
+refusals (`oracle.plan-accounted`; fixtures "a boundary whose summary member is not a string" and
+"a message role the receipt's vocabulary cannot name", with
+`test_a_boundary_with_a_non_string_summary_is_refused_with_a_plan` and
+`test_a_message_role_outside_the_receipts_vocabulary_is_refused_with_a_plan`), and the corpus' arms are
+driven through the shipped command's own `--validate`/`--disable-rule` path for every rule
+(`test_the_corpus_arms_run_the_shipped_command_not_the_python_validator`).
+
 ## 6. Citations
 
 `docs/evidence/0009a-citations.tsv` holds this increment's rows: one row per structural oracle rule,
@@ -557,7 +575,7 @@ gate: go=<toolchain> targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 469 tests in 11.085s (rc=0)
+  PASS     selftest Ran 472 tests in 12.787s (rc=0)
   PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 9 row(s) verified
   PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)

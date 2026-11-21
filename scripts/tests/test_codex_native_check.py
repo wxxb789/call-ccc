@@ -1375,7 +1375,9 @@ _mutation_call_id_duplicated = NATIVE_CHECK._mutation_call_id_duplicated
 _mutation_call_id_lone_surrogate = NATIVE_CHECK._mutation_call_id_lone_surrogate
 _mutation_plan_boundary_replacement_history = NATIVE_CHECK._mutation_plan_boundary_replacement_history
 _mutation_plan_boundary_without_a_summary = NATIVE_CHECK._mutation_plan_boundary_without_a_summary
+_mutation_plan_boundary_non_string_summary = NATIVE_CHECK._mutation_plan_boundary_non_string_summary
 _mutation_plan_forked_from_id = NATIVE_CHECK._mutation_plan_forked_from_id
+_mutation_plan_unnameable_message_role = NATIVE_CHECK._mutation_plan_unnameable_message_role
 _without_record = NATIVE_CHECK._without_record
 
 
@@ -1412,8 +1414,11 @@ class CodexArtifactOracle(unittest.TestCase):
     Claude transcript would not be a gate step. The corpus lives in the shipped script beside the
     registry (`ORACLE_MUTATIONS` there), and this class drives the same objects: each rule has at least
     one mutation that removes it, each mutation turns its own rule red and no other, the two tables are
-    in bijection, and `--disable-rule` — the in-process flip — is exercised on the fixture pairs and
-    through the CLI. That is the increment's D1 in the form the required `selftest` step re-derives.
+    in bijection, and every one of the corpus' three arms is read through the shipped command's own
+    `--validate`/`--receipt`/`--disable-rule` path (`main`, with the mutated pair written under the
+    run's scratch directory), so `--disable-rule` is exercised for every declared rule and not only for
+    the fixture a CLI case happens to name. That is the increment's D1 in the form the required
+    `selftest` step re-derives.
     """
 
     def test_the_committed_fixtures_validate(self) -> None:
@@ -1589,6 +1594,46 @@ class CodexArtifactOracle(unittest.TestCase):
                       f"{pairs} fixture pair(s)", proc.stdout)
         after = {name: (ORACLE_FIXTURES / name).read_bytes() for name in names}
         self.assertEqual(after, before, "the selftest touched a committed fixture")
+
+    def test_the_corpus_arms_run_the_shipped_command_not_the_python_validator(self) -> None:
+        """Every pair's three arms are read through `main`, the shipped `--validate` entry point.
+
+        The post-repair review round's finding: the corpus passed `disabled=[rule]` straight to the
+        Python validator and kept the mutated receipt in memory, so `--selftest-mutations` claimed a
+        CLI flip it exercised for no rule but the one a separate CLI case happened to name — a
+        regression that ignored `--disable-rule oracle.plan-pairs` left both checks green. The arms are
+        now the command's own: the artifact and the mutated receipt are written under the scratch
+        directory and `main(["--validate", …, "--receipt", …, "--disable-rule", rule, "--json"])`
+        decides them. Pinned from both ends — the Python validator's own entry point refuses for the
+        duration of the run, and every declared rule id appears as the `--disable-rule` argument of at
+        least one invocation — so a corpus that reached for the validator or skipped a rule's flip
+        fails here rather than closing.
+        """
+        real_main = NATIVE_CHECK.main
+        seen: list[list[str]] = []
+
+        def spy(argv):
+            seen.append(list(argv))
+            judged = Path(argv[argv.index("--validate") + 1])
+            self.assertTrue(judged.is_file(),
+                            f"an arm judged a path that is not a file on disk: {argv}")
+            return real_main(argv)
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the corpus read through the Python validator instead of the command")
+
+        output = io.StringIO()
+        with mock.patch.object(NATIVE_CHECK, "main", spy), \
+                mock.patch.object(NATIVE_CHECK, "validate_artifact", refuse), \
+                contextlib.redirect_stdout(output):
+            code = NATIVE_CHECK.oracle_mutation_selftest()
+        self.assertEqual(code, 0, f"the corpus does not close through the command: {output.getvalue()}")
+        disabled = [argv[argv.index("--disable-rule") + 1] for argv in seen
+                    if "--disable-rule" in argv]
+        self.assertEqual(sorted(set(disabled)), sorted(NATIVE_CHECK.ORACLE_RULES),
+                         f"the corpus did not exercise --disable-rule for every rule: {sorted(disabled)}")
+        self.assertIn("oracle.plan-pairs", disabled,
+                      "the rule the finding's own example names was not flipped through the command")
 
     def test_disable_rule_turns_exactly_one_rule_off(self) -> None:
         """`--disable-rule` drops exactly the named rule's violations, in-process, for `--validate`.
@@ -1943,6 +1988,41 @@ class CodexArtifactOracle(unittest.TestCase):
             NATIVE_CHECK.validate_artifact(empty, receipt=oracle_receipt("reduced-receipt.json")), [],
             "an empty replacement_history holds no dialogue and was refused")
 
+    def test_a_boundary_with_a_non_string_summary_is_refused_with_a_plan(self) -> None:
+        """A boundary whose `message` member is present but not a string is refused where a plan is
+        compared, while an absent summary stays the empty boundary a plan can name.
+
+        The post-repair review round's finding: `oracle_boundary_text` reads a non-string `message` as
+        the empty string — the identity an absent summary has — so a receipt entry rewritten to
+        `text: ""` compared green, by identity, count and order, against a boundary whose member the
+        artifact's own bytes state is not text, and the malformed summary travelled as an absence. The
+        shape is refused where a plan is compared, and the absence stays nameable: the writer's own
+        `compacted` records need carry no summary, and the plan is total over every boundary record.
+        The malformed artifact is structurally green — a native rollout may carry the member, and no
+        structural rule reads it.
+        """
+        reduced = oracle_fixture("reduced.jsonl")
+        malformed, plan = _mutation_plan_boundary_non_string_summary(
+            reduced, oracle_receipt("reduced-receipt.json"))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(malformed), [],
+                         "the malformed boundary is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(malformed, receipt=plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the non-string summary was certified as an absence: {refused}")
+        self.assertIn("`message`", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn("Summary:", refused[0].detail,
+                         f"the refusal echoed the summary text: {refused[0]}")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(malformed, receipt=plan,
+                                                        disabled=["oracle.plan-accounted"]), [],
+                         "disabling the rule that owns the refusal did not leave the pair green")
+        # The absence is the control: the same boundary with its `message` member removed, read
+        # against the same plan — which names the empty text — stays green, so what is refused is the
+        # member's type, not the empty identity a plan may name.
+        absent = oracle_edit(reduced, oracle_record_is("compacted"),
+                             change=lambda record: record["payload"].pop("message"))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(absent, receipt=plan), [],
+                         "an absent summary against a plan naming the empty boundary was refused")
+
     def test_a_non_string_identity_member_is_refused_with_a_plan(self) -> None:
         """A call's recorded input or a result's recorded text written as a non-string member is refused
         where a plan is compared, because the receipt's own identity members are strings.
@@ -2072,6 +2152,39 @@ class CodexArtifactOracle(unittest.TestCase):
                             change=lambda record: record["payload"].__setitem__("forked_from_id", " "))
         self.assertEqual(NATIVE_CHECK.validate_artifact(blank, receipt=receipt), [],
                          "a blank forked_from_id is not lineage and was refused")
+
+    def test_a_message_role_outside_the_receipts_vocabulary_is_refused_with_a_plan(self) -> None:
+        """A `message` in a role the receipt's vocabulary cannot name is refused where a plan is
+        compared, so the plan's omitted prompt cannot survive as a role the vocabulary skips.
+
+        The post-repair review round's finding: the reduced plan's omitted prompt appended as a
+        `developer`-role `response_item` — a non-empty role `oracle.message` admits, with a readable
+        text block — stood outside both compared channels (the occurrence vocabulary reads the writer's
+        two roles only), so the artifact could carry dialogue the plan marks omitted while every
+        identity, count and order comparison stayed green. The artifact's own bytes state the role and
+        the receipt names a message by its role, so the record is refused where a plan is compared and
+        silent without one, where such a message may be a native record (the host's own sessions carry
+        57 `developer`-role messages, §0 of the evidence record).
+        """
+        reduced = oracle_fixture("reduced.jsonl")
+        artifact, plan = _mutation_plan_unnameable_message_role(
+            reduced, oracle_receipt("reduced-receipt.json"))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                         "the developer-role message is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(artifact, receipt=plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the unnameable role was not refused: {refused}")
+        self.assertIn("`role`", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn("developer", refused[0].detail,
+                         f"the refusal echoed the role: {refused[0]}")
+        self.assertNotIn("And now?", refused[0].detail,
+                         f"the refusal echoed the message text: {refused[0]}")
+        self.assertEqual(
+            len(NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(artifact)[0])), 5,
+            "the appended record moved the occurrence count the vocabulary reads")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact, receipt=plan,
+                                                        disabled=["oracle.plan-accounted"]), [],
+                         "disabling the rule that owns the refusal did not leave the pair green")
 
     def test_a_moved_turn_context_is_outside_the_receipts_vocabulary(self) -> None:
         """The receipt names no turns, so `oracle.plan-order` compares order, not turn membership.

@@ -21,12 +21,13 @@
 # scripts/gate-targets.txt covers, so a rule whose gate re-derivation is a python case the required
 # `selftest` step runs, or a native harness run, cannot hold one):
 #   oracle.receipt, oracle.plan-emitted, oracle.plan-accounted, oracle.plan-order, oracle.plan-pairs —
-#         the manifest-receipt half (17 of the shipped corpus's 51 fixture pairs). No Go test grounds it,
+#         the manifest-receipt half (19 of the shipped corpus's 53 fixture pairs). No Go test grounds it,
 #         because nothing in this tree produces a receipt yet: the receipt's producer is goal
 #         0009c/0009d (this goal's Non-scope), and the rules are stated over the synthetic receipts
 #         committed with the fixtures. Their re-derivation is the same `selftest` case's mutation table
-#         — `--selftest-mutations` executes it, and the case's bijection asserts it from both ends
-#         (four mutations for `oracle.receipt`, two for `oracle.plan-emitted`, eight for
+#         — `--selftest-mutations` executes it, on every arm through the shipped command's own
+#         `--validate`/`--receipt`/`--disable-rule` path, and the case's bijection asserts it from both
+#         ends (four mutations for `oracle.receipt`, two for `oracle.plan-emitted`, ten for
 #         `oracle.plan-accounted`, two for `oracle.plan-order` and one for `oracle.plan-pairs`) —
 #         beside the surviving corpus cases:
 #         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
@@ -43,6 +44,12 @@
 #         result's recorded text written as a non-string member is refused where a plan is compared),
 #         `test_a_boundarys_replacement_history_is_refused_with_a_plan` (a boundary carrying a native
 #         `replacement_history` is refused where a plan is compared),
+#         `test_a_boundary_with_a_non_string_summary_is_refused_with_a_plan` (a boundary whose
+#         `message` member is present but not a string is refused where a plan is compared; an absent
+#         summary — the empty boundary the plan may name — is the green control),
+#         `test_a_message_role_outside_the_receipts_vocabulary_is_refused_with_a_plan` (a
+#         `response_item` `message` in a role outside the receipt's vocabulary is refused where a plan
+#         is compared, so the plan's omitted prompt cannot survive as a role the vocabulary skips),
 #         `test_a_forked_session_is_refused_with_a_plan` (a `session_meta` carrying `forked_from_id` is
 #         refused where a plan is compared; a blank member is the green control),
 #         `test_a_call_without_a_usable_name_is_no_call` (a call whose `name` is not the non-empty
@@ -51,8 +58,11 @@
 #         outside what the receipt states and the rule's sentence says so, the finding's own
 #         `turn_context` move validating green), `test_occurrence_identity_is_counted_not_deduplicated`
 #         (multiplicity is identity-counted), `test_a_compacted_record_without_a_summary_is_counted`
-#         (every `compacted` record is a boundary occurrence, a summary or none), and the structural
-#         refusals a plan comparison reaches — `test_a_line_with_a_duplicate_member_is_refused`,
+#         (every `compacted` record is a boundary occurrence, a summary or none),
+#         `test_the_corpus_arms_run_the_shipped_command_not_the_python_validator` (every arm of every
+#         pair is read through the shipped command's `--validate`/`--disable-rule` path, so the flag is
+#         exercised for every declared rule rather than only the one a CLI case names), and the
+#         structural refusals a plan comparison reaches — `test_a_line_with_a_duplicate_member_is_refused`,
 #         `test_a_lone_surrogate_escape_is_refused_before_any_identity_comparison` — beside their own
 #         rows and mutations above.
 #   the oracle's `--validate` mode — the CLI half of the same python subject

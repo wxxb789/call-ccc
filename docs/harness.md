@@ -381,8 +381,8 @@ says so.
   a summary, a boundary carrying a native `replacement_history` refused where a receipt is compared,
   a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent
   `agent_message` addressed to the session's own agent path, another payload type carrying a
-  `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside
-  the writer's two — is not an occurrence this oracle reads, and the shapes a read answers differently
+  `user`/`assistant` role and readable text, an `image_generation_call` — is not an occurrence this
+  oracle reads, and the shapes a read answers differently
   than the artifact's own bytes state — a `user` message a read consumes as a subagent notification, a
   notification-prefixed block the read's user-text preprocessing drops or rewrites, a
   `custom_tool_call_output` whose read answers an outcome, a result the read answers elsewhere or
@@ -393,7 +393,11 @@ says so.
   there too, instead, are the shapes whose receipt-facing identity the artifact's own bytes cannot
   state: a call carrying both `arguments` and `input`, a call whose recorded input or a result whose
   recorded text is written as a member that is not a string (the receipt's identity members are strings,
-  and a decoded value cannot recover the member's own bytes), and a `session_meta` carrying a non-blank
+  and a decoded value cannot recover the member's own bytes), a `compacted` record whose `message`
+  member is present but not a string (an absent summary is the empty boundary the plan can name), a
+  `response_item` `message` whose `role` is a non-empty string outside the receipt's vocabulary
+  (`user`/`assistant` — the role is the artifact's own bytes, so the record is refused rather than read
+  as no occurrence), and a `session_meta` carrying a non-blank
   `forked_from_id`, because the read's fork gate suppresses the replayed records of a resolved parent's
   turns and a parent transcript is outside the oracle's input —
   a line whose object writes a member name twice, or a receipt document whose object does, or an
