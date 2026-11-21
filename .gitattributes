@@ -1,0 +1,9 @@
+# This repository's own files (everything outside the carried tree), kept LF in the repository and in
+# the working tree, independent of each contributor's core.autocrlf setting.
+#
+# The root file exists because the carried AgentsView tree brought its own .gitattributes with it
+# (`agentsview/.gitattributes`, carried from upstream): that file governs every path below
+# `agentsview/` -- attributes are resolved from the deepest .gitattributes, so its `binary` and
+# `linguist-generated` rules win for the paths they name -- and this one covers the other half. Both
+# spell the same rule; a checkout on a host with core.autocrlf=true receives LF for both halves.
+* text=auto eol=lf

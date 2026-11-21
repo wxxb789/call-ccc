@@ -271,6 +271,270 @@ which is why the leak's carrier was the *suite's* trees and the fix belongs to t
 importer and the comparison script take the checkout they are handed (`--upstream`) or a scratch
 directory outside the tree.
 
+## 9. The `windows-latest` leg, and the repair it forced
+
+`gate (ubuntu-latest)` passed this increment's head (`4bab390`); `gate (windows-latest)` ran the same
+gate file, failed four steps and ended `GATE: FAIL — gofmt, test, selftest, citations` (`portability`
+was disclosed as `SKIP` by design: that runner's checkout refuses one of the pin's long fixture paths,
+which is the boundary the step states rather than a failure). This section is the repair. §9.1 is what
+the leg printed; §9.2–§9.4 are the four classes it turned out to be, each with the evidence that
+pinned it and the case that now holds it; §9.5 is the gate on the repaired state. The increment's plan
+is **not** edited — no step of it changed — and §1–§8 above stand as written.
+
+### 9.1 What the leg answered
+
+The leg's step lines, exactly as the runner logged them (long cells elided where marked (`…`) and
+re-wrapped for the page; the gate's own `… and 23 more` is its list bound, not an elision of this
+record):
+
+```
+  FAIL     gofmt       not gofmt-clean:
+ccc/cmd/ccc/claude_route_test.go
+… (this record's elision: the gate printed 40 paths, every one under ccc/) …
+… and 23 more
+  PASS     build       go build ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
+  PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
+  FAIL     test        go test -count=1 ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=1
+    --- FAIL: TestDumpMatchesTheRecordedUpstreamAgreement/codex (0.41s)
+        dump_test.go:60: the dump for codex differs from the recorded upstream dump; …
+            --- recorded: 9901 bytes
+            --- now:      9658 bytes
+    --- FAIL: TestDumpMatchesTheRecordedUpstreamAgreement/pi (0.30s)
+            --- recorded: 7779 bytes
+            --- now:      7582 bytes
+  SKIP     portability portability: INCOMPLETE — no pinned checkout is available: git checkout --detach
+           83195c8a… failed (rc=128): error: unable to create file
+           internal/parser/testdata/data-version-corpus/…: Filename too long — not checked: fetch …
+           by hand, or pass --upstream DIR with a clean checkout of it
+  FAIL     selftest    REQUIRED but was FAIL: scripts/tests -> rc=1
+Ran 477 tests in 24.031s
+FAILED (failures=28, errors=9)
+  PASS     parity      … | carried: 5579 file(s) identical to the pinned revision (compared through
+           git's own object store) | … | symlinks hashed by their link target: 4 | carried link(s)
+           matched in this platform's own spelling: 3 (its symlink layer stores a link's target with
+           backslashes, …) | owner-executable bits not verified for 5576 file(s) …
+  FAIL     citations   REQUIRED but was FAIL: … docs/evidence/0008-citations.tsv: 12 row(s) verified
+  docs/evidence/0008-citations.tsv:51: rule S6: test TestFixturesMatchTheirGenerator in ./internal/ccc
+  did not pass — go test reported `--- FAIL: TestFixturesMatchTheirGenerator`
+  PASS     secrets     no leaks found in 187 file(s) this repository owns …
+GATE: FAIL — gofmt, test, selftest, citations
+```
+
+The log is also the whole of what could be *read out of it*: GitHub's runner collapses the python
+child's captions into one annotation, and the `selftest` step's detail was a 1 200-character **tail**
+— so the 28 failures and 9 errors it counted could not be enumerated from the log at all. The one
+annotation it printed is the last of them, and it is a §9.3.1 case (the runner's own line, its inner
+line feeds shown as the log's own `\n` and wrapped here):
+
+```
+##[error]AssertionError: 'reported by cmd/ccc/pin.go: 0123456789abcdef0123456789abcdef01234567' not found in
+"pin 0123456789abcdef0123456789abcdef01234567 (v0-test)\nreported by cmd\ccc\pin.go: 0123456789abcdef0123456789abcdef01234567\n…"
+```
+
+Two consequences are part of this repair. The step now names every failing test in its own detail
+(§9.4), so the next Windows round — if there is one — enumerates itself. And the classes below were
+identified by **simulating the host axes this machine can simulate** — CRLF text writes, an absent
+`/tmp` and `/var/tmp`, the `nt` platform seams, a host-spelled relative path — rather than by reading
+the log, because the log does not hold them; every simulation below states which axis it fakes, and
+§9.6 states what that does not prove.
+
+### 9.2 Class 1 — the checkout's line endings (`gofmt`, `test`, `citations`)
+
+The migration moved upstream's root `.gitattributes` into the carry and this repository did not get one
+of its own, so this repository's own files were left with no attributes at all:
+
+```
+# before the fix, at 4bab390
+$ git check-attr text eol -- ccc/internal/ccc/continue.go
+ccc/internal/ccc/continue.go: text: unspecified
+ccc/internal/ccc/continue.go: eol: unspecified
+$ git check-attr text eol -- agentsview/internal/parser/claude.go
+agentsview/internal/parser/claude.go: text: auto
+agentsview/internal/parser/claude.go: eol: lf
+```
+
+The Windows runner checks out with `core.autocrlf=true`, so the carried tree — which keeps upstream's
+own `.gitattributes` at `agentsview/.gitattributes` — was written with LF while every file this
+repository owns was written with CRLF. That is the whole of the three Go-visible failures: `gofmt`
+reads a CRLF `*.go` as unformatted, and the two recorded dumps and the fixture-generator pin compare
+the working tree's bytes against recorded artifacts.
+
+**Fix.** A root `.gitattributes` carrying the base file's own first rule, scoped to this repository's
+half (`* text=auto eol=lf`); the carried tree keeps its own copy, and attributes resolve from the
+deepest file, so its `binary`/`linguist-generated` rules still win for the paths they name.
+`git check-attr` after the fix: `ccc/internal/ccc/continue.go` and `scripts/gate.py` read
+`text: auto / eol: lf`; `agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz` still reads
+`text: unset` (the carried `*.gz binary` rule) and the frontend generated paths still take the
+carried `linguist-generated` rule. No blob needed renormalising: `git ls-files --eol` answers 5 657
+`i/lf`, 71 `i/-text` (a carried `binary` rule), 34 `i/none` (content git reads as binary) and 4 empty
+entries (the carried 120000 symlinks) — and **no `i/crlf` at all**, which is the state a byte-preserving
+move leaves.
+
+**Evidence, both arms measured on this host** (the checkout recipe, not a Windows box): clone the head
+twice, `core.autocrlf=true`, the second clone carrying a one-commit probe with the root
+`.gitattributes`:
+
+```
+# negative arm — a fresh clone of 4bab390 with core.autocrlf=true
+$ grep -c $'\r' ccc/internal/ccc/continue.go          # ours: CRLF
+1494
+$ grep -c $'\r' scripts/gate.py
+524
+$ grep -c $'\r' agentsview/internal/parser/claude.go  # carried: LF (its own attributes)
+0
+$ (cd ccc && gofmt -l ./cmd/ccc ./internal/ccc | wc -l)
+63                                                    # the gate's own list: 40 + "and 23 more"
+$ (cd ccc && go test -count=1 -tags fts5 -run 'TestDumpMatchesTheRecordedUpstreamAgreement' ./internal/ccc/parity/...)
+    --- FAIL: TestDumpMatchesTheRecordedUpstreamAgreement/pi (0.12s)
+            --- recorded: 7779 bytes
+            --- now:      7582 bytes      # the leg's own numbers
+$ (cd ccc && go test -count=1 -tags fts5 -run 'TestFixturesMatchTheirGenerator' ./internal/ccc)
+    fixtures_test.go:208: growth fragments: … differs from what fixturegen writes; …
+FAIL
+
+# positive arm — the same clone with the root .gitattributes committed
+$ grep -c $'\r' ccc/internal/ccc/continue.go; grep -c $'\r' scripts/gate.py
+0
+0
+$ (cd ccc && gofmt -l ./cmd/ccc ./internal/ccc | wc -l)
+0
+$ (cd ccc && go test … 'TestDumpMatchesTheRecordedUpstreamAgreement' ./internal/ccc/parity/...)
+ok  	go.kenn.io/agentsview/ccc/internal/ccc/parity	0.746s
+$ (cd ccc && go test … 'TestFixturesMatchTheirGenerator' ./internal/ccc)
+ok  	go.kenn.io/agentsview/ccc/internal/ccc	1.131s
+```
+
+A third measurement, the fresh-checkout question itself (a temporary index + `checkout-index` under
+`core.autocrlf=true`, the real working tree's attributes in force): every file this repository owns
+comes out LF (`grep -c $'\r'` = 0 for `ccc/internal/ccc/continue.go` and `scripts/gate.py`), the
+carried file stays LF, and the binary input is byte-identical (`cmp` clean).
+
+### 9.3 Class 2 — the host's own answers (the `28` failures and `9` errors)
+
+Each class below was reproduced on this host by simulating one axis of a Windows host, and each was
+then fixed. The classes' arithmetic is the leg's own counts — 28 failures = 17 + 3 (the parity line
+below) + 2 + 4 + 2, 9 errors = 7 + 2 — and §9.6 states what a simulation of one axis does not prove.
+
+**9.3.1 The parity line's separator (17 failures + 3 subtest records).** The migration spelled the
+pin constant's path through `Path(...)` and printed it with `str()`, so the leg's Windows run wrote
+`reported by cmd\ccc\pin.go: …` where every other surface of this tree spells tree paths POSIX-form —
+and the `parity` suite asserts that line (16 `assert_clean` cases). The same spelling reached the
+failure messages, which one more case asserts (`test_the_cli_must_report_the_pinned_revision`). The
+three link-shape cases run two shapes each where the host can create symlinks — and it can there: the
+leg's own `parity` line discloses `carried link(s) matched in this platform's own spelling: 3`, which
+is Git for Windows having *created* the pin's links, so `os.symlink` works on that runner and the
+second shape ran too, each of its two subtests failing on the same line (3 more failure records).
+
+*Fix:* `scripts/upstream-parity.py`'s `pin_source_path()` — the layout's module through a `Path` and
+back, `as_posix()`'d, the same rule `scripts/gate.py`'s `module_spelling()` states. *Case:*
+`ParityCase.test_the_pin_source_spelling_is_posix_on_every_platform` drives the helper with the path
+*values* a Windows host hands it (`PureWindowsPath` for both operands, as they are there) for both
+layouts, so the difference is visible on this host rather than only in the Windows lane; reverting the
+helper to `str()` fails it (measured).
+
+**9.3.2 The scratch fallback list (2 failures + 2 errors).** The `parity-root-*` leak's fix gave both
+scratch helpers a fallback list of `/tmp` and `/var/tmp`. On Windows those are `\tmp` and `\var\tmp` on
+whichever drive the process is on — not directories — so a case that poisons the environment's temp
+answer (the two `ScratchTreeCase` cases, deliberately) or a relative one
+(`ScratchDirectoryCase`) had *no* candidate left: `AssertionError: no scratch directory outside … is
+available` and `PortabilityIncomplete: every scratch directory this host offers is inside the
+repository` — 2 failures and 2 errors, and the helper's whole purpose unmet on that platform.
+
+*Fix:* `platform_scratch_bases()` in `scripts/portability.py` (POSIX: `/tmp`, `/var/tmp`; Windows:
+`TEMP`/`TMP`, the variables that platform's own temp answer is made of) and the same rule in
+`scripts/tests/test_upstream_parity.py`'s helper (taking the platform as a parameter, because `os.name`
+cannot be patched while `pathlib` reads it at `Path()` call time). A base either list answers that is
+not *absolute* is refused before anything is created: a relative `TEMP` names no root of its own, and
+the scratch would land under whatever the process's current directory happens to be — the 81-directory
+leak's own shape, one layer down.
+*Cases:* `test_the_platforms_own_scratch_bases_are_pinned_for_both_answers` in both suites pins both
+answers; the four poisoning cases were re-measured with the Windows answers in the seams (`TEMP`/`TMP`
+naming the real temporary root, `/tmp` and `/var/tmp` made absent, the `nt` answers forced through the
+shipped seam and the helper's parameter) and all four pass, each having failed the same way before the
+fix. The same repair noticed, and removes, one more piece of litter this increment's scratch work
+introduced: `CompareCheckoutCase.checkout()` gives its throw-away checkout a base of its own, and
+`TemporaryDirectory` removes only the directory *inside* that base — so the base itself was left in
+the temp root, one per case. It is registered for removal with the tree it carries now.
+
+**9.3.3 The portability fixture's text-written build input (7 errors + 4 failures).** The suite's
+`PortabilityTree` wrote the pinned `litellm_snapshot.json.gz` with `write_text`. Text mode translates
+`\n` to the platform's separator on Windows, so those bytes stopped hashing to the digest the manifest
+pins and `portability.restore_inputs()` refuses them — for the *checkout's* copy with the input error
+(7 acceptance cases error out: `PortabilityError: … is not the input this tree pins …`) and for the
+tree's own copy after the refusal paths had been reached (4 refusal cases assert the wrong error:
+`'go build' not found in '… is not the input this tree pins …'`).
+
+*Fix:* the fixture writes that file as **bytes** (a `write_bytes`/`write_to` pair in the tree helper;
+the shipped checker is right — the digest is over bytes). *Evidence:* emulating the write side alone
+(`Path.write_text` translating `\n` to `\r\n`, reads untouched, as on Windows) reproduced exactly that
+set before the fix — `ran 479 failures 4 errors 7`, every one in `test_portability` — and the same
+emulation over the repaired suite reports `Ran 482 tests … OK`; the acceptance cases are their own
+witness (they fail when the input's digest is not the pinned one).
+
+**9.3.4 The nested-run cases (2 failures), and the harness defect the repair exposed.** Both
+`HostCase` nested-run cases fail whenever the child suite fails (§9.3.1–9.3.3 are the child's own
+failures), and the repair of the suite is the repair of those two. The repair exposed two defects in
+the harness itself — the first when the count assertion met the second same-named case this repair
+adds (the two modules' platform-fallback cases), the second when the record-line case below was
+written: `nested_statuses()` keyed the child's cases by
+their **bare name**, so the second case to join a name read as a
+count that does not add up — `AssertionError: 481 != 482` — instead of as two cases (keys are the
+runner's own `<module>.<class>.<case>` qualifier now, read back by name through `status_of()`, which
+refuses a lookup that matches no case or more than one); and `nested_summary()`'s "broken:" list
+scanned for the `FAIL:`/`ERROR:` prefix alone, so a case's *printed records* — the shipped checks
+record `FAIL: <name> — <detail>` lines, and the opencode cases print those — were named as broken
+cases in the one message whose job is naming the case that broke (only the runner's own case-line
+shape is read now). Both are held the same way: reverting the qualifier keys fails
+`test_suite_holds_in_a_child_whose_path_holds_no_tools` (`481 != 482`), and reverting the filter fails
+`test_a_record_line_in_the_child_s_output_is_not_a_broken_case`.
+
+### 9.4 The step now enumerates its failures
+
+`scripts/gate.py`'s `step_selftest()` prints every `FAIL:`/`ERROR:` caption the child printed, ahead of
+the detail's tail (`failing_tests()`): a tail holds only the last failure's traceback, and a CI log is
+what a reader has left when the run is over. Output only — no step is narrowed, skipped or silenced,
+and no gate rule changes. *Case:* `test_the_selftest_failure_names_every_failing_test` writes two
+failing tests (one failure, one error) and asserts both captions and the summary behind them;
+suppressing the listing fails it (measured). `docs/harness.md`'s `selftest` section states the rule.
+
+### 9.5 The gate on the repaired state
+
+```
+$ python3 scripts/gate.py
+gate: /home/azureuser/claw/tasks/2026-11-14/call-ccc/wt-s1/call-ccc
+gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go module=ccc targets=./cmd/ccc/... ./internal/ccc/...
+  PASS     gofmt       3624 file(s) gofmt-clean
+  PASS     build       go build ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
+  PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
+  PASS     test        3 package(s) ok (in ccc)
+  PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
+  PASS     selftest    Ran 482 tests in 10.837s (rc=0)
+  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5767 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
+  PASS     secrets     no leaks found in 188 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+GATE: PASS
+rc=0
+```
+
+The run was taken on the state this section leaves except for this section's own text (the record is a
+tracked file already counted by the `parity` and `secrets` steps, so their numbers do not move), and
+the suite's own count is 482 — the migration's 477 plus the five cases this repair adds (the spelling
+case, the two fallback-list cases, the gate's failing-test listing case, and the record-line case).
+
+### 9.6 What this repair does not claim
+
+- **No Windows runner executed this head.** Every Windows answer above is a *simulation of one axis* on
+  this Linux host — CRLF text writes, an absent `/tmp`, the `nt` platform seams, a host-spelled
+  relative path — never Windows itself. The simulations reproduce the leg's failure *classes* (and the
+  byte counts the Go tests printed), but the operator's re-run of `windows-latest` is the verification.
+- **The 28 + 9 enumeration is derived, not read.** The log holds the summary counts and exactly one
+  caption (the assertion quoted in §9.1); the classes above reproduce on this host and their sum is the
+  leg's own count, but no log line confirms the distribution — and the fixed `selftest` step is what
+  makes the next round readable rather than inferred.
+- **The three-subtest arithmetic of §9.3.1 is an inference from the leg's own disclosure** that Git for
+  Windows created the pin's links (`carried link(s) matched in this platform's own spelling: 3`), i.e.
+  that the runner can create symlinks and the suite's second link shape ran there.
+
 ## What this record does not claim
 
 - **No native check ran.** No target harness (Codex, Claude Code, Pi, OMP, OpenCode) was installed and
@@ -295,3 +559,8 @@ directory outside the tree.
   `<goal>-citations.tsv`, moves nothing into `docs/goals/archive/`, and changes no `Done when` clause.
 - **`.git-blame-ignore-revs` names the rule, not a SHA.** The squash commit that lands this migration
   does not exist yet; the file says how the operator appends it.
+- **The repair of §9 is not verified on Windows.** No runner executed the repaired head, and every
+  Windows answer §9 rests on is a simulation of one host axis on this Linux machine; what is verified
+  *here* is the gate on the repaired tree (§9.5), the suite (482 tests), and each emulation's
+  reproduction of the failing set it stands for. The next `windows-latest` run is the verification —
+  and the `selftest` step now names its failures, so that run enumerates itself.

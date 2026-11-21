@@ -120,28 +120,43 @@ class PortabilityTree:
         self.write("ccc/go.sum", "github.com/example/dep v1.0.0 h1:AAAA\n")
         self.write("ccc/internal/ccc/x.go", "package ccc\n")
         # The generated build input lives where the manifest's layout says: inside the carry.
-        self.write("agentsview/" + SNAPSHOT, SNAPSHOT_BYTES.decode())
+        self.write_bytes("agentsview/" + SNAPSHOT, SNAPSHOT_BYTES)
         self.write_manifest()
         self.checkout = self.root / "checkout"
         (self.checkout / ".git").mkdir(parents=True)
         self.write_in_checkout("go.mod", CARRY_GO_MOD)
         # The build input upstream does not track, restored by the checkout itself (upstream's
         # Makefile does that before every Go-compiling target): a caller's checkout is never written
-        # to, so it has to hold it already.
-        self.write_in_checkout(SNAPSHOT, SNAPSHOT_BYTES.decode())
+        # to, so it has to hold it already -- and as bytes, because its digest is the value the
+        # manifest pins.
+        self.write_to(self.checkout, SNAPSHOT, SNAPSHOT_BYTES)
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
     def write(self, relative: str, text: str) -> None:
-        target = self.root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        self.write_to(self.root, relative, text.encode("utf-8"))
 
     def write_in_checkout(self, relative: str, text: str) -> None:
-        target = self.checkout / relative
+        self.write_to(self.checkout, relative, text.encode("utf-8"))
+
+    def write_bytes(self, relative: str, data: bytes) -> None:
+        """One file whose *bytes* are a value something pins: the generated build input.
+
+        ``write_text`` is the wrong tool for this one path. Text mode translates ``\\n`` to the
+        platform's own line separator on Windows, and this file's bytes are exactly what the manifest
+        pins and what ``portability.restore_inputs`` re-hashes, so a tree whose input went through
+        text mode is a tree whose digest stops matching its record on that host alone: measured by
+        emulating the write side, seven acceptance cases turned into ``PortabilityError``s and four
+        refusals asserted the wrong error, on this host, with nothing else changed.
+        """
+        self.write_to(self.root, relative, data)
+
+    @staticmethod
+    def write_to(root: Path, relative: str, data: bytes) -> None:
+        target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        target.write_bytes(data)
 
     def write_manifest(self) -> None:
         digest = hashlib.sha256(SNAPSHOT_BYTES).hexdigest()
@@ -539,6 +554,27 @@ class ScratchDirectoryCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, path, ignore_errors=True)
         self.assertTrue(path.is_absolute(), path)
         self.assertNotIn(self.tree.root, path.parents)
+
+    def test_the_platforms_own_scratch_bases_are_pinned_for_both_answers(self) -> None:
+        """The fallback list has two answers, and both are pinned here rather than read off this host.
+
+        POSIX names its scratch roots; Windows has none of its own to name (``Path("/tmp")`` hangs off
+        whichever drive the process is on, so a list of those is empty there and the two cases above
+        -- which take the environment's own answer away -- could not produce a scratch at all), and
+        its answer is therefore the variables ``tempfile`` itself reads, asked again. Driving the
+        platform seam for both answers is what keeps this case the rule's answer rather than this
+        machine's: a fallback that only worked on the host the suite happens to run on is exactly the
+        defect the two cases above exist to catch, one layer down.
+        """
+        module = self.module
+        windows_temp = Path(tempfile.gettempdir()) / "platform-temp"
+        with mock.patch.dict(os.environ, {"TEMP": str(windows_temp),
+                                          "TMP": str(windows_temp / "alt")}):
+            with mock.patch.object(module, "platform_name", lambda: "nt"):
+                self.assertEqual(module.platform_scratch_bases(),
+                                 [windows_temp, windows_temp / "alt"])
+            with mock.patch.object(module, "platform_name", lambda: "posix"):
+                self.assertEqual(module.platform_scratch_bases(), [Path("/tmp"), Path("/var/tmp")])
 
 
 class ManifestLayoutCase(unittest.TestCase):

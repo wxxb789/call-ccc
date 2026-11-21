@@ -115,6 +115,37 @@ def tail(text: str, limit: int = OUTPUT_TAIL) -> str:
     return text if len(text) <= limit else "…\n" + text[-limit:]
 
 
+def platform_name() -> str:
+    """The platform this process runs on, as ``os.name`` spells it (``posix``, ``nt``).
+
+    A named seam rather than a bare ``os.name`` read, because :func:`platform_scratch_bases` has two
+    answers and a case has to be able to pin both: a case that asserts one of them from the host it
+    happens to run on pins nothing about the other, and the suite's own rule is that no case depends
+    on which platform is running it (``scripts/upstream-parity.py``'s ``platform_name`` is the same
+    seam for the same reason).
+    """
+    return os.name
+
+
+def platform_scratch_bases() -> list[Path]:
+    """The scratch roots this platform itself offers, for a host whose env answer is unusable.
+
+    ``tempfile.gettempdir()`` answers from ``TMPDIR``/``TEMP``/``TMP`` and caches the first answer in
+    ``tempfile.tempdir``, so a caller -- or a case -- can leave the process with a temp root that is
+    relative, or inside this tree, and the cached answer hides nothing else. These are the bases to
+    try beside it. POSIX names its own two (``/tmp``, ``/var/tmp``); Windows has no scratch root of
+    its own to name -- ``Path("/tmp")`` is ``\tmp`` on whichever drive the process happens to be on,
+    which is why that list finds nothing there -- so its answer is the environment variables its own
+    temp answer is made of, read again here. A base is used only where it is absolute
+    (:func:`scratch_directory`): a relative ``TEMP`` names no root of its own, and writing through it
+    would put the scratch under whatever the process's current directory happens to be. A host where
+    none of them is usable gets the disclosed INCOMPLETE instead of a scratch inside the tree.
+    """
+    if platform_name() == "nt":
+        return [Path(os.environ[name]) for name in ("TEMP", "TMP") if os.environ.get(name)]
+    return [Path("/tmp"), Path("/var/tmp")]
+
+
 def scratch_directory(prefix: str) -> Path:
     """A fresh scratch directory, absolute, and **outside this tree**.
 
@@ -122,12 +153,14 @@ def scratch_directory(prefix: str) -> Path:
     or one inside the repository -- would otherwise put the scratch under the process's current
     directory (the repository root when the gate runs this), where the ``parity`` step would then see
     an unexplained path. Each candidate is therefore resolved and checked against the tree before it
-    is used, and the platform's own scratch roots are the fallback; when none of them is usable the
-    run says so instead of leaving a directory nobody asked for inside the repository.
+    is used, and the platform's own scratch roots (:func:`platform_scratch_bases`) are the fallback;
+    when none of them is usable the run says so instead of leaving a directory nobody asked for
+    inside the repository.
     """
     attempts: list[str] = []
-    for base in (None, Path("/tmp"), Path("/var/tmp")):
-        if base is not None and (not base.is_dir() or base == ROOT or ROOT in base.parents):
+    for base in (None, *platform_scratch_bases()):
+        if base is not None and (not base.is_absolute() or not base.is_dir()
+                                 or base == ROOT or ROOT in base.parents):
             continue
         try:
             candidate = Path(
