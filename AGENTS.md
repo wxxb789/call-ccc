@@ -35,14 +35,17 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   prevent, and it has been paid for twice: goal 0009 deleted a Python shadow of the carried reader, and
   goal 0009a spent sixteen review rounds growing a Python shadow of Codex's own loader. An obligation to
   know what a foreign tool accepts is discharged by running that tool against the artifact, or by citing
-  the carried reader's own code — never by restating its logic here. One place still re-derives a foreign
-  loader's judgment, and it is **declared debt rather than a licence**: the Pi-family source leaf check
+  the carried reader's own code — never by restating its logic here. Two places still re-derive a foreign
+  loader's judgment, and both are **declared debt rather than a licence**: the Pi-family source leaf check
   (`internal/ccc/pi_source_leaf.go`, required by the leaf rule below) walks a source file's own entry path
   to establish that the read's last record is the entry the file selects as its leaf, because the carried
-  Pi reader skips the tree entries Pi's own loader builds context from. It stays — a conversion that
-  ignored it could resume a branch the conversation left — it may not grow a new local judgment, and it
-  moves to Pi's own loader or an authoritative read the moment one answers the leaf question;
-  `docs/decisions/OPEN-QUESTIONS.md`'s `Q-0005-18` carries that condition.
+  Pi reader skips the tree entries Pi's own loader builds context from; and `scripts/opencode-native-check.py`
+  computes the dialogue and tool results it expects from a Python reconstruction of the carried OpenCode
+  reader, which already answers differently — it refuses a `shell` record the reader reads as tool-bearing
+  history. Each stays (the leaf guard prevents a continuation on a branch the source's file had left; the
+  native check's refusal cases are pinned by no other step), neither may grow a new local judgment, and each
+  moves to the harness's own loader or an authoritative read the moment one answers its question —
+  `docs/decisions/OPEN-QUESTIONS.md`'s `Q-0005-18` and `Q-0008-10` carry those conditions.
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it. A target format that is
