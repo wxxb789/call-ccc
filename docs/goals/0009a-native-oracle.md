@@ -6,14 +6,14 @@ This file's offline-oracle premise is superseded: the Codex well-formedness judg
 binary itself, not to a standalone specification this repository freezes and mutates. **The hold is
 operator-enforced** — the dispatcher checks a goal's prerequisites, not the index's status column, and 0003 is
 already accepted, so this status line plus the operator's stand-down are what keep the increment from being
-dispatched. The acceptance clauses below are **unchanged** and take effect again when the re-scope lands.
+dispatched. The clauses below are **on record unchanged while the hold stands** — they are **not a live contract**, and the re-scope **replaces** them rather than reactivating them; the increment stays undispatchable until that replacement merges. The two sections the hold supersedes are marked below.
 **Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md); the
 decomposition's rationale, the two cross-family consults it came from, and the per-increment proof obligations
 are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md).
 
 **Prerequisite:** [0003 — Continue a Codex session in Claude Code](archive/0003-codex-to-claude-continuation.md).
 
-## Intended advance
+## Intended advance *(superseded by the hold above — the re-scope replaces this)*
 
 `scripts/codex-native-check.py`'s Codex well-formedness rules become a **standalone, frozen
 specification**: it validates Codex session artifacts — including reduced/selective ones — against
@@ -25,7 +25,7 @@ the file is **read-only for the rest of goal 0009**; the conductor's oracle-lock
 No Go change; nothing outside `scripts/codex-native-check.py`, its tests and synthetic Codex
 fixtures; the existing unflagged Codex acceptance keeps reporting the same verdict.
 
-## Done when
+## Done when *(superseded by the hold above — a re-scope replaces these clauses before dispatch resumes)*
 
 - **D1 — Every oracle rule has its own negative fixture.** Each well-formedness rule is stated over
   **synthetic Codex JSONL fixtures**, with a mutation that removes the rule and turns its fixture red.

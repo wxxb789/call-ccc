@@ -1,7 +1,7 @@
 # Evidence — prep increment: the ownership rule and 0015–0017's deferral
 
-The commands that ran, with their verdicts. Scope: the three documents this increment changes plus its own
-records; **no Go file, no script, no gate step, no workflow** — so the Go steps below are the gate proving the
+The commands that ran, with their verdicts. Scope: the documents this increment changes (the plan's scope
+list) plus its own records; **no Go file, no script, no gate step, no workflow** — so the Go steps below are the gate proving the
 tree it already proved, and the steps that *read* this increment are `parity`, `selftest` and `secrets`.
 
 ## Gate, per reviewed head
@@ -59,6 +59,7 @@ the status table denies (0018–0021 are ready and come before it) — reworded.
 finding is a defect in what this increment wrote, and each was fixed rather than argued:
 
 | round | head | findings | disposition |
+<!-- counts inside these rows are what that round saw; the declared-debt inventory is §2's, not this table's -->
 |---|---|---|---|
 | 1 | `e2faae6` | P2: the ownership rule contradicts the required Pi-family source leaf check | guard kept as **declared debt** (`Q-0005-18`), clause added to the contract with the owner's approval |
 | 2 | `670161b` | P2: the OpenCode source oracle sits outside the rule's only declared exception · P2: 0009a still reads *Ready* under the superseded contract · P3: documented order ≠ dispatch order · P3: `Q-0005-18`'s reversal described the opposite effect | four fixed: the debt clause names both sites, the index row reads *Rescope pending … not dispatchable*, the order paragraph names the registry as it stands, the reversal now says the cost is a **weakened** refusal |
@@ -67,10 +68,12 @@ finding is a defect in what this increment wrote, and each was fixed rather than
 
 | 5 | `8237606` | P2: a **fifth** debt site — the Claude → Pi arm of `scripts/pi-native-check.py` expects the first raw user record as the prompt, while the carried reader skips an `isMeta` record (recorded as an inspection finding, not yet reproduced natively) · P2: the blanket decoder ban would cover a *narrow emitted-byte* check (`codex_install.go`'s installed-dialogue walk, which pins the swapped-prompt regression) though no carried reader is re-derived · P3: the plan and the records had gone stale against each other ("goal file untouched" vs the new **Held** line; three-vs-four debt entries; three-vs-four rounds) | all three: §2 gains its fifth entry plus an explicit **non-completeness** clause (declare, don't enumerate) and a clause separating narrow emitted-byte structural checks from foreign decoders; the plan, the index and this record were reconciled, and the counts were removed in favour of "declared so far" / "each round on the head it names" |
 
+| 6 | `bfa007d` | P2: the held goal's clauses read as **reactivated** by the re-scope, though the rescope must **replace** them · P3: two declaration procedures (the contract required a §2 *and* a Q entry, §2 allowed evidence + a Q entry) · P3: the plan's scope said three documents where the delta carries five, and counts survived in the plan and this record | all three: the hold now says the clauses are on record and the re-scope replaces them, with both superseded sections marked; §2's escape hatch is gone, so one procedure stands; the plan lists all five documents and refers to §2 for the inventory |
+
 ## What this record does not claim
 
-- It does not claim the three debt sites are correct today, only that they are **declared**, bounded, and each
-  carries the condition under which it is replaced.
+- It does not claim the declared debt sites are correct today, only that they are **declared**, bounded, and
+  each carries the condition under which it is replaced.
 - It does not re-verify upstream provenance: the pin's own commit object is not available on this host, so
   parity here proves the tree matches the manifest, and the manifest's provenance is checked where the
   importer runs against a checkout of the pin.
