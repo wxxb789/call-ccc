@@ -1,7 +1,12 @@
 # 0009a — Freeze the native oracle
 
-**Status:** Ready 2026-11-21 (owner fork A2: goal 0009 decomposed into four ordered increments — the
+**Status:** **Held 2026-11-21 — rescope pending** (owner fork A2: goal 0009 decomposed into four ordered increments — the
 native oracle frozen first, so the verifier can never again be co-mutated with the implementation it judges).
+This file's offline-oracle premise is superseded: the Codex well-formedness judgment belongs to the `codex`
+binary itself, not to a standalone specification this repository freezes and mutates. **The hold is
+operator-enforced** — the dispatcher checks a goal's prerequisites, not the index's status column, and 0003 is
+already accepted, so this status line plus the operator's stand-down are what keep the increment from being
+dispatched. The acceptance clauses below are **unchanged** and take effect again when the re-scope lands.
 **Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md); the
 decomposition's rationale, the two cross-family consults it came from, and the per-increment proof obligations
 are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md).

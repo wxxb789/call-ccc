@@ -2990,14 +2990,41 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   the loader's own answer — not in this increment, which changes no verifier and no script, and a change to a
   verifier belongs to its own increment with its own two-stage review; (c) keep predicting without disclosing
   it — refused.
-- **Default taken:** (a). The prediction is what lets the check **refuse** a load that looks natively loadable:
-  the loader's own answer alone cannot distinguish "the loader returned the wrong roles" from "we predicted
-  wrongly", so the prediction is the only side that can name a mismatch. Replacement condition: the loader's
-  own read (the `get_messages`/`get_state`-shaped call both checks already drive against a throw-away copy)
-  answers the role question directly, at which point the prediction is **deleted**, not kept as a second
-  opinion — a verifier that keeps both would re-derive the judgment the rule gives away.
-- **Reversal:** delete the prediction in one increment and compare the loader's own answer against the
-  converted document's recorded roles; the refusal surface narrows to what the loader itself reports — a
+- **Default taken:** (a). The prediction is what lets the check **refuse** a load that looks natively
+  loadable: the loader's own answer is already read by both verifiers (`get_messages`/`get_state` against a
+  throw-away copy) and compared against an **independent expected sequence**, and that comparison is the only
+  thing that can reject a wrong replay — the same-count role swap that `pi_verify_test.go` pins is rejected
+  solely because an expectation exists beside the observed answer. So the debt is **where the expectation
+  comes from**, not whether to have one: replacement means the sequence is derived from the harness's own
+  documented replay semantics or an authoritative read *instead of* a local walk, **with the mismatch
+  regression preserved** — a replacement that deletes the walk and keeps only the loader's answer would
+  weaken the check, not retire the debt.
+- **Reversal:** replace the walk in one increment with an expectation derived from the harness's own
+  documented replay semantics or an authoritative read, keep a case that fails when the expectation is
+  removed (the role-swap regression, or an equivalent), and only then delete `pi_source_leaf`-style local
+  reasoning from the verifiers; the refusal surface narrows to what the retained expectation covers — a
   **weakened** refusal, not a larger one.
 - **Settled by:** the increment that next touches `internal/ccc/pi_verify.go` / `omp_verify.go`, or an owner
+  sentence.
+
+## Q-0007-13 — The Claude → OpenCode oracle's expectations are a Python reconstruction of the carried Claude reader
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced by an independent AgentsView
+  read of the Claude source).
+- **Question:** `scripts/opencode-native-check.py`'s `--direction claude-to-opencode` arm re-derives the carried
+  Claude reader's tool-result decoding and pairing in Python and uses that reconstruction as the **expected**
+  result, while OpenCode's own export supplies only the observed side. The two already disagree on a faithfully
+  carried result: the Python oracle drops a result that consists of a lone U+001C — `.strip()` treats it as
+  whitespace — while the writer's `strings.TrimSpace` does not, so a **correct** carry can fail the oracle. May
+  a native check hold its own model of a carried reader where the binding ownership rule gives that judgment to
+  the reader itself?
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace the expectations now —
+  not in this increment, which changes no script, and a change to a native check belongs to its own increment
+  with its own two-stage review; (c) leave the divergence undisclosed — refused.
+- **Default taken:** (a). The whitespace divergence is named here so it is not rediscovered as a mystery
+  failure: it is a **false negative of the check**, not a defect in the writer.
+- **Reversal:** take those expectations from an independent AgentsView read of the Claude source (the observed
+  side stays OpenCode's export), re-pin the arm's cases, and add a case whose recorded result is a lone
+  U+001C, so the divergence cannot return silently.
+- **Settled by:** the increment that next touches `scripts/opencode-native-check.py`'s Claude arm, or an owner
   sentence.

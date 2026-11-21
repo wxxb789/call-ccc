@@ -6,8 +6,10 @@ tree it already proved, and the steps that *read* this increment are `parity`, `
 
 ## Gate, per reviewed head
 
-`python3 scripts/gate.py` (the required step set; a step that cannot verify fails rather than printing a
-partial PASS):
+`python3 scripts/gate.py` — the **required** set is `scripts/gate-required.txt`. A required step that cannot
+verify **fails** the gate; an unavailable **non-required** step can instead produce
+`GATE: PASS (partial: …)` with exit 0. **This increment's evidence requires the unqualified `GATE: PASS`**: a
+`(partial: …)` run is not what the plan's "gate green" means, whatever its exit code, and no row below is one.
 
 | head | verdict | notes |
 |---|---|---|
@@ -16,6 +18,7 @@ partial PASS):
 | `670161b` | `GATE: PASS` | same eight steps, same counts — the declared-debt clause is `AGENTS.md`, a declared deviation from upstream |
 | `4b081f6` | `GATE: PASS` | same eight steps, same counts. **Sequencing disclosed:** the commit message for this head quotes the gate *before* the run above it, which belonged to `670161b`; the gate was then run on this head and passed. The claim is true of the head it names; the order was wrong, and it is recorded rather than amended away (amending a pushed commit needs a force-push) |
 | `46edf2a` | `GATE: PASS` | same eight steps, same counts — the two-site debt clause |
+| `43d1386` | `GATE: PASS` | same eight steps — `AGENTS.md` keeps the rule and points at §2; `files seen by git` 5 735; secrets clean in 180 owned files |
 
 ## CI
 
@@ -60,6 +63,7 @@ in what this increment wrote, and each was fixed rather than argued:
 | 1 | `e2faae6` | P2: the ownership rule contradicts the required Pi-family source leaf check | guard kept as **declared debt** (`Q-0005-18`), clause added to the contract with the owner's approval |
 | 2 | `670161b` | P2: the OpenCode source oracle sits outside the rule's only declared exception · P2: 0009a still reads *Ready* under the superseded contract · P3: documented order ≠ dispatch order · P3: `Q-0005-18`'s reversal described the opposite effect | four fixed: the debt clause names both sites, the index row reads *Rescope pending … not dispatchable*, the order paragraph names the registry as it stands, the reversal now says the cost is a **weakened** refusal |
 | 3 | `46edf2a` | P2: the Pi/OMP **target-side replay** prediction is the same class and was missing from the debt · P2: `Q-0008-10`'s replacement proposed the conversion's own read-back, which is the *installed target* and cannot show what the source supplied · P3: the increment had no repository-local plan or evidence record | all three: the debt list is now a **single enumeration in `docs/core-design/README.md` §2** with a third entry (`Q-0005-19`), `Q-0008-10` requires an independent AgentsView source read with the read-back on the observed side, and this record pair was written |
+| 4 | `43d1386` | P2: a fourth debt site — the Claude → OpenCode arm's expectations, whose `.strip()` drops a result that is a lone U+001C while the writer's `TrimSpace` keeps it, so a faithful carry can fail the oracle · P2: `Q-0005-19` mistook the loader's **observed** answer for an expectation (the same-count role swap is detected only *because* an expectation stands beside it) · P2: the 0009a hold lived only in the index, while the dispatcher reads prerequisites, not status · P3: this record overstated the gate's fail-closed rule (a non-required step can leave `GATE: PASS (partial: …)`, exit 0) | all four: §2 gains its fourth entry (`Q-0007-13`), `Q-0005-19` now requires an expectation **and** the mismatch regression before the walk goes, `docs/goals/0009a-native-oracle.md` and the index both read **Held** and both say the hold is **operator-enforced**, and this record distinguishes a required-step failure from a partial pass and requires the unqualified `GATE: PASS` |
 
 ## What this record does not claim
 
