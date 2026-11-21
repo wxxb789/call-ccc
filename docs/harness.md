@@ -84,6 +84,13 @@ name never reached the gate's log (a case here runs that shape and pins that the
 Windows answer is a simulation executed on the running host, never an assertion from memory about a
 machine nobody in the loop has.
 
+A failing run's step line names **every** test that failed, ahead of the detail's tail: the names are
+read out of the whole run (`failing_tests()`), because a step's detail is a tail and a CI job's log is
+what a reader has left when the run is over — GitHub's runner collapses the captions into a single
+annotation, so a run whose names stayed inside the tail could not be enumerated without running it
+again. `scripts/tests/test_gate.py` writes two failing tests (one failure, one error) and asserts both
+names, so a listing short of either fails the suite.
+
 ## `parity`: the carried tree against its pin
 
 `scripts/upstream-parity.py` answers, offline, whether the AgentsView source this repository carries
@@ -218,9 +225,13 @@ handed over is never written to either, and one this run fetched itself gets the
 upstream's Makefile restores (from this tree's copy, whose SHA-256 the carried tool pins and the
 `parity` step verifies); the scratch is removed unless `--keep` says otherwise. The scratch is also
 where the `parity-root-*` class of leak is closed: a relative `TMPDIR` — the shape that once left 81
-scratch directories in the repository root — is refused, and the platform's own scratch root is taken
-instead, because a scratch tree inside the repository would be an unexplained path to the `parity`
-step.
+scratch directories in the repository root — is refused, and the platform's own scratch roots are
+taken instead (`platform_scratch_bases()`: `/tmp` and `/var/tmp` on POSIX, and on Windows the
+`TEMP`/`TMP` variables that platform's own temp answer is made of, since `Path("/tmp")` is `\tmp` on
+whichever drive the process happens to be on — its two answers are pinned by a case, not read off the
+host the suite runs on; and a fallback base that is *relative* names no root of its own and is not
+written through, since it would land under whatever the current directory happens to be), because a
+scratch tree inside the repository would be an unexplained path to the `parity` step.
 
 A checkout that is *used* is verified first: it is a git checkout, its `HEAD` is the pin, and
 `git status --porcelain` is empty — the same three answers `scripts/upstream-compare.py` requires

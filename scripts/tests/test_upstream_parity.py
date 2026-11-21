@@ -27,7 +27,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -42,6 +42,27 @@ TOOL = "internal/pricing/cmd/litellm-snapshot/main.go"
 MANIFEST = "scripts/upstream-manifest.txt"
 
 
+def platform_scratch_bases(platform: str) -> list[Path]:
+    """The scratch roots ``platform`` itself offers, for a host whose env answer is unusable.
+
+    ``tempfile.gettempdir()`` answers from ``TMPDIR``/``TEMP``/``TMP`` and caches the first answer in
+    ``tempfile.tempdir``, so a case that poisons that attribute -- the two cases at the bottom of this
+    module do exactly that, to pin the leak rule -- takes the environment's answer away from the whole
+    process and nothing else is left. POSIX names its own two scratch roots (``/tmp``, ``/var/tmp``);
+    Windows has no scratch root of its own to name (``Path("/tmp")`` is ``\\tmp`` on whichever drive
+    the process happens to be on, so a list of those finds nothing there and this helper could not
+    produce a tree at all), and its answer is the variables its own temp answer is made of, read again
+    here. ``scripts/portability.py``'s ``platform_scratch_bases`` is the shipped half of this same
+    rule (it reads ``os.name`` through a ``platform_name`` seam, the shape shipped code uses); this
+    copy is the suite's, and takes the answer as a parameter so a case can pin both on either host --
+    ``os.name`` itself cannot be patched for that on a POSIX host, because ``pathlib`` reads it when a
+    ``Path`` is constructed and every ``Path`` call in the case would then fail.
+    """
+    if platform == "nt":
+        return [Path(os.environ[name]) for name in ("TEMP", "TMP") if os.environ.get(name)]
+    return [Path("/tmp"), Path("/var/tmp")]
+
+
 def scratch_tree(prefix: str) -> Path:
     """A throw-away tree for one case, always absolute and always outside the repository.
 
@@ -50,18 +71,21 @@ def scratch_tree(prefix: str) -> Path:
     (the repository root when the gate runs this suite), where a killed run leaves it behind: 81 empty
     ``parity-root-*`` directories were found in the repository root on 2026-11-21 for exactly that
     reason. The base is therefore resolved first, a base inside the repository is refused, and the
-    patterns are named in the repository's own ``.gitignore`` as the second line of defence -- a stray
-    tree must never be something ``git status`` offers to commit.
+    platform's own scratch roots (:func:`platform_scratch_bases`) are the fallback; the patterns are
+    named in the repository's own ``.gitignore`` as the second line of defence -- a stray tree must
+    never be something ``git status`` offers to commit.
     """
     base = Path(tempfile.gettempdir())
     if not base.is_absolute():
         base = Path(os.path.abspath(base))
     attempts: list[str] = []
-    for candidate_base in (base, Path("/tmp"), Path("/var/tmp")):
-        if candidate_base in (Path("/tmp"), Path("/var/tmp")) and (
-                not candidate_base.is_dir() or candidate_base == REPO_ROOT
-                or REPO_ROOT in candidate_base.parents):
-            continue
+    # The environment's own answer is tried as it stands (that is what ``tempfile`` would use); the
+    # platform's fallback roots are offered only where one is usable at all.
+    candidates: list[Path] = [base]
+    candidates.extend(root for root in platform_scratch_bases(os.name)
+                      if root.is_dir() and root != base and root != REPO_ROOT
+                      and REPO_ROOT not in root.parents)
+    for candidate_base in candidates:
         try:
             candidate = Path(tempfile.mkdtemp(prefix=prefix, dir=str(candidate_base))).resolve()
         except OSError as exc:
@@ -384,6 +408,29 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
 
     def test_a_clean_tree_passes(self) -> None:
         self.assert_clean(*self.tree.run_parity())
+
+    def test_the_pin_source_spelling_is_posix_on_every_platform(self) -> None:
+        """A tree path this check names is spelled with forward slashes, whatever the host spells.
+
+        The check prints the pin constant's own path (``reported by …``) and names it in every
+        message about it; the manifest's record paths, the layout's lines and the docs all spell tree
+        paths POSIX-form, and the migration that gave the line its layout prefix spelled it with a
+        host ``str()`` instead -- ``cmd\\ccc\\pin.go`` on Windows alone, in the one job nobody can
+        re-run on demand. On *this* host a ``str()`` and an ``as_posix()`` agree, so the shipped
+        helper is driven with the path *values* a Windows host hands it (there both operands are
+        Windows-flavoured): the same simulation the gate's suite runs for its own walk, and the one
+        that makes the difference visible here rather than only in the Windows lane.
+        """
+        parity = self.tree.parity
+        manifests = self.tree.manifest_module
+        for header, want in (("", "cmd/ccc/pin.go"),
+                             ("layout agentsview/ ccc\n", "ccc/cmd/ccc/pin.go")):
+            with self.subTest(layout=want):
+                manifest = manifests.parse_manifest(f"pin {PIN}\n{header}")
+                self.assertEqual(parity.pin_source_path(manifest), want, header)
+                with mock.patch.multiple(parity, Path=PureWindowsPath,
+                                         PIN_SOURCE=PureWindowsPath("cmd", "ccc", "pin.go")):
+                    self.assertEqual(parity.pin_source_path(manifest), want, header)
 
     def test_a_modified_carried_file_is_named(self) -> None:
         self.tree.break_carried("src/a.txt", b"alpha changed\n")
@@ -1504,6 +1551,21 @@ class ScratchTreeCase(unittest.TestCase):
         self.assertTrue(root.is_absolute(), root)
         self.assertNotIn(REPO_ROOT, root.parents)
 
+    def test_the_platforms_own_scratch_bases_are_pinned_for_both_answers(self) -> None:
+        """The fallback the two cases above rely on is pinned for both answers, not for this host's.
+
+        Those cases take the environment's own answer away, so what lets them produce a tree at all is
+        this list; on Windows the list they need is not ``/tmp`` (which hangs off the current drive
+        there) but the variables ``tempfile`` itself reads. Both answers are driven here, with the
+        variables set for the Windows one, so the rule's answer is pinned on either host rather than
+        read off the machine the suite happens to run on.
+        """
+        windows_temp = Path(tempfile.gettempdir()) / "platform-temp"
+        with mock.patch.dict(os.environ, {"TEMP": str(windows_temp),
+                                          "TMP": str(windows_temp / "alt")}):
+            self.assertEqual(platform_scratch_bases("nt"), [windows_temp, windows_temp / "alt"])
+            self.assertEqual(platform_scratch_bases("posix"), [Path("/tmp"), Path("/var/tmp")])
+
 
 class ManifestCase(unittest.TestCase):
     """Cases for the shared manifest format."""
@@ -1636,7 +1698,13 @@ class CompareCheckoutCase(unittest.TestCase):
         return run
 
     def checkout(self, status_output: str) -> Path:
-        directory = tempfile.TemporaryDirectory(prefix="compare-checkout-", dir=str(scratch_tree("compare-base-")))
+        base = scratch_tree("compare-base-")
+        # The base holds the throw-away checkout and nothing else, so it goes with it: registered
+        # here, because ``TemporaryDirectory`` removes the directory *inside* the base and the base
+        # itself would otherwise be left in the temp root, one per case (measured: the shape the
+        # migration's ``dir=`` argument introduced).
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        directory = tempfile.TemporaryDirectory(prefix="compare-checkout-", dir=str(base))
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
         (root / ".git").mkdir()

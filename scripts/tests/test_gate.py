@@ -367,6 +367,33 @@ class GateCase(GateTree, unittest.TestCase):
         self.assertEqual(status, "FAIL", proc.stdout + proc.stderr)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
 
+    def test_the_selftest_failure_names_every_failing_test(self) -> None:
+        """The detail is a tail, so the names are read out of the whole run beside it.
+
+        A reader of a CI log cannot run the suite again to learn which tests failed: the runner
+        collapses the captions and the tail keeps only the last failure's traceback. The names
+        therefore have to be in the step's own detail -- every one of them, failures and errors
+        alike, which is why this case writes two and asserts both, not one and the count.
+        """
+        self.write(
+            "scripts/tests/test_sample_failures.py",
+            "import unittest\n\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_failure(self):\n        self.assertTrue(False)\n\n"
+            "    def test_error(self):\n        raise RuntimeError('sample error')\n",
+        )
+        proc = self.gate()
+        status, detail = self.step_line(proc.stdout, "selftest")
+        self.assertEqual(status, "FAIL", proc.stdout + proc.stderr)
+        self.assertIn("scripts/tests -> rc=1", detail)
+        # The names are the detail's own following lines -- a printed step line carries only its
+        # first -- which is the shape a reader of a CI log has: the caption, then the names.
+        self.assertIn("2 failing test(s):", proc.stdout)
+        self.assertIn("FAIL: test_failure (test_sample_failures.T.test_failure)", proc.stdout)
+        self.assertIn("ERROR: test_error (test_sample_failures.T.test_error)", proc.stdout)
+        self.assertIn("Ran 2 tests", proc.stdout)  # the tail is still there, behind the names
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+
     def test_parity_hook_that_fails_fails_the_gate(self) -> None:
         """A hook that exists and exits non-zero is a FAIL, never the absent-hook N/A."""
         self.write("scripts/upstream-parity.py", "import sys\n\nsys.exit(1)\n")
@@ -1007,13 +1034,22 @@ class HostCase(GateTree, unittest.TestCase):
         return loader.discover(str(REPO_ROOT / "scripts" / "tests"), pattern="test_*.py").countTestCases()
 
     def nested_statuses(self, text: str) -> dict[str, str]:
-        """The status the nested run printed per case, keyed by case name.
+        """The status the nested run printed per case, keyed by the runner's own qualifier.
 
         The nested runner switches docstrings off, so a case is one line of the
         shape ``name (test_gate.Case.name) ... ok`` and the field after the last
         ``...`` is its status -- ``ok``, ``FAIL``, or ``skipped '<reason>'``.
         A case that the child never printed is absent from the mapping, which is
         what makes a dropped case fail the count below rather than pass.
+
+        The key is the qualifier (``<module>.<class>.<case>``), not the bare name:
+        two cases in different modules may share a name -- this suite has such a
+        pair, the platform-fallback case in ``test_upstream_parity`` and in
+        ``test_portability`` -- and the count below is about *cases*, so a shared
+        name has to be two entries. Keyed by the bare name, a second case joining
+        an existing name made the count read ``481 != 482`` (a number, not a case)
+        and, worse, could answer for a case with its neighbour's line. A case's
+        bare name is what ``status_of`` reads the mapping by.
 
         A line with nothing after its ``...`` is not a case line: the verbose
         runner leaves the case's own line dangling before the indented line of a
@@ -1035,8 +1071,20 @@ class HostCase(GateTree, unittest.TestCase):
             status = rest.rsplit(" ... ", 1)[1].split()
             if not status:
                 continue
-            statuses[name.strip()] = status[0]
+            statuses[qualifier.strip()] = status[0]
         return statuses
+
+    def status_of(self, statuses: dict[str, str], case: str) -> str:
+        """One case's status, read by its bare name out of the qualifier-keyed mapping.
+
+        Only the last qualifier field is the case's own name, so a name this run's
+        child never printed -- or one two cases share -- fails here instead of
+        answering with a neighbour's line: the cases above assert about *named*
+        cases, and a lookup that silently read the wrong one would pin nothing.
+        """
+        matches = [key for key in statuses if key.rsplit(".", 1)[-1] == case]
+        self.assertEqual(len(matches), 1, f"{case}: the child printed {sorted(statuses)}")
+        return statuses[matches[0]]
 
     def nested_summary(self, proc: subprocess.CompletedProcess) -> str:
         """A one-line summary of a nested run, filtered to be safe in a message.
@@ -1046,6 +1094,14 @@ class HostCase(GateTree, unittest.TestCase):
         break read as a break of *this* run to anything parsing the outer output
         (the suite's mutation driver does). Only the child's summary line, its
         verdict line and the names of its broken cases go in.
+
+        A line is only a *case* line when it has the runner's own shape --
+        ``FAIL: <name> (<module>.<class>.<name>) ...`` -- because the child's
+        stdout also carries what its cases printed, and the shipped checks record
+        ``FAIL: <name> — <detail>`` lines of their own (the opencode cases print
+        those). Scanning for the ``FAIL:``/``ERROR:`` prefix alone named one of
+        those records as a broken case in this class' own failure message, which
+        is the one message whose job is naming the case that broke.
         """
         text = proc.stdout + proc.stderr
         ran = next(
@@ -1056,11 +1112,14 @@ class HostCase(GateTree, unittest.TestCase):
             (line for line in text.splitlines() if line.startswith(("OK", "FAILED"))),
             "no verdict line",
         )
-        broken = [
-            line.split(": ", 1)[1].split(" (")[0]
-            for line in text.splitlines()
-            if line.startswith(("FAIL: ", "ERROR: "))
-        ]
+        broken = []
+        for line in text.splitlines():
+            if not line.startswith(("FAIL: ", "ERROR: ")):
+                continue
+            name, sep, rest = line.partition(" (")
+            qualifier, close, _ = rest.partition(")")
+            if sep and close and "." in qualifier:
+                broken.append(name.split(": ", 1)[1].strip())
         summary = f"nested run rc={proc.returncode}: {ran} | {verdict}"
         return summary + (f" | broken: {', '.join(broken)}" if broken else "")
 
@@ -1091,12 +1150,12 @@ class HostCase(GateTree, unittest.TestCase):
         """
         expected = sorted(self.GUARDED)
         self.assertEqual(
-            sorted(name for name, status in statuses.items() if status != "ok"),
+            sorted(key.rsplit(".", 1)[-1] for key, status in statuses.items() if status != "ok"),
             expected,
             message,
         )
         for name in expected:
-            self.assertEqual(statuses.get(name), "skipped", f"{name}: {message}")
+            self.assertEqual(self.status_of(statuses, name), "skipped", f"{name}: {message}")
 
     def test_suite_holds_in_a_child_whose_path_holds_no_tools(self) -> None:
         """No case may need a tool this machine happens to have installed.
@@ -1141,8 +1200,37 @@ class HostCase(GateTree, unittest.TestCase):
             "test_go_step_results_are_failures_when_the_tool_fails",
             "test_gate_targets_file_replaces_the_default_pattern",
         ):
-            self.assertEqual(statuses.get(case), "ok", f"{case}: {message}")
+            self.assertEqual(self.status_of(statuses, case), "ok", f"{case}: {message}")
         self.assert_only_expected_skips(statuses, message)
+
+    def test_a_record_line_in_the_child_s_output_is_not_a_broken_case(self) -> None:
+        """Only the runner's own case lines are named; a case's printed records are not cases.
+
+        The shipped checks record ``FAIL: <name> — <detail>`` lines of their own, and some cases
+        print those to stdout as they drive the check, so scanning a child's output for the ``FAIL:``
+        prefix alone named a *record* as a broken case in this class' failure message -- the one
+        message whose job is naming the case that broke. The shape is fed to the helper directly (the
+        record line on stdout, a real case line on stderr, the two streams a child's output arrives
+        on), so the rule is pinned without a child that prints anything on purpose.
+        """
+        record = ("FAIL: opencode session answers within its 300s bound — timed out after 300s: "
+                  "opencode session export ses_installed000000000000000")
+        case = "test_something_broke"
+        previous = f"{case} (test_something.Case.{case})"
+        proc = tool_result(
+            ["python"], 1, record + "\n",
+            f"{previous} ... FAIL\n"
+            "======================================================================\n"
+            f"FAIL: {previous}\n"
+            "----------------------------------------------------------------------\n"
+            "Traceback (most recent call last):\n"
+            'AssertionError: False is not true\n'
+            "\n----------------------------------------------------------------------\n"
+            "Ran 1 test in 0.001s\n\nFAILED (failures=1)\n",
+        )
+        summary = self.nested_summary(proc)
+        self.assertIn(f"broken: {case}", summary)
+        self.assertNotIn("opencode session", summary)
 
     def broken_subtest_child(self) -> subprocess.CompletedProcess:
         """A child run whose one case fails inside a ``subTest``, executed here.
@@ -1189,7 +1277,7 @@ class HostCase(GateTree, unittest.TestCase):
         case = "test_only_reports_come_from_subtests"
         self.assertEqual(proc.returncode, 1, text)
         statuses = self.nested_statuses(text)
-        self.assertEqual(statuses.get(case), "FAIL", text)
+        self.assertEqual(self.status_of(statuses, case), "FAIL", text)
         self.assertIn(f"broken: {case}", self.nested_summary(proc))
         with self.assertRaises(AssertionError) as caught:
             self.assert_nested_green(proc)

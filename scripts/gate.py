@@ -275,16 +275,39 @@ def step_go(
     return PASS, f"{name} {' '.join(targets)}{where} -> rc=0"
 
 
+def failing_tests(output: str) -> list[str]:
+    """Every test the run named as a failure or an error, in the order it printed them.
+
+    ``unittest`` prints one ``FAIL: <test> (<module>)`` or ``ERROR: <test> (<module>)`` line per
+    failing test, before that test's traceback; its summary line only counts them. A step's detail
+    is a *tail* of the run (``step_selftest``), so on a run with several failures the names scroll
+    out of it -- and a CI job's log is all a reader has left when the run is over, where GitHub's
+    runner collapses the captions into a single annotation. The names are therefore read out of the
+    whole output, whole, and printed beside the tail: a list short of its failures is a run nobody
+    can enumerate.
+    """
+    return [line.strip() for line in output.splitlines()
+            if line.startswith(("FAIL: ", "ERROR: "))]
+
+
 def step_selftest() -> tuple[str, str]:
-    """The harness's own tests: a broken gate is a defect like any other."""
+    """The harness's own tests: a broken gate is a defect like any other.
+
+    A failing run's detail names every test it failed, then the tail of the run's own output: the
+    names are what lets the next reader -- of a CI log as much as of a terminal -- enumerate the
+    failures without a second run (``failing_tests``).
+    """
     tests = ROOT / "scripts" / "tests"
     if not tests.is_dir() or not any(tests.rglob("test_*.py")):
         return SKIP, "no scripts/tests/test_*.py in this tree yet"
     proc = run([sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"],
                env={"PYTHONDONTWRITEBYTECODE": "1"}, timeout=900)
-    detail = tail((proc.stdout or "") + (proc.stderr or ""), 1200)
+    output = (proc.stdout or "") + (proc.stderr or "")
+    detail = tail(output, 1200)
     if proc.returncode != 0:
-        return FAIL, f"scripts/tests -> rc={proc.returncode}\n{detail}"
+        named = failing_tests(output)
+        listing = (f"\n{len(named)} failing test(s):\n" + "\n".join(named)) if named else ""
+        return FAIL, f"scripts/tests -> rc={proc.returncode}{listing}\n{detail}"
     ran = [line for line in (proc.stderr or "").splitlines() if line.startswith("Ran ")]
     return PASS, (ran[-1] if ran else "ok") + f" (rc={proc.returncode})"
 

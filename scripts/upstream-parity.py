@@ -842,10 +842,25 @@ def check_layout(root: Path, manifest: Manifest) -> None:
         )
 
 
+def pin_source_path(manifest: Manifest) -> str:
+    """Where the pin constant lives in this tree, in POSIX form on every platform.
+
+    ``manifest.layout.module`` is the layout's answer for this tree's own module (``.`` in the root
+    layout, ``ccc`` in the directory layout) and the file is its ``cmd/ccc/pin.go``. The spelling is
+    returned as a POSIX-form path rather than a host-spelled ``str()`` because every line that names
+    it -- the run's own ``reported by`` line, and each failure's message -- is read by a person and
+    by a case on every platform, exactly the way ``scripts/gate.py``'s ``module_spelling`` spells
+    the module it names. A host separator here made the Windows lane read ``cmd\\ccc\\pin.go`` where
+    every other surface of this tree (the manifest's record paths, the layout's own lines, the
+    docs) spells it with forward slashes.
+    """
+    return (Path(manifest.layout.module) / PIN_SOURCE).as_posix()
+
+
 def check_reported_pin(root: Path, manifest: Manifest) -> str:
     """The revision cmd/ccc reports must be the pin, or the binary would lie about itself."""
     pin = manifest.header["pin"]
-    relative = str(Path(manifest.layout.module) / PIN_SOURCE)
+    relative = pin_source_path(manifest)
     source = root / relative
     if not source.exists():
         raise Failure(f"{relative} is missing, so the revision the CLI reports cannot be checked",
@@ -927,7 +942,7 @@ def run(root: Path) -> list[str]:
 
     return [
         f"pin {manifest.header['pin']} ({manifest.header.get('describe', '')})",
-        f"reported by {Path(manifest.layout.module) / PIN_SOURCE}: {reported_pin}",
+        f"reported by {pin_source_path(manifest)}: {reported_pin}",
         f"layout: carry root {manifest.layout.carry or '.'}, this repository's module "
         f"{manifest.layout.module}"
         + ("" if manifest.layout.carry
