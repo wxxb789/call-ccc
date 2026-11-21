@@ -55,8 +55,8 @@ consequence; (3) its own *possible defect*: the paragraph claimed the unattended
 the status table denies (0018–0021 are ready and come before it) — reworded.
 
 **Code review** — one fresh read-only session per head, scoped to the project-owned delta
-(`carried-excluded.txt` empty: this diff touches no carried path). Three rounds ran; every finding is a defect
-in what this increment wrote, and each was fixed rather than argued:
+(`carried-excluded.txt` empty: this diff touches no carried path). Each round runs on the head it names; every
+finding is a defect in what this increment wrote, and each was fixed rather than argued:
 
 | round | head | findings | disposition |
 |---|---|---|---|
@@ -64,6 +64,8 @@ in what this increment wrote, and each was fixed rather than argued:
 | 2 | `670161b` | P2: the OpenCode source oracle sits outside the rule's only declared exception · P2: 0009a still reads *Ready* under the superseded contract · P3: documented order ≠ dispatch order · P3: `Q-0005-18`'s reversal described the opposite effect | four fixed: the debt clause names both sites, the index row reads *Rescope pending … not dispatchable*, the order paragraph names the registry as it stands, the reversal now says the cost is a **weakened** refusal |
 | 3 | `46edf2a` | P2: the Pi/OMP **target-side replay** prediction is the same class and was missing from the debt · P2: `Q-0008-10`'s replacement proposed the conversion's own read-back, which is the *installed target* and cannot show what the source supplied · P3: the increment had no repository-local plan or evidence record | all three: the debt list is now a **single enumeration in `docs/core-design/README.md` §2** with a third entry (`Q-0005-19`), `Q-0008-10` requires an independent AgentsView source read with the read-back on the observed side, and this record pair was written |
 | 4 | `43d1386` | P2: a fourth debt site — the Claude → OpenCode arm's expectations, whose `.strip()` drops a result that is a lone U+001C while the writer's `TrimSpace` keeps it, so a faithful carry can fail the oracle · P2: `Q-0005-19` mistook the loader's **observed** answer for an expectation (the same-count role swap is detected only *because* an expectation stands beside it) · P2: the 0009a hold lived only in the index, while the dispatcher reads prerequisites, not status · P3: this record overstated the gate's fail-closed rule (a non-required step can leave `GATE: PASS (partial: …)`, exit 0) | all four: §2 gains its fourth entry (`Q-0007-13`), `Q-0005-19` now requires an expectation **and** the mismatch regression before the walk goes, `docs/goals/0009a-native-oracle.md` and the index both read **Held** and both say the hold is **operator-enforced**, and this record distinguishes a required-step failure from a partial pass and requires the unqualified `GATE: PASS` |
+
+| 5 | `8237606` | P2: a **fifth** debt site — the Claude → Pi arm of `scripts/pi-native-check.py` expects the first raw user record as the prompt, while the carried reader skips an `isMeta` record (recorded as an inspection finding, not yet reproduced natively) · P2: the blanket decoder ban would cover a *narrow emitted-byte* check (`codex_install.go`'s installed-dialogue walk, which pins the swapped-prompt regression) though no carried reader is re-derived · P3: the plan and the records had gone stale against each other ("goal file untouched" vs the new **Held** line; three-vs-four debt entries; three-vs-four rounds) | all three: §2 gains its fifth entry plus an explicit **non-completeness** clause (declare, don't enumerate) and a clause separating narrow emitted-byte structural checks from foreign decoders; the plan, the index and this record were reconciled, and the counts were removed in favour of "declared so far" / "each round on the head it names" |
 
 ## What this record does not claim
 

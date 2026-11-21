@@ -46,7 +46,10 @@ well-formedness** (which is why 0009a now reads *Rescope pending*), and the orac
 
 ## What this increment does not do
 
-- It does not rescope 0009a: its goal file is untouched, and the hold in the index is a dispatch instruction.
+- It does not rescope 0009a: its **acceptance clauses are untouched**, while its status line and the index both
+  read **Held 2026-11-21 — rescope pending**, and both say the hold is **operator-enforced** — the dispatcher
+  reads a goal's prerequisites, not the index's status column, so the status line plus the operator's stand-down
+  are the hold.
 - It does not touch 0010–0013's provisional texts, or `docs/core-design/README.md`'s paragraph on the Go
   `internal/` import restriction — the layout change that supersedes that paragraph lands as its own increment,
   so no increment ships a document that disagrees with the tree.

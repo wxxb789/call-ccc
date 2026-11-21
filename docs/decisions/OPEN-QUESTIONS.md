@@ -3028,3 +3028,24 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   U+001C, so the divergence cannot return silently.
 - **Settled by:** the increment that next touches `scripts/opencode-native-check.py`'s Claude arm, or an owner
   sentence.
+
+## Q-0005-20 — The Claude → Pi oracle expects the first raw user record, which the carried reader skips
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced by an independent AgentsView
+  read of the Claude source).
+- **Question:** `scripts/pi-native-check.py` takes the **first raw user record** of a Claude transcript as the
+  prompt it expects in the converted Pi session, while the carried reader skips a record carrying `isMeta` and
+  selects the next one — a regression the carried suite pins
+  (`internal/parser/claude_parser_test.go`). The check's expectation and the reader's answer therefore disagree
+  by inspection: on a transcript whose first user record is metadata, the check expects a prompt the read never
+  produced. May a native check compute its expected prompt from the raw file instead of from the read?
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace the expectation now — not
+  in this increment, which changes no script, and a change to a native check belongs to its own increment with
+  its own two-stage review; (c) leave the disagreement undisclosed — refused.
+- **Default taken:** (a). **Not yet reproduced natively** — it is recorded as an *inspection* finding of the
+  machine review, so a later increment that touches this arm should reproduce it before repairing, and either
+  way the expectation should come from the read.
+- **Reversal:** take the expected prompt from an independent AgentsView read of the Claude source, add a
+  fixture whose first user record carries `isMeta`, and re-pin the arm's cases.
+- **Settled by:** the increment that next touches `scripts/pi-native-check.py`'s Claude arm, or an owner
+  sentence.
