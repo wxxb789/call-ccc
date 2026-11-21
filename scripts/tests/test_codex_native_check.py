@@ -1603,6 +1603,18 @@ def _content_text_becomes_blank(record: dict) -> None:
     record["payload"]["content"][0]["text"] = "   "
 
 
+def _content_text_is_not_a_string(record: dict) -> None:
+    """One message given a second readable block whose `text` is not a string, beside the first block's
+    valid one.
+
+    The rule's string-type arm with nothing else to catch it: a valid non-blank neighbor keeps the
+    all-blank clause green, exactly what a removal of the guard would have left every other mutation
+    doing (review round r9's finding). The block's type is one the reader reads text from, so the
+    violation is the `text` member's own arm and not the block-type one.
+    """
+    record["payload"]["content"].append({"type": "input_text", "text": 7})
+
+
 def _content_text_becomes_file_separator(record: dict) -> None:
     """One message's whole text replaced with U+001C, which Go's space set does not hold."""
     record["payload"]["content"][0]["text"] = "\x1c"
@@ -1684,6 +1696,43 @@ def _mutation_line_duplicate_member(text: str, receipt: dict | None) -> tuple[st
         lines[index] = line.replace(needle, needle + "," + needle, 1)
         return "\n".join(lines) + "\n", receipt
     raise AssertionError("the fixture no longer holds its world_state record")
+
+
+#: The two call-id spellings review round r9's finding collides: JSON's `\ud800` escape decodes to a
+#: lone surrogate to this oracle's decoder and to U+FFFD to the carried reader's `gjson` — measured on
+#: the carried v1.20.0, `{"call_id":"\ud800"}` and `{"call_id":"\ufffd"}` are the same string to a read
+#: of the bytes — so two ids this build can tell apart are one id to every read of the artifact.
+SURROGATE_CALL_IDS = ("\ud800", "\ufffd")
+
+
+def _mutation_call_id_lone_surrogate(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One call and its output rewritten to the lone-surrogate escape, twins under U+FFFD appended.
+
+    Uniqueness, pairing and every receipt identity comparison keep the two spellings apart in this
+    oracle — they are two Python strings — while a read of the artifact answers **one** call id for
+    both, so `oracle.call-pairing` (and with it the pairing half of every receipt identity) certified
+    two calls that are one call to the reader: the collision review round r9's finding names. The rule
+    that refuses it is `oracle.jsonl-objects`, before either reader's answer is compared; the twin pair
+    is appended at the last record's instant so the clock stays legal and no count but the occurrence
+    vocabulary's moves.
+    """
+    lines = text.splitlines()
+    call_index = next(index for index, line in enumerate(lines)
+                      if oracle_item_is("function_call", "call_oracle_0001")(json.loads(line)))
+    output_index = next(index for index, line in enumerate(lines)
+                        if oracle_item_is("function_call_output", "call_oracle_0001")(json.loads(line)))
+    call, output = json.loads(lines[call_index]), json.loads(lines[output_index])
+    for record in (call, output):
+        record["payload"]["call_id"] = SURROGATE_CALL_IDS[0]
+    lines[call_index], lines[output_index] = oracle_quote(call), oracle_quote(output)
+    stamp = json.loads(lines[-1])["timestamp"]
+    twins = []
+    for record in (call, output):
+        twin = json.loads(oracle_quote(record))
+        twin["timestamp"] = stamp
+        twin["payload"]["call_id"] = SURROGATE_CALL_IDS[1]
+        twins.append(twin)
+    return "\n".join(lines + [oracle_quote(twin) for twin in twins]) + "\n", receipt
 
 
 def _mutation_envelope_without_timestamp(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -1852,6 +1901,19 @@ def _mutation_message_text_blank(text: str, receipt: dict | None) -> tuple[str, 
                        change=_content_text_becomes_blank), receipt
 
 
+def _mutation_message_text_not_a_string(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One message given a second readable block whose `text` is not a string, the first left valid.
+
+    The string-type arm of `oracle.message` had no negative fixture: a mutation that puts a non-string
+    `text` beside a valid non-blank block turns nothing else red, and removing the guard would have
+    left every existing mutation green, because the all-blank clause cannot see a record that still
+    holds one readable string (review round r9's finding). Artifact-only — the member's type is the
+    structural rule's own subject.
+    """
+    return oracle_edit(text, oracle_item_is("message", "Which fixture is this?"),
+                       change=_content_text_is_not_a_string), receipt
+
+
 def _mutation_message_role_dropped(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """One message's `role` deleted, its content untouched.
 
@@ -1990,6 +2052,72 @@ def _append_item(text: str, payload: dict) -> str:
     record = {"timestamp": json.loads(lines[-1])["timestamp"], "type": "response_item",
               "payload": payload}
     return "\n".join(lines + [oracle_quote(record)]) + "\n"
+
+
+#: The child session and the delivered summary review round r9's finding carries: a `wait_agent` call
+#: targeting the child, then the notification a Codex wait answer arrives in.
+NOTIFICATION_CHILD = "019df406-3bd3-7343-b3d8-f8d5996c428b"
+NOTIFICATION_SUMMARY = "Inspected only. I did not modify files."
+
+
+def _subagent_notification(child: str, summary: str) -> str:
+    """The notification a Codex wait answer writes into a `user` message, as
+    `parseCodexSubagentNotification` reads it: the tags, then a JSON body naming the agent and one
+    terminal status text."""
+    return ("<subagent_notification>\n"
+            + json.dumps({"agent_path": child, "status": {"completed": summary}},
+                         separators=(",", ":"))
+            + "\n</subagent_notification>")
+
+
+def _append_notification_exchange(text: str, receipt: dict, notification: str) -> tuple[str, dict]:
+    """One fixture with a notification exchange appended and the receipt's own entries for it.
+
+    The exchange is the finding's own shape: a `wait_agent` call whose `targets` name the child
+    (`internal/parser/codex_parser_test.go`'s attribution case), a `user` message carrying
+    `notification`, its turn-view `user_message` event, and — in the receipt — the call and the message
+    both marked `emitted` with **no** result entry for the call. `receipt` is edited in place; callers
+    that need a fresh plan parse the fixture again. Every appended record is stamped at the last
+    record's instant, so the clock stays nondecreasing, and the receipt entries are appended in the
+    artifact's own order, which `oracle.plan-order` compares.
+    """
+    child = NOTIFICATION_CHILD
+    arguments = json.dumps({"targets": [child], "timeout_ms": 10000}, separators=(",", ":"))
+    lines = text.splitlines()
+    stamp = json.loads(lines[-1])["timestamp"]
+    call = {"timestamp": stamp, "type": "response_item",
+            "payload": {"type": "function_call", "name": "wait_agent",
+                        "arguments": arguments, "call_id": "call_oracle_0002"}}
+    message = {"timestamp": stamp, "type": "response_item",
+               "payload": {"type": "message", "role": "user",
+                           "content": [{"type": "input_text", "text": notification}]}}
+    event = {"timestamp": stamp, "type": "event_msg",
+             "payload": {"type": "user_message", "message": notification, "images": [],
+                         "local_images": [], "text_elements": []}}
+    receipt["occurrences"].append(
+        {"kind": "tool_call", "call_id": "call_oracle_0002", "name": "wait_agent",
+         "arguments": arguments, "disposition": "emitted"})
+    receipt["occurrences"].append(
+        {"kind": "message", "role": "user", "text": notification, "disposition": "emitted"})
+    appended = [oracle_quote(record) for record in (call, message, event)]
+    return "\n".join(lines + appended) + "\n", receipt
+
+
+def _mutation_plan_consumed_notification(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A `wait_agent` call and the subagent notification its answer arrives in, both marked emitted,
+    with no result record for the call.
+
+    `handleSubagentNotification` consumes a `user` record whose content parses as a notification — the
+    record never travels as a message — and appends the delivered text to the wait call that named the
+    agent as a **result event** (`internal/parser/codex.go`; the attribution is pinned by
+    `internal/parser/codex_parser_test.go`'s wait/notification case). So a read of the artifact answers
+    a result no record of the artifact states and no message where the receipt names one, while every
+    identity, count and order the receipt compares is unchanged: the shape receipt validation certified
+    before this round (review round r9's finding).
+    """
+    assert receipt is not None
+    return _append_notification_exchange(
+        text, receipt, _subagent_notification(NOTIFICATION_CHILD, NOTIFICATION_SUMMARY))
 
 
 def _mutation_plan_omitted_agent_message(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2324,6 +2452,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_line_nested_past_reading),
         OracleMutation("a line holding a member name twice", "session.jsonl", None,
                        _mutation_line_duplicate_member),
+        OracleMutation("two call ids distinct to Python and one to the read", "session.jsonl", None,
+                       _mutation_call_id_lone_surrogate),
     ),
     "oracle.envelope": (
         OracleMutation("a record without its timestamp", "session.jsonl", None,
@@ -2367,6 +2497,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_message_block_type_not_read),
         OracleMutation("a message whose text is blank", "session.jsonl", None, _mutation_message_text_blank),
         OracleMutation("a message with no role", "session.jsonl", None, _mutation_message_role_dropped),
+        OracleMutation("a block whose text is not a string beside a valid one", "session.jsonl", None,
+                       _mutation_message_text_not_a_string),
     ),
     "oracle.event-message": (
         OracleMutation("an event message that is not a string", "session.jsonl", None,
@@ -2426,6 +2558,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "reduced-receipt.json", _mutation_plan_image_generation_call),
         OracleMutation("an omitted message that survives in the turn view", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_omitted_event_survives),
+        OracleMutation("a consumed subagent notification the plan marks emitted", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_consumed_notification),
     ),
     "oracle.plan-order": (
         OracleMutation("a compaction boundary moved past the later turns", "session.jsonl",
@@ -3326,6 +3460,58 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertEqual(NATIVE_CHECK.validate_artifact(distinct, receipt=distinct_receipt), [],
                          "a second result the read answers was refused")
 
+    def test_a_consumed_subagent_notification_is_refused_with_a_plan(self) -> None:
+        """A `user` message the carried read consumes as a subagent notification never travels as one.
+
+        Review round r9's finding: the finding's own exchange — a `wait_agent` call naming the child,
+        the notification message and its turn-view event, both marked `emitted` in the receipt, and no
+        result record for the call — validated green although a read of the artifact answers **no
+        message** for the record and appends the notification's delivered text to the wait call as a
+        result event (`handleSubagentNotification`; `internal/parser/codex_parser_test.go`'s
+        wait/notification case pins that attribution). No record of the artifact states that result and
+        the receipt's identity has no spelling for it, so the shape is refused where a plan is compared
+        — and silent without one, because a native rollout may carry it (measured: none of Codex
+        0.170.0's own 25 sessions carries a consumed notification, §0 of the evidence record). The
+        controls pin the gates on the read's own parse: a body with no agent, one whose terminal status
+        text is Go-blank, and one that is not JSON are not consumed, so their messages travel and stay
+        green with their plans.
+        """
+        session = oracle_fixture("session.jsonl")
+        attack, plan = _mutation_plan_consumed_notification(
+            session, oracle_receipt("session-receipt.json"))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(attack), [],
+                         "the notification exchange is not structurally green (a native rollout may "
+                         "carry it)")
+        records = NATIVE_CHECK.oracle_records(attack)[0]
+        consumed = [record for _, record in records
+                    if NATIVE_CHECK.oracle_read_consumes_subagent_notification(
+                        record.get("payload") if isinstance(record.get("payload"), dict) else {})]
+        self.assertEqual(len(consumed), 1,
+                         f"the case's notification is not the one consumed shape: {consumed}")
+        refused = NATIVE_CHECK.validate_artifact(attack, receipt=plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the consumed notification certified the plan: {refused}")
+        self.assertIn("handleSubagentNotification", refused[0].detail,
+                      f"the refusal does not name the read that consumes the record: {refused[0]}")
+        self.assertNotIn(NOTIFICATION_SUMMARY, refused[0].detail,
+                         f"the refusal echoed the delivered text: {refused[0]}")
+
+        for label, notification in (
+            ("a notification without an agent",
+             '<subagent_notification>{"status":{"completed":"x"}}</subagent_notification>'),
+            ("a notification whose only status text is blank",
+             '<subagent_notification>{"agent_path":"c","status":{"completed":"   "}}'
+             '</subagent_notification>'),
+            ("a body that is not JSON",
+             "<subagent_notification>not JSON</subagent_notification>"),
+        ):
+            with self.subTest(control=label):
+                control_text, control_plan = _append_notification_exchange(
+                    session, oracle_receipt("session-receipt.json"), notification)
+                self.assertEqual(NATIVE_CHECK.validate_artifact(control_text, receipt=control_plan), [],
+                                 f"the control {label!r} is refused although the read does not consume "
+                                 f"the record")
+
     def test_a_moved_turn_context_is_outside_the_receipts_vocabulary(self) -> None:
         """The receipt names no turns, so `oracle.plan-order` compares order, not turn membership.
 
@@ -3658,6 +3844,83 @@ class CodexArtifactOracle(unittest.TestCase):
             self.assertIn("cannot be read: one member name is written twice", errors.getvalue(),
                           f"the collided receipt is not reported unreadable: {errors.getvalue()}")
 
+    def test_a_lone_surrogate_escape_is_refused_before_any_identity_comparison(self) -> None:
+        """Two call ids two Python strings and one string to every read are refused before comparison.
+
+        Review round r9's finding: the finding's artifact — its call and output under the `\\ud800`
+        escape and a twin pair under U+FFFD, with the same spellings named in a receipt — kept
+        uniqueness, pairing and every identity comparison apart in this oracle's own reading (they are
+        two Python strings; the plan's reader below keeps them apart too), while the carried reader's
+        `gjson` answers U+FFFD for the unpaired surrogate (measured on the carried v1.20.0), so a read
+        of the artifact answers **one** call id for both: two calls this oracle certified as two are one
+        call to the read, which is what `oracle.call-pairing` and the pairing half of every receipt
+        identity rest on. The rule refuses the lines holding the escape before either answer is compared
+        — they are dropped from the reading, the disposition a repeated-member line gets — and the two
+        spellings' own digests stay distinct, which is exactly why no comparison could see the
+        collision.
+        """
+        session = oracle_fixture("session.jsonl")
+        armed, _ = _mutation_call_id_lone_surrogate(session, None)
+        self.assertNotEqual(armed, session, "the case's own edit changed nothing")
+        spellings = [json.loads(line)["payload"].get("call_id") for line in armed.splitlines()
+                     if json.loads(line).get("type") == "response_item"
+                     and (json.loads(line).get("payload") or {}).get("type")
+                     in ("function_call", "function_call_output")]
+        self.assertEqual(spellings.count(SURROGATE_CALL_IDS[0]), 2,
+                         f"the escape's call and output are no longer both written: {spellings}")
+        self.assertEqual(spellings.count(SURROGATE_CALL_IDS[1]), 2,
+                         f"the twin pair under U+FFFD is no longer both written: {spellings}")
+        self.assertNotEqual(NATIVE_CHECK.oracle_digest(SURROGATE_CALL_IDS[0]),
+                            NATIVE_CHECK.oracle_digest(SURROGATE_CALL_IDS[1]),
+                            "the oracle's own naming no longer keeps the two spellings apart")
+
+        violations = NATIVE_CHECK.validate_artifact(armed)
+        self.assertEqual([violation.rule for violation in violations],
+                         ["oracle.jsonl-objects"] * 2,
+                         f"the colliding ids were not refused before comparison: {violations}")
+        self.assertEqual([violation.line for violation in violations], [8, 9],
+                         f"the refusal does not name the two lines holding the escape: {violations}")
+        for violation in violations:
+            self.assertIn("unpaired surrogate", violation.detail, f"{violation}")
+        records = NATIVE_CHECK.oracle_records(armed)[0]
+        remaining = [payload.get("call_id") for _, record in records
+                     if record.get("type") == "response_item"
+                     for payload in [record.get("payload") or {}]
+                     if payload.get("type") in ("function_call", "function_call_output")]
+        self.assertEqual(remaining, [SURROGATE_CALL_IDS[1], SURROGATE_CALL_IDS[1]],
+                         f"a refused line's identity stayed in the reading: {remaining}")
+
+        # The receipt the finding's own shape carries: both spellings named, each call with its own
+        # output. The plan's reader keeps the two apart — that is what made the certification a false
+        # one — and the artifact is refused all the same.
+        certificate = {"occurrences": []}
+        for entry in oracle_receipt("session-receipt.json")["occurrences"]:
+            if entry.get("call_id") != "call_oracle_0001":
+                certificate["occurrences"].append(dict(entry))
+                continue
+            for spelling in SURROGATE_CALL_IDS:
+                named = dict(entry)
+                named["call_id"] = spelling
+                certificate["occurrences"].append(named)
+        plan, receipt_violations = NATIVE_CHECK.oracle_plan(certificate)
+        self.assertEqual(receipt_violations, [], "the case's receipt is not a readable plan")
+        identity_ids = {key[1] for key, _ in plan if key[0] in ("tool_call", "tool_result")}
+        self.assertEqual(len(identity_ids), 2,
+                         f"the plan's own reader no longer keeps the spellings apart: {plan}")
+        refused = NATIVE_CHECK.validate_artifact(armed, receipt=certificate)
+        self.assertEqual(sorted({violation.rule for violation in refused}),
+                         ["oracle.jsonl-objects", "oracle.plan-emitted"],
+                         f"the colliding receipt reading does not refuse the artifact: {refused}")
+        # The comparison's own findings are the dropped spelling's emitted entries alone (the U+FFFD
+        # pair matched, because the plan's reader keeps the two spellings apart): the collision is
+        # visible to no comparison rule, which is why the refusal has to be the structural one.
+        comparison = [violation for violation in refused
+                      if violation.rule == "oracle.plan-emitted"]
+        self.assertEqual(len(comparison), 2, f"{refused}")
+        self.assertTrue(all(NATIVE_CHECK.oracle_digest(SURROGATE_CALL_IDS[0]) in violation.detail
+                            for violation in comparison),
+                        f"the plan's shortfall is not the dropped spelling's: {comparison}")
+
     def test_a_receipt_that_declares_nothing_cannot_pass(self) -> None:
         """A plan that declares no occurrences, and one that cannot be read, both refuse the artifact.
 
@@ -3722,11 +3985,18 @@ class CodexArtifactOracle(unittest.TestCase):
         input was parsed by `_oracle_valid_json`, whose `json.loads` raises `RecursionError` past the
         host's own recursion bound and whose arm caught only `ValueError` — an invocation whose recorded
         input is deeply nested JSON raised out of validation before any verdict. Neither may end a run:
-        the digest writes a surrogate as its own three-byte form instead (injective — no other text
-        encodes to those bytes — so two identities stay distinguishable; pinned below by the digest
-        literal), and no string member is parsed any more, because the identity is the written input. Each
-        arm is driven through the shipped CLI, so what is asserted is the documented verdict and exit
-        code a caller sees, not an in-process return.
+        the digest writes a surrogate as its own three-byte form (injective — no other text encodes to
+        those bytes — so two identities stay distinguishable; pinned below by the digest literal), and no
+        string member is parsed as an input, because the identity is the written one. Each arm is driven
+        through the shipped CLI, so what is asserted is the documented verdict and exit code a caller
+        sees, not an in-process return.
+
+        Review round r9 moved the artifact-side arm of this class: a line holding the escape is now
+        refused by `oracle.jsonl-objects` before any identity is compared (this oracle's decoder answers
+        the code point and the carried reader's `gjson` U+FFFD for it, so two distinct spellings would
+        be one string to a read), and the digest's surrogate path is exercised through a *receipt*
+        identity instead — a plan's member is not an artifact line and keeps the r4 pin: the report must
+        name it by its digest rather than raise.
         """
         self.assertEqual(NATIVE_CHECK.oracle_digest("\ud800"), "sha256:91a681b99855",
                          "a lone surrogate is no longer digested as its own three-byte form")
@@ -3742,10 +4012,10 @@ class CodexArtifactOracle(unittest.TestCase):
             for label, argv, verdict in (
                 ("an unmatched output whose call id is a lone surrogate",
                  ["--validate", str(surrogate)],
-                 "oracle: FAIL — 17 record(s), 7 occurrence(s), 1 violation(s)"),
+                 "oracle: FAIL — 16 record(s), 6 occurrence(s), 1 violation(s)"),
                 ("the same artifact against a plan",
                  ["--validate", str(surrogate), "--receipt", str(plan)],
-                 "oracle: FAIL — 17 record(s), 7 occurrence(s), 3 violation(s)"),
+                 "oracle: FAIL — 16 record(s), 6 occurrence(s), 2 violation(s)"),
             ):
                 with self.subTest(arm=label):
                     output = io.StringIO()
@@ -3756,7 +4026,22 @@ class CodexArtifactOracle(unittest.TestCase):
                     self.assertNotIn("Traceback", printed, f"{label} ended in a traceback: {printed}")
                     self.assertEqual(printed.strip().splitlines()[-1], verdict,
                                      f"{label}: the verdict is not the run's last line: {printed}")
-                    self.assertIn("sha256:91a681b99855", printed, f"{label}: {printed}")
+            # The receipt-side arm: a plan whose result identity is the escape is not an artifact line,
+            # so the digest still has to name it — and the artifact it cannot match is the green one, so
+            # what is refused is the plan's own statement, not a reader disagreement over the bytes.
+            session_path = Path(scratch) / "session.jsonl"
+            session_path.write_text(session, encoding="utf-8")
+            plan.write_text(oracle_fixture("session-receipt.json").replace(
+                '"call_oracle_0001"', '"\\ud800"', 2), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(session_path), "--receipt", str(plan)])
+            printed = output.getvalue()
+            self.assertEqual(code, 1, f"exit {code} for a surrogate receipt identity: {printed}")
+            self.assertNotIn("Traceback", printed,
+                             f"a surrogate receipt identity ended in a traceback: {printed}")
+            self.assertIn("sha256:91a681b99855", printed,
+                          f"the receipt's surrogate identity is not named by its digest: {printed}")
             nested = Path(scratch) / "nested-input.jsonl"
             nested.write_text(
                 oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),

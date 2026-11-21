@@ -815,9 +815,13 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # artifact's `session_meta` naming an agent path plus an inter-agent `agent_message` addressed to it is a
 # user message to the carried reader (`internal/parser/codex.go`'s `handleAgentMessage`), a payload type
 # the reader's switch does not take but which carries a `user`/`assistant` role and readable text is a
-# message to its default branch, and an `image_generation_call` is a tool call whose identity lives in
-# members the receipt does not have — before this refusal, an omitted prompt written into such a shape
-# travelled through receipt validation unnoticed (review round r4's finding). A second class is the shape
+# message to its default branch, an `image_generation_call` is a tool call whose identity lives in
+# members the receipt does not have, and a `user` message whose content the read consumes as a subagent
+# notification (`handleSubagentNotification`) never travels as a message — the read attributes its
+# delivered text to a result event the artifact states in no record the receipt can name — so each is
+# refused where a plan is compared rather than certified (review rounds r4 and r9's findings). Before
+# that refusal, an omitted prompt written into one of those shapes travelled through receipt validation
+# unnoticed (review round r4's finding). A second class is the shape
 # whose own read or identity this oracle does not model: a call carrying **both** an `arguments` and an
 # `input` member can be named `"{}"` by a receipt while the carried reader's `extractCodexInputJSON` skips
 # that value and continues to `input`; a call whose recorded input or result whose recorded text is
@@ -850,9 +854,11 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 ORACLE_RULES: dict[str, str] = {
     "oracle.jsonl-objects":
         "every non-empty line of the artifact is exactly one JSON object, every member name written once "
-        "inside it — a repeated name is a line two JSON readers answer differently for (this oracle's "
-        "decoder keeps the last value, the carried reader's `gjson` the first), so such a line is refused "
-        "rather than read as either answer",
+        "inside it, and no string it holds carrying an unpaired surrogate escape: a repeated name (this "
+        "oracle's decoder keeps the last value, the carried reader's `gjson` the first) and a "
+        "`\\ud800`-style escape (this oracle's decoder answers the code point, `gjson` U+FFFD, measured "
+        "on the carried v1.20.0) each make the line one two JSON readers answer differently for, so such "
+        "a line is refused rather than read as either answer",
     "oracle.envelope":
         "every record carries a parseable `timestamp`, a non-empty `type` and an object `payload`",
     "oracle.record-type":
@@ -895,7 +901,9 @@ ORACLE_RULES: dict[str, str] = {
         "inter-agent `agent_message` addressed to the session's own agent path, any other payload type "
         "whose `user`/`assistant` role and readable text a read appends as a message, an "
         "`image_generation_call`, a `message` in a role outside the writer's two carrying readable text, "
-        "and a `custom_tool_call_output` whose carried read answers the result's outcome — and a shape "
+        "a `user` message a read consumes as a subagent notification (the record never travels as a "
+        "message; the read attributes its text to a result the artifact states in no record), and a "
+        "`custom_tool_call_output` whose carried read answers the result's outcome — and a shape "
         "whose own read or identity this oracle does not model — a call "
         "carrying both `arguments` and `input` (a read skips an empty or `{}`/`[]` `arguments` and "
         "continues to `input`), a call whose recorded input or result whose recorded text is written as "
@@ -1076,6 +1084,47 @@ def _oracle_unique_members(pairs: list[tuple[str, object]]) -> dict:
     return members
 
 
+def _oracle_first_members(pairs: list[tuple[str, object]]) -> dict:
+    """One JSON object with a repeated member name read the way the carried reader's `gjson` reads it:
+    the **first** value, where Python's default hook keeps the last.
+
+    Used only where a *string member's own JSON* is read the way a read of the artifact reads it — the
+    body of a subagent notification (`oracle_read_consumes_subagent_notification`), whose text sits
+    inside a message's `content` block and reached this oracle as a decoded string, so the outer line's
+    own repeated names were already refused by `_oracle_unique_members` before either reader compared
+    anything. Mirroring the first-value answer here is what keeps the notification gate's reading equal
+    to the read's own: a body whose object repeats a member name is not a shape this mirror may answer
+    differently from `gjson` (measured on the carried v1.20.0: the first value is what a repeated name
+    reads as there).
+    """
+    members: dict[str, object] = {}
+    for name, value in pairs:
+        members.setdefault(name, value)
+    return members
+
+
+def _oracle_lone_surrogate(value: object) -> bool:
+    """Whether one parsed line holds an unpaired surrogate code point in any of its strings — member
+    names included.
+
+    JSON's `\\ud800`-style escape decodes to a lone surrogate, which this oracle's decoder answers as the
+    code point itself and the carried reader's `gjson` answers as U+FFFD — the replacement
+    `utf8.EncodeRune` writes for an unpaired surrogate (measured on the carried v1.20.0: `\\ud800` and
+    `\\ufffd` are the same string to a read of the bytes, and a valid surrogate *pair* decodes to its
+    astral code point in both readers). So a line holding one is a line two JSON readers answer
+    differently for, and its strings may not be compared by either answer (`oracle_records` drops it the
+    way it drops a repeated-member line).
+    """
+    if isinstance(value, str):
+        return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+    if isinstance(value, dict):
+        return any(_oracle_lone_surrogate(name) or _oracle_lone_surrogate(member)
+                   for name, member in value.items())
+    if isinstance(value, list):
+        return any(_oracle_lone_surrogate(member) for member in value)
+    return False
+
+
 #: The Latin-1 characters the writer's own blank test strips: `strings.TrimSpace` reads Go's
 #: `unicode.IsSpace`, which holds the ASCII whitespace, NEL (U+0085) and NBSP (U+00A0). Python's
 #: `str.isspace` is a wider set in Latin-1 alone — measured: the two agree on every code point outside
@@ -1172,7 +1221,12 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
     target's own reader reads lines as objects, and a line whose object writes a member name twice is one
     too, because the oracle's decoder and the carried reader's `gjson` answer a repeated name differently
     (`_oracle_unique_members`) — so no line is ever compared through one reader's reading of a name a
-    read of the same bytes resolves another way. The split is on the line feed alone, never on the further
+    read of the same bytes resolves another way. A line holding an unpaired surrogate escape is refused
+    and dropped the same way (`_oracle_lone_surrogate`): this decoder answers the code point and the
+    carried reader's `gjson` answers U+FFFD for it, so its string members — a `call_id` among them, where
+    two distinct spellings would become one id to a read while the oracle's own identity comparison kept
+    them apart (review round r9's finding) — may not be compared by either answer. The split is on the
+    line feed alone, never on the further
     line boundaries `str.splitlines` treats as separators (`U+0085`, `U+2028`, …): a JSON string may hold
     one of those, and a reader that split there would misread a valid line as two broken ones. Parsing
     refuses the non-JSON constants Python's decoder would accept, for the same reason.
@@ -1208,6 +1262,14 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
         if not isinstance(value, dict):
             violations.append(Violation("oracle.jsonl-objects", number,
                                         f"one JSON object per line, found {type(value).__name__}"))
+            continue
+        if _oracle_lone_surrogate(value):
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        "the line holds an unpaired surrogate escape (`\\ud800`-style): "
+                                        "this oracle's decoder answers the code point and the carried "
+                                        "reader's `gjson` answers U+FFFD for it, so two JSON readers "
+                                        "answer different strings for the line — refused rather than "
+                                        "read as either answer"))
             continue
         records.append((number, value))
     return records, violations
@@ -1459,6 +1521,84 @@ def oracle_message_text(payload: dict) -> str:
     )
 
 
+def oracle_reader_message_text(payload: dict) -> str:
+    """One message's content as the carried reader's own join answers it: `extractCodexContent` over
+    `extractCodexTextBlocks` — the `text` of every readable block that is a **non-empty** string, joined
+    in the record's order with a line feed.
+
+    Not the occurrence identity (`oracle_message_text` is that, and it keeps every string an empty one
+    included, because a receipt's counts are matched by it); the difference is exactly what the two
+    readers of one record see, and it is this reading the reader tests a record against
+    (`handleResponseItem`'s `content`), so the notification gate below asks with this one.
+    """
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return ""
+    return "\n".join(
+        block["text"] for block in blocks
+        if isinstance(block, dict) and block.get("type") in ORACLE_TEXT_BLOCK_TYPES
+        and isinstance(block.get("text"), str) and block["text"] != ""
+    )
+
+
+def oracle_read_consumes_subagent_notification(payload: dict) -> bool:
+    """Whether the carried reader consumes a record as a subagent notification — the question
+    `handleSubagentNotification` answers `true` to, after which a read of the artifact returns **no
+    message** for the record.
+
+    `handleResponseItem` reads every `user` record its response-item switch does not take through
+    `extractCodexContent`, and `handleSubagentNotification` consumes it exactly where
+    `parseCodexSubagentNotification` parses that content: after Go's own trim a
+    `<subagent_notification>` prefix; a body that is valid JSON; an `agent_id`/`agent_path` that is a
+    non-empty string after `firstNonEmpty`; and a terminal status (`completed`, `errored` or `running`)
+    whose own string text is non-empty after `strings.TrimSpace`. The gates are mirrored on the members'
+    own types and spellings — `gjson`'s `.Str` is empty for every non-string member, and a repeated
+    member name inside the body is read the first-value way `gjson` reads it (`_oracle_first_members`) —
+    so a record this answers `true` for is one no receipt's message identity can name as the record a
+    read answers (review round r9's finding). A body whose reading this mirror cannot reproduce exactly
+    — nesting past Python's parser — is answered as consumed, the fail-closed side
+    `oracle_call_input_value` takes, because the record's read-answer as a message cannot be established
+    there either.
+    """
+    opening = "<subagent_notification>"
+    closing = "</subagent_notification>"
+    trimmed = oracle_go_trim(oracle_reader_message_text(payload))
+    if not trimmed.startswith(opening):
+        return False
+    body = trimmed[len(opening):]
+    if body.endswith(closing):
+        body = body[:-len(closing)]
+    body = oracle_go_trim(body)
+    try:
+        parsed = json.loads(body, parse_constant=_reject_json_constant,
+                            object_pairs_hook=_oracle_first_members)
+    except json.JSONDecodeError:
+        return False  # no JSON body: `gjson.Valid` answers false and the message travels
+    except ValueError:
+        return False  # a constant JSON has no spelling for (`NaN`): `gjson.Valid` refuses it too
+    except RecursionError:
+        return True  # nesting past this mirror's parser: the read's own answer is not established
+    if not isinstance(parsed, dict):
+        return False
+    agent = ""
+    for member in ("agent_id", "agent_path"):
+        value = parsed.get(member)
+        if isinstance(value, str):
+            agent = oracle_go_trim(value)
+            if agent != "":
+                break
+    if agent == "":
+        return False
+    status = parsed.get("status")
+    if not isinstance(status, dict):
+        return False
+    for member in ("completed", "errored", "running"):
+        value = status.get(member)
+        if isinstance(value, str) and oracle_go_trim(value) != "":
+            return True
+    return False
+
+
 def oracle_result_text(payload: dict) -> str:
     """One tool result's own text, as the occurrence identity counts it.
 
@@ -1684,12 +1824,21 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
       result's outcome from the record's own `status`, defaulting to `completed` where it holds none,
       while this route's writer's own result record, `function_call_output`, carries no outcome member
       at all (counted `tool_result_outcomes`) — so a read of the artifact answers an outcome the
-      receipt's `call_id`/recorded-text identity cannot state (review round r6's finding).
+      receipt's `call_id`/recorded-text identity cannot state (review round r6's finding);
+    - a `user` `message` whose content the carried read consumes as a subagent notification
+      (`oracle_read_consumes_subagent_notification` mirrors `handleSubagentNotification`'s gates): the
+      record never travels as a message — the read consumes it and attributes its delivered text to a
+      result event on the wait call that named the agent, or, attributed to no call, to an orphan
+      tool-result message — and no record of the artifact states that occurrence, so a receipt marking
+      the message emitted names dialogue no read of the artifact answers (review round r9's finding).
 
     Each is refused where a plan is compared and silent without one: a native rollout may legitimately
     carry these shapes, and the structural rules say nothing about them (measured: 19 inter-agent
     `agent_message` records across Codex 0.170.0's own 25 host sessions, §0 of the evidence record; 57
-    `developer` messages and 174 `custom_tool_call_output` records, the same section). A
+    `developer` messages and 174 `custom_tool_call_output` records, the same section; for the
+    notification arm, 0 across the same 25 sessions — the shape is the read's own
+    (`internal/parser/codex_parser_test.go` pins the attribution), so refusing it where a plan is
+    compared cannot refuse a measured native file). A
     `reasoning` item is deliberately not one of them: the reader answers it as a thinking row with an
     explicitly empty dialogue projection (`handleReasoning`: `DialogueText: new("")`), so it carries no
     dialogue the plan's dialogue accounting could be total over.
@@ -1706,16 +1855,24 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
             # of the two they name; a stated role outside them carrying readable text is refused here,
             # because the plan states the writer's own roles and this shape is the format's message
             # carrier. A role `oracle.message` itself refuses (missing, non-string, blank) is left to
-            # that rule, so one defect stays one finding.
+            # that rule, so one defect stays one finding. A `user` record the read consumes as a
+            # subagent notification is refused before any of that: the read answers no message for it.
             role = payload.get("role")
-            if role in ORACLE_MESSAGE_ROLES or not isinstance(role, str) or oracle_blank(role):
+            if role == "user" and oracle_read_consumes_subagent_notification(payload):
+                found = ("the artifact holds a `user` `message` whose content the carried read consumes "
+                         "as a subagent notification (`handleSubagentNotification`), so a read of the "
+                         "artifact answers no message for the record — the delivered text is "
+                         "attributed to a result the artifact states in no record the receipt's "
+                         "identity can name")
+            elif role in ORACLE_MESSAGE_ROLES or not isinstance(role, str) or oracle_blank(role):
                 continue
-            text = oracle_message_text(payload)
-            if oracle_blank(text):
-                continue
-            found = (f"the artifact holds a `message` in the role {oracle_value_text(role)} carrying "
-                     f"readable text ({oracle_value_text(text)}) — the vocabulary names the writer's own "
-                     f"two roles, not this one")
+            else:
+                text = oracle_message_text(payload)
+                if oracle_blank(text):
+                    continue
+                found = (f"the artifact holds a `message` in the role {oracle_value_text(role)} carrying "
+                         f"readable text ({oracle_value_text(text)}) — the vocabulary names the writer's "
+                         f"own two roles, not this one")
         elif item in ORACLE_CALL_ITEMS:
             continue  # the vocabulary's own shapes; the accounting rules read them
         elif item in ORACLE_RESULT_ITEMS:

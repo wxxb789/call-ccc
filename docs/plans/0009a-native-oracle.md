@@ -45,7 +45,7 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
 
 | id | states |
 | --- | --- |
-| `oracle.jsonl-objects` | every non-empty line is exactly one JSON object, every member name written once inside it — a repeated name is a line this oracle's decoder and the carried reader's `gjson` answer differently for, refused before comparison |
+| `oracle.jsonl-objects` | every non-empty line is exactly one JSON object, every member name written once inside it and no string it holds carrying an unpaired surrogate escape — a repeated name, and a `\ud800`-style escape (this oracle's decoder answers the code point, the carried reader's `gjson` U+FFFD, measured), are lines this oracle's decoder and the carried reader's `gjson` answer differently for, refused before comparison |
 | `oracle.envelope` | every record holds a parseable `timestamp` — one whole, ASCII RFC3339 instant — a non-empty `type`, an object `payload` |
 | `oracle.record-type` | `type` is one the format defines (the measured set; **payload** types stay open) |
 | `oracle.session-meta` | the artifact's first record is its only `session_meta` |
@@ -56,7 +56,7 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
 | `oracle.call-pairing` | call ids are non-empty and unique and a call carries the non-empty `name` the carried reader registers — a record without one is no call, so an output naming it attaches to nothing; every call output names a call the artifact carries **before it** |
 | `oracle.receipt` | the receipt is an object whose `occurrences` are well-formed entries (`kind`, the identity its kind needs — a result's is its call id **and its recorded text**, a call's its call id, name and recorded input, the receipt's `arguments` member naming whichever of the artifact's `arguments`/`input` members wrote it, read exactly as written — `disposition` ∈ `emitted`/`omitted`); a receipt that declares no occurrences is refused rather than compared |
 | `oracle.plan-emitted` | every occurrence the receipt marks emitted is present in the artifact, as many times as it is marked — a dialogue message in both of the artifact's channels (the model-visible `response_item` and the turn-view `event_msg`) |
-| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, an occurrence it names nowhere, a compaction boundary's `replacement_history`, a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name (an inter-agent `agent_message` addressed to the session's own agent path, another payload type carrying a `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside the writer's two carrying readable text, a `custom_tool_call_output` whose carried read answers the result's outcome the receipt's identity cannot state), a shape whose own read or identity this oracle does not model (a call carrying both `arguments` and `input`, a call whose recorded input or result whose recorded text is written as a **non-string** member, an object-valued `content` a read iterates the member values of), and a result the carried read does not establish (one whose call the read answers elsewhere — `spawn_agent` links a subagent session and appends no result, `wait`/`wait_agent` answer per-agent results from the output's own `status` object, the exec-cell poll excepted — or one carrying no output a read appends a result from) are equally refused, in both dialogue channels |
+| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, an occurrence it names nowhere, a compaction boundary's `replacement_history`, a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name (an inter-agent `agent_message` addressed to the session's own agent path, another payload type carrying a `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside the writer's two carrying readable text, a `user` message a read consumes as a subagent notification (the record never travels as a message; the read attributes its text to a result the artifact states in no record), a `custom_tool_call_output` whose carried read answers the result's outcome the receipt's identity cannot state), a shape whose own read or identity this oracle does not model (a call carrying both `arguments` and `input`, a call whose recorded input or result whose recorded text is written as a **non-string** member, an object-valued `content` a read iterates the member values of), and a result the carried read does not establish (one whose call the read answers elsewhere — `spawn_agent` links a subagent session and appends no result, `wait`/`wait_agent` answer per-agent results from the output's own `status` object, the exec-cell poll excepted — or one carrying no output a read appends a result from) are equally refused, in both dialogue channels |
 | `oracle.plan-order` | the emitted occurrences stand in the artifact in the receipt's own order, and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past later turns compacts a different history with every count unchanged; the receipt names no turn, so which `turn_context` record a record stands after is outside what the receipt can state and is not compared |
 | `oracle.plan-pairs` | a call and its recorded result carry the same disposition |
 
@@ -157,8 +157,27 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   both certifies a multiplicity no read of the artifact answers (review round r8's finding). Refused only
   where a plan is compared, because a native rollout may carry a repeated output and the structural
   rules state nothing about how many outputs one call id carries; the case pins both the trim-equal
-  duplicate and the byte-identical one, with a second output whose text reads distinct as the green
+  duplicate and the byte-identical one, with a second output whose text reads distinctly as the green
   control.
+- *A message the read consumes as a subagent notification is refused where a plan is compared* — a
+  `user` record whose content parses as a `<subagent_notification>` body naming an agent and a terminal
+  status text is consumed by `handleSubagentNotification` (`internal/parser/codex.go`): no read of the
+  artifact answers the message the receipt names, and the result event the read attributes the delivered
+  text to is stated by no record of the artifact, so the receipt's vocabulary cannot name it. Refused
+  only where a plan is compared — the shape is the read's own (its attribution case is
+  `internal/parser/codex_parser_test.go`'s) and none of the measured 25 native sessions carries one
+  (§0); the case's controls pin the read's own gates (no agent, a Go-blank terminal text, a body that is
+  not JSON — each travels as a message and stays green with its plan), and the mutation
+  `a consumed subagent notification the plan marks emitted` pins the refusal (review round r9's first
+  finding).
+- *A line holding an unpaired surrogate escape is refused before any identity is compared* — JSON's
+  `\ud800`-style escape decodes to a lone surrogate to this oracle and to U+FFFD to the carried reader's
+  `gjson` (measured on the carried v1.20.0, §0 of the evidence record), so two distinct spellings are
+  one string to a read: two call ids — the finding's own pair — would pass uniqueness and pairing while
+  the read answers one id for both. The line is refused and dropped the way a repeated-member line is;
+  the mutation `two call ids distinct to Python and one to the read` pins it, and the case shows the plan
+  reader keeping the spellings apart, which is why only the structural refusal can see the collision
+  (review round r9's second finding).
 - *Every arm a rule states carries its own negative fixture* — the positional arm of
   `oracle.session-meta` ("the artifact opens with its one metadata record") is reached by a mutation that
   moves the metadata record behind another record with each slot keeping the instant it held, so the
@@ -167,7 +186,10 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   members' `originator` arm, the plan-accounted result-read and non-string-member arms, each with its own
   mutation (review round r7's finding), and the `oracle.message` role arm, which review round r8's
   finding named as having no negative fixture: removing its guard left every case green, and the round's
-  artifact-only mutation pins it (`a message with no role`).
+  artifact-only mutation pins it (`a message with no role`). Review round r9's finding named the rule's
+  **string-type** arm (`content[i].text` must be a string) as missing its fixture too: a mutation that
+  puts a non-string `text` beside a valid non-blank block is invisible to every other arm and mutation,
+  and the round's artifact-only mutation `a block whose text is not a string beside a valid one` pins it.
 - *Unknown payload types are accepted* (Codex's own event and item vocabulary is open and measured);
   unknown **envelope** types are refused, because this build writes five and reads a measured eight.
 - The oracle judges this route's occurrence vocabulary — a message (the writer's own two roles, user and
@@ -222,9 +244,11 @@ real converted artifact (§5); and, for the review fix rounds, the gate and cita
 executed revert-mutation per fix for the r3 round (§8), the r4 round (§9) — whose instant-revert fix
 re-derives §8's own recipe with the group count preserved — the r5 round (§10), the r6 round (§11) and
 the r7 round (§12 — whose sixth study runs the other way: it injects the turn check the round did *not*
-add and shows the scope case turning red) and the r8 round (§13 — the collapse refusal and the structural
+add and shows the scope case turning red), the r8 round (§13 — the collapse refusal and the structural
 role guard; §8's five r3 blocks were re-spelled to §9's executable `fresh` form in the same round, and
-§7's transcript redacted to `<repo>` and `~`),
+§7's transcript redacted to `<repo>` and `~`) and the r9 round (§14 — the consumed-notification refusal,
+the lone-surrogate refusal and the message string-type mutation, beside §8's setup moved ahead of its
+first use and every study's edit chained to its `fresh` tree),
 each from the scratch tree its section spells out (the replay's own `mktemp -d` root, allocated once in
 the record's preamble since review round r7's finding 4).
 
@@ -281,7 +305,7 @@ stating what holds, not what would be nice to hold):
   PR #16's, to be rebuilt in 0009d against this frozen oracle.
 
 **The review fix rounds moved the oracle while the increment was still under review** (the freeze binds the
-rest of goal 0009, not this increment's own fix stage). The r1, r2, r3, r4, r5, r6, r7 and r8 findings and their fixes are
+rest of goal 0009, not this increment's own fix stage). The r1, r2, r3, r4, r5, r6, r7, r8 and r9 findings and their fixes are
 enumerated in the stage reports; the shape the freeze now holds is the one above: a result's identity
 includes its recorded text and a call's its name and recorded input (a same-id substitution of either is
 refused, and the recorded input is the member the artifact **writes** — `arguments` then `input`, read
@@ -300,9 +324,14 @@ result the carried read does not establish (a call the read answers elsewhere �
 `wait`/`wait_agent`, the exec-cell poll excepted — or no output a read appends a result from) is refused
 the same way (both review round r7's finding), or one whose recorded text is the text of the result
 written before it after the read's own trim — `hasEquivalentCallResultEvent` suppresses the duplicate,
-so a receipt naming both certifies a multiplicity no read answers (review round r8's finding), a line whose object writes a
+so a receipt naming both certifies a multiplicity no read answers (review round r8's finding), a `user`
+message a read consumes as a subagent notification is refused the same way — no read answers the message
+the receipt names, and the result the read attributes its text to is stated by no record (review round
+r9's finding) — a line whose object writes a
 member name twice — and a receipt whose object does — is refused before comparison because this oracle's
 decoder and the carried reader's `gjson` answer a repeated name differently (review round r5's finding),
+a line holding an unpaired surrogate escape — the finding's two call ids distinct to Python and one to
+the read among them — is refused and dropped the same way (review round r9's finding),
 a call whose `name` is not the non-empty string the carried reader registers is refused with its orphaned
 output, and no receipt naming the empty name certifies the pair (review round r6's finding),
 a dialogue message is read against both of
@@ -321,8 +350,9 @@ non-JSON constants, no replacement-decoded text), an unreadable-by-nesting recei
 than a traceback, a decoded string strict UTF-8 cannot encode is named by a digest that never raises
 where the diagnostic needs one, default diagnostics name occurrences and refused values by type and
 by digest without echoing their text, and a record's turn placement is stated as outside the receipt's
-vocabulary rather than half-checked (review round r7's finding). The evidence record's §1–§13 carry the re-run outputs for that state,
+vocabulary rather than half-checked (review round r7's finding). The evidence record's §1–§15 carry the re-run outputs for that state,
 with one executed revert-mutation per fix (§8 for r3's, §9 for r4's, §10 for r5's, §11 for r6's, §12
 for r7's — whose last study injects the turn check the round did not add and shows the scope case
-turning red — and §13 for r8's: the collapse refusal and the structural role guard, each reverted in its
-own fresh tree with the case that pins it failing there).
+turning red — §13 for r8's: the collapse refusal and the structural role guard, each reverted in its
+own fresh tree with the case that pins it failing there — and §14 for r9's: the consumed-notification
+refusal, the lone-surrogate refusal and the message string-type arm, each reverted the same way).

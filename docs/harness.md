@@ -382,7 +382,9 @@ says so.
   a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent
   `agent_message` addressed to the session's own agent path, another payload type carrying a
   `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside
-  the writer's two carrying readable text, and a `custom_tool_call_output` whose carried read answers
+  the writer's two carrying readable text, a `user` message a read consumes as a subagent notification
+  (the record never travels as a message; the read attributes its text to a result the artifact states in
+  no record), and a `custom_tool_call_output` whose carried read answers
   the result's outcome the receipt's identity cannot state among them — refused there
   too, a shape whose own read or identity the oracle does not model — a call carrying both `arguments` and
   `input`, a call whose recorded input or result whose recorded text is written as a member that is not a
@@ -394,9 +396,11 @@ says so.
   one whose recorded text is the text of the result written before it after the read's own trim
   (`hasEquivalentCallResultEvent` suppresses the duplicate: two raw texts that trim to one are one result
   to every read, and a receipt naming both certifies a multiplicity no read answers) —
-  a line whose object (or a receipt document whose object) writes a member name twice refused before
-  comparison,
-  because this oracle's decoder and the carried reader's `gjson` answer a repeated name differently,
+  a line whose object (or a receipt document whose object) writes a member name twice, or holds an
+  unpaired surrogate escape (`gjson` answers U+FFFD where this decoder answers the code point, so two
+  distinct spellings would be one string to a read — measured on the carried gjson v1.20.0) — refused
+  before comparison,
+  because this oracle's decoder and the carried reader's `gjson` answer such a line differently,
   every call required to carry the non-empty `name` the carried reader registers a call for and every
   call output to name a call written before it, and a receipt that declares no
   occurrences refused before any comparison). The identity the receipt is matched on is the member the
