@@ -2924,3 +2924,29 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   `docs/plans/0009-selective-context.md` replaces the parenthesis with the chosen enumeration; nothing
   downstream changes.
 - **Settled by:** an owner sentence naming the four routes/increments.
+
+## Q-0005-18 — A local re-derivation that the ownership rule now forbids is declared debt
+
+- **Status:** open (default taken: the guard stays as **declared debt** — not removed, not extended, and
+  replaced as soon as an authoritative read answers the same question).
+- **Question:** the binding ownership rule ("each half has one owner … never a re-implementation of a foreign
+  format's shape": `AGENTS.md` §What is binding, `docs/core-design/README.md` §2) forbids this repository from
+  deciding what a foreign loader accepts or skips — yet the same contract still **requires** one such decision:
+  the Pi-family source leaf check (`internal/ccc/pi_source_leaf.go`, invoked before a conversion by
+  `internal/ccc/continue.go`) walks the source file's own entry path and classifies the entries the carried Pi
+  reader did not return, because that reader skips the tree entries Pi's own loader builds context from. May a
+  mandated check be kept where the newer rule forbids the judgment it makes, and if so, under what condition
+  does it move?
+- **Options:** (a) keep it as declared debt with a named replacement condition and a bar on extending it;
+  (b) remove the guard now and let a leaf be established only where the read establishes it — conversions that
+  resume a branch the conversation left become possible again, and the refusal cases 0005's rounds added go
+  red; (c) exempt the Pi route in writing (refused: that is the exact defect the rule names).
+- **Default taken:** (a). The guard is preserved because a conversion that ignored it could write a target
+  whose loader walks a branch the source's own file had left; it **may not grow a new local judgment**; and it
+  moves to Pi's own loader (a load/`get_state`-shaped read of the source file) or an authoritative source-side
+  read the moment one answers the leaf question. Until then the contradiction is disclosed here rather than
+  silently resolved in either direction.
+- **Reversal:** delete the check and its tests in one increment and accept the increased refusal surface; the
+  ownership rule then reads without exception.
+- **Settled by:** an owner sentence, or a Pi-side read that answers the leaf question natively — in which case
+  the debt is discharged by **replacing** the walk, not by dropping it.
