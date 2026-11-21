@@ -262,32 +262,33 @@ What each answer fixed, and why the rule is the one that got stated:
 | 25/25 sessions open with `session_meta`, and every one of the 25 files holds exactly one | `oracle.session-meta` (first and only) |
 | `id`, `originator` and `cli_version` on 25/25 (`source` too — but it is an *object* on the five subagent sessions, so it is not required to be a string) | `oracle.session-meta-members` names these three and not `source` |
 | envelope types are exactly these eight | the 25-session sample's own count; `oracle.record-type`'s set is the version's persisted vocabulary (its `RolloutItemWire` enum), so the types this sample happened not to carry — `retained_context` among them — validate too (the review round r2 finding's correction). Payload types are open and measured (the two counters above), and the oracle enumerates none of them but the ones it reads |
-| every message's content blocks are `input_text`/`output_text`, the two types a native message carries (`codex-rs/protocol/src/models.rs`'s `ContentItem`); the carried reader also reads a third spelling, `text` (`internal/parser/codex.go`'s `extractCodexTextBlocks`) | `oracle.message` requires the native two; the third spelling is refused as a line the native decoder cannot read, while the receipt-facing identity still reads it — pinned by the same-receipt mutation `a block typed with the reader's spelling the format lacks` (review round r2's finding) |
+| every message's content blocks in the 25-session sample are `input_text`/`output_text`; none is media, and the enum is wider — `codex-rs/protocol/src/models.rs`'s `ContentItem` defines `input_image`/`input_audio` too, with the string reference member (`image_url`/`audio_url` or `file_id`) their untagged form decodes from and an image's optional `detail` — and the carried reader reads a further text spelling, `text` (`internal/parser/codex.go`'s `extractCodexTextBlocks`) | `oracle.message` requires the native spellings, media included; the media arms rest on the enum rather than on the sample (no measured file carries one), the reader spelling `text` is refused as a line the native decoder cannot read while the receipt-facing identity still reads it — pinned by the same-receipt mutation `a block typed with the reader's spelling the format lacks` and the `session-media.jsonl` pairs (review round r2's finding: the reader spelling; review round r3's: media is native content and was reported as a decoder failure) |
 | no `user_message`/`agent_message` event holds a blank or non-string `message` | `oracle.event-message` |
 | no record's instant precedes the record before it (over 4 075 records) | `oracle.clock` |
 | every call id is answered exactly once, none repeats, no output names an absent call, and no output stands before its call | `oracle.call-pairing` |
-| **12 blank outputs exist** on Codex's own files, and a `custom_tool_call_output`'s `output` is a list 122 times | the rules that were **not** stated: no rule requires an output to be non-blank or a string — a rule written from this build's writer's habits instead of from the format's own files would have refused the format's own files (the citation the checker's `oracle_unnameable_shape_violations` docstring makes to this section) |
+| **12 blank outputs exist** on Codex's own files, and every call input and output across the sample is a string (806) or a list (122) whose items are all typed content items (`input_text`, 289 items) | the rule's own shape: no rule requires an output to be **non-blank**, and the member values `oracle.call-members` admits are the wire type's own — a string or an array of typed content items — so the format's own files validate while a value the decoder cannot read (`null`, an object, an array of bare strings) is refused; where a plan is compared, the valid array stays refused because the receipt's recorded-text identity is a string (review round r3's finding: the type check is the structural rule's, the identity limit the receipt's) |
 | 73 `response_item` messages stand *before* the first `turn_context` across the 25 files (45 developer, 27 user, 1 assistant; plus 3 `additional_tools`) | no rule requires a record to stand inside a turn — measured, so not stated |
 | 0 lines across the 25 files hold an unpaired surrogate escape; `gjson` (v1.20.0) answers U+FFFD for `\ud800` — one string for the two spellings, and a valid pair decodes to its astral code point in both readers | the `oracle.jsonl-objects` surrogate refusal: a line two readers answer differently for, refused and dropped before any comparison; no measured native file carries one, so the structural refusal does not refuse one of the format's own files |
 
 ## 1. The oracle, its rule registry, and the writer's own bytes (D1)
 
-The registry is `ORACLE_RULES` — fifteen ids, one sentence each in the checker:
+The registry is `ORACLE_RULES` — sixteen ids, one sentence each in the checker:
 
 `oracle.jsonl-objects`, `oracle.envelope`, `oracle.record-type`, `oracle.session-meta`,
 `oracle.session-meta-members`, `oracle.clock`, `oracle.message`, `oracle.event-message`,
-`oracle.call-pairing`, `oracle.call-members`, `oracle.receipt`, `oracle.plan-emitted`,
-`oracle.plan-accounted`, `oracle.plan-order`, `oracle.plan-pairs`.
+`oracle.call-pairing`, `oracle.call-members`, `oracle.compacted`, `oracle.receipt`,
+`oracle.plan-emitted`, `oracle.plan-accounted`, `oracle.plan-order`, `oracle.plan-pairs`.
 
-Ten are structural (the artifact alone), one is the receipt's own schema, and four are stated over
+Eleven are structural (the artifact alone), one is the receipt's own schema, and four are stated over
 the artifact and an explicit manifest receipt. Where a plan is compared, the artifact's occurrences
 are read in both dialogue channels (the model-visible `response_item` and the turn-view `event_msg`)
 and in the receipt's own order, and the shapes whose receipt-facing identity the artifact's own bytes
 cannot state (a boundary's `replacement_history` or `retained_context`, a record type whose payload
 carries dialogue no occurrence kind can name — `retained_context`, `inter_agent_communication`,
-`realtime_item` — a boundary whose `message` member is present but not a string, a call's two or
-non-string recorded-input members, a result's non-string recorded-text member, a `message` whose
-`role` is outside the receipt's vocabulary, a `session_meta` carrying `forked_from_id`) are refused
+`realtime_item` — a call carrying both `arguments` and `input`, a result whose recorded text is
+written as the content-item array the receipt's string identity cannot name, a `message` carrying a
+media block, a `message` whose `role` is outside the receipt's vocabulary, an `event_msg` whose
+payload type is `thread_rolled_back`, a `session_meta` carrying `forked_from_id`) are refused
 rather than modelled.
 
 ### 1.1 The closed equality, executed
@@ -296,12 +297,18 @@ rather than modelled.
 $ python3 scripts/codex-native-check.py --selftest-mutations
 oracle.selftest: oracle.call-members — a call's recorded input renamed to the other family's member: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
 oracle.selftest: oracle.call-members — a call output without its `output` member: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
+oracle.selftest: oracle.call-members — a call's recorded input written as an object: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
+oracle.selftest: oracle.call-members — a custom call's recorded input written as an object: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
+oracle.selftest: oracle.call-members — a call output written as `null`: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
+oracle.selftest: oracle.call-members — a call output written as an array of bare strings: positive PASS, negative FAIL (oracle.call-members cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — an output naming no call: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — a call id carried twice: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — an output written before its call: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — a call without a usable name: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
 oracle.selftest: oracle.call-pairing — a named call whose call_id is empty: positive PASS, negative FAIL (oracle.call-pairing cited), --disable-rule PASS
 oracle.selftest: oracle.clock — two adjacent instants swapped: positive PASS, negative FAIL (oracle.clock cited), --disable-rule PASS
+oracle.selftest: oracle.compacted — a boundary whose `message` member is deleted: positive PASS, negative FAIL (oracle.compacted cited), --disable-rule PASS
+oracle.selftest: oracle.compacted — a boundary whose `message` member is not a string: positive PASS, negative FAIL (oracle.compacted cited), --disable-rule PASS
 oracle.selftest: oracle.envelope — a record without its timestamp: positive PASS, negative FAIL (oracle.envelope cited), --disable-rule PASS
 oracle.selftest: oracle.envelope — a payload that is not an object: positive PASS, negative FAIL (oracle.envelope cited), --disable-rule PASS
 oracle.selftest: oracle.envelope — a record without its type: positive PASS, negative FAIL (oracle.envelope cited), --disable-rule PASS
@@ -318,22 +325,26 @@ oracle.selftest: oracle.jsonl-objects — a line nested past reading: positive P
 oracle.selftest: oracle.jsonl-objects — a line holding a member name twice: positive PASS, negative FAIL (oracle.jsonl-objects cited), --disable-rule PASS
 oracle.selftest: oracle.jsonl-objects — two call ids distinct to Python and one to the read: positive PASS, negative FAIL (oracle.jsonl-objects cited), --disable-rule PASS
 oracle.selftest: oracle.message — a message with no content: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
-oracle.selftest: oracle.message — a block the oracle does not read: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
+oracle.selftest: oracle.message — a block type the native format does not define: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a block typed with the reader's spelling the format lacks: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a message whose text is blank: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a message with no role: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.message — a block whose text is not a string beside a valid one: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
+oracle.selftest: oracle.message — a media block without its reference member: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
+oracle.selftest: oracle.message — a media block whose reference member is not a string: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
+oracle.selftest: oracle.message — a media block whose `detail` is outside the version's spellings: positive PASS, negative FAIL (oracle.message cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — an occurrence the plan marks omitted and the artifact holds: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — an occurrence the plan names nowhere: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary the plan names nowhere: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary carrying the dialogue the plan omits: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a boundary's retained checkpoint carrying the dialogue the plan omits: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a retained_context record carrying the dialogue the plan omits: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
-oracle.selftest: oracle.plan-accounted — a boundary whose summary member is not a string: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a message role the receipt's vocabulary cannot name: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — an omitted message that survives in the turn view: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
-oracle.selftest: oracle.plan-accounted — a call whose recorded input is not a string: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a call carrying both recorded-input members: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
+oracle.selftest: oracle.plan-accounted — a result's recorded text written as a typed content-item array: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
+oracle.selftest: oracle.plan-accounted — a message carrying a media block the receipt cannot name: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
+oracle.selftest: oracle.plan-accounted — an event that rolls a recorded turn back: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-accounted — a session_meta carrying explicit fork lineage: positive PASS, negative FAIL (oracle.plan-accounted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-emitted — a message the plan emits and the artifact lost: positive PASS, negative FAIL (oracle.plan-emitted cited), --disable-rule PASS
 oracle.selftest: oracle.plan-emitted — an emitted message whose turn-view event is gone: positive PASS, negative FAIL (oracle.plan-emitted cited), --disable-rule PASS
@@ -352,7 +363,7 @@ oracle.selftest: oracle.session-meta — a record standing before the metadata: 
 oracle.selftest: oracle.session-meta-members — an empty id: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
 oracle.selftest: oracle.session-meta-members — no cli_version: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
 oracle.selftest: oracle.session-meta-members — no originator: positive PASS, negative FAIL (oracle.session-meta-members cited), --disable-rule PASS
-oracle.selftest: PASS — 15 rule(s), 58 fixture pair(s): positive PASS, negative FAIL (each citing its own rule), --disable-rule PASS
+oracle.selftest: PASS — 16 rule(s), 68 fixture pair(s): positive PASS, negative FAIL (each citing its own rule), --disable-rule PASS
 $ echo $?
 0
 ```
@@ -377,7 +388,7 @@ $ python3 scripts/codex-native-check.py --validate <the installed rollout>
 oracle: PASS — 22 record(s), 10 occurrence(s)
 ```
 
-The two committed synthetic fixtures and their manifest receipts:
+The three committed synthetic fixtures and their manifest receipts:
 
 ```
 $ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-oracle/session.jsonl \
@@ -387,7 +398,17 @@ oracle: PASS — 17 record(s), 7 occurrence(s)
 $ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-oracle/reduced.jsonl \
       --receipt scripts/tests/testdata/codex-oracle/reduced-receipt.json
 oracle: PASS — 12 record(s), 5 occurrence(s)
+
+$ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-oracle/session-media.jsonl
+oracle: PASS — 17 record(s), 7 occurrence(s)
 ```
+
+`session-media.jsonl` is `session.jsonl` with one well-formed `input_image` block beside the first
+user message's text (review round r3's finding: media is native content, and the block-type check had
+refused it as a decoder failure); it is validated *without* a receipt on purpose, because the media
+the receipt's text-only vocabulary cannot name is refused where a plan is compared — with
+`session-receipt.json` the same bytes cite `oracle.plan-accounted`, pinned by the mutation of the same
+name.
 
 The fixtures' record payloads are shapes Codex 0.170.0's own decoder accepts, not only the envelopes
 this oracle reads (review round r2's finding 5). The fixture stated a token-usage record carrying
@@ -425,7 +446,7 @@ committed fixtures and the runs above re-derive from bytes.
 
 ### 1.3 The corpus
 
-`ORACLE_MUTATIONS` holds 58 fixture pairs across the 15 rules; each pair names its fixture (and its
+`ORACLE_MUTATIONS` holds 68 fixture pairs across the 16 rules; each pair names its fixture (and its
 manifest receipt where the rule needs one) and a change that must turn exactly its own rule red and no
 other, which is what makes a report a reading of one defect rather than a net. Every pair's three arms
 are read through the shipped command's own `--validate`/`--receipt`/`--disable-rule` path, on the
@@ -506,7 +527,7 @@ paragraphs, the citations manifest's header (`docs/evidence/0009a-citations.tsv`
 plan (`docs/plans/0009a-native-oracle.md`). The increment's own fix pass brings all three to the
 shipped statement — the harness paragraph now names the receipt-mode refusals and the
 reader-visible projection as the manifest receipt's own statement, the manifest's "deliberately not
-covered" paragraph is rewritten from the shipped corpus (15 rules, 58 fixture pairs), and the plan
+covered" paragraph is rewritten from the shipped corpus (16 rules, 68 fixture pairs), and the plan
 marks its design as the pre-repair revision with its Evidence section pointing at the record's shipped
 sections. No shipped surface still states the removed reader-modelling refusals as the design; the plan's
 pre-repair sections are marked as such and point here. The checker's own
@@ -591,16 +612,48 @@ the eight types the 25-session sample happened to carry (`test_the_record_vocabu
 and the positive fixtures' payloads are native-valid rather than lines the native decoder discards
 (§1.2).
 
+**The third post-repair review round (r3)'s four findings — the native-decoding seam.** Three are
+contract-shaping and kept as the rules' own statements. A `compacted` record whose `message` member is
+absent — not only one present and non-string — is a line `CompactedItemWire` cannot decode (`message`
+is a string without a default), so the new structural `oracle.compacted` refuses it in **both** modes
+(fixtures "a boundary whose `message` member is deleted" and "a boundary whose `message` member is not
+a string"; the empty boundary a plan may name is the explicit empty string, pinned by
+`test_a_boundary_without_a_string_summary_is_refused_in_both_modes`, and the counting half by
+`test_a_boundary_with_an_explicit_empty_summary_is_counted`). A call's `arguments`/`input` written as
+a non-string member, or a result's `output` written as `null` or an array whose items are not typed
+content items, are refused by the native wire types' own decoder: `oracle.call-members` now checks the
+member's decodability, not only its presence (fixtures "a call's recorded input written as an object",
+"a custom call's recorded input written as an object", "a call output written as `null`", "a call
+output written as an array of bare strings";
+`test_a_member_the_native_decoder_refuses_is_refused_alone`), while a **valid** content-item array
+output stays native and is refused only where a plan is compared (`oracle.plan-accounted`; fixture
+"a result's recorded text written as a typed content-item array",
+`test_a_valid_content_item_array_output_is_refused_with_a_plan`). And a well-formed
+`input_image`/`input_audio` block is native content the block-type check had refused as a decoder
+failure: `oracle.message` now admits the media spellings against their untagged reference members
+(committed `session-media.jsonl`, the session fixture with one image block beside its first user text;
+fixtures "a media block without its reference member", "a media block whose reference member is not a
+string" and "a media block whose `detail` is outside the version's spellings"), while the receipt's
+text-only vocabulary refuses a media-bearing message where a plan is compared (fixture "a message
+carrying a media block the receipt cannot name",
+`test_a_native_media_block_is_accepted_and_refused_with_a_plan`). The fourth is the rollback: a
+`thread_rolled_back` event passes every count a plan compares while Codex's own replay drops the last
+`num_turns` user turns from model history, so it is refused where a plan is compared (fixture "an
+event that rolls a recorded turn back", `test_a_rollback_event_is_refused_with_a_plan`). Every arm is
+pinned twice: the `selftest` corpus pair above, and the suite's own case beside it.
+
 ## 6. Citations
 
 `docs/evidence/0009a-citations.tsv` holds this increment's rows: one row per structural oracle rule,
 each naming the existing Go test that already pins the same claim about this tree's writer
 (`TestCodexRolloutRecordShape`, `TestCodexRolloutStampsRecordsInOneOrderedRun`,
 `TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage`,
-`TestCodexRolloutDoesNotReportOmittedResultsAsCarried`), plus the header's declared list of what is
+`TestCodexRolloutDoesNotReportOmittedResultsAsCarried`,
+`TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt`), plus the header's declared
+list of what is
 deliberately not covered — the receipt half, whose re-derivation is now `--selftest-mutations` (§1.1)
 and the suite's corpus cases, exactly as the manifest states. The required `citations` step verifies
-every row against a running Go test: `docs/evidence/0009a-citations.tsv: 10 row(s) verified` (§7).
+every row against a running Go test: `docs/evidence/0009a-citations.tsv: 11 row(s) verified` (§7).
 
 ## 7. The gate
 
@@ -612,10 +665,10 @@ gate: go=<toolchain> targets=./cmd/ccc/... ./internal/ccc/...
   PASS     build    go build ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     vet      go vet ./cmd/ccc/... ./internal/ccc/... -> rc=0
   PASS     test     3 package(s) ok
-  PASS     selftest Ran 476 tests in 13.516s (rc=0)
-  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5739 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 10 row(s) verified
-  PASS     secrets  no leaks found in 208 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     selftest Ran 479 tests in 14.178s (rc=0)
+  PASS     parity   … | 47.0-181-g83195c8a) | reported by cmd/ccc: 83195c8a6861b8c74a4b6cb87512817fed6f8584 | carried: 5553 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 27 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 32 project-owned prefix(es); files seen by git: 5740 | inputs: internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared deviations still differ from upstream: .gitignore AGENTS.md README.md docs/README.md | declared stored bytes verified: frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     citations docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 11 row(s) verified
+  PASS     secrets  no leaks found in 209 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 $ echo $?
 0

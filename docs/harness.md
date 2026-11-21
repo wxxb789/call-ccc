@@ -372,13 +372,14 @@ says so.
   not do the native half says so instead of reporting a pass.
   **The same file carries a second, offline half — the frozen artifact oracle (goal 0009a).**
   `validate_artifact` — reachable as `python3 scripts/codex-native-check.py --validate <artifact>
-  [--receipt <document>] [--json]` — judges a Codex session **artifact** against fifteen stated rules,
+  [--receipt <document>] [--json]` — judges a Codex session **artifact** against sixteen stated rules,
   from the artifact's own bytes and, at most, an explicit **manifest receipt** (the plan's per-occurrence
   dispositions: `emitted` / `omitted` over messages, tool calls, results and compaction boundaries, with a
   tool call's name and recorded input and a tool result's recorded text part of their identities, a
   dialogue message read against both of the artifact's dialogue channels, the emitted order read against
-  the receipt's own in both channels, every `compacted` record an occurrence whether or not it carries
-  a summary, a boundary carrying a native `replacement_history` or `retained_context` refused where a
+  the receipt's own in both channels, every `compacted` record an occurrence — its payload type
+  requiring the string `message` a boundary states — a boundary carrying a native
+  `replacement_history` or `retained_context` refused where a
   receipt is compared, a record whose `type` the format defines while its payload carries dialogue no
   occurrence kind can name (`retained_context`, `inter_agent_communication`, `realtime_item`) refused
   there too,
@@ -394,13 +395,15 @@ says so.
   **reader-visible projection**, the manifest receipt's own statement, whose producer is 0009c/0009d
   (the goal's Non-scope), and this oracle infers nothing about it from the artifact's bytes — refused
   there too, instead, are the shapes whose receipt-facing identity the artifact's own bytes cannot
-  state: a call carrying both `arguments` and `input`, a call whose recorded input or a result whose
-  recorded text is written as a member that is not a string (the receipt's identity members are strings,
-  and a decoded value cannot recover the member's own bytes), a `compacted` record whose `message`
-  member is present but not a string (an absent summary is the empty boundary the plan can name), a
+  state, each natively decodable: a call carrying both `arguments` and `input`, a result whose
+  recorded text is written as the content-item array the receipt's string identity cannot name, a
+  `response_item` `message` carrying a media block (`input_image`/`input_audio` — the receipt names a
+  message by its role and its text), a
   `response_item` `message` whose `role` is a non-empty string outside the receipt's vocabulary
   (`user`/`assistant` — the role is the artifact's own bytes, so the record is refused rather than read
-  as no occurrence), and a `session_meta` carrying a non-blank
+  as no occurrence), an `event_msg` whose payload type is `thread_rolled_back` (its `num_turns` states
+  turns the harness's own replay drops from model history, so a receipt marking them emitted certifies
+  history the harness does not hold), and a `session_meta` carrying a non-blank
   `forked_from_id`, because the read's fork gate suppresses the replayed records of a resolved parent's
   turns and a parent transcript is outside the oracle's input —
   a line whose object writes a member name twice, or a receipt document whose object does, or an
@@ -414,9 +417,13 @@ says so.
   its own reading: a surrogate identity in one is compared and named by digest, not refused;
   every call required to carry the non-empty `name` the carried reader registers a call for and every
   call output to name a call written before it, every call and result required to state the member its
-  native payload type carries (`arguments`, `input`, `output` — the decoder requires each and the
-  rollout reader skips a line without it), a message's content blocks required to be the native text
-  spellings (`input_text`/`output_text`; `text` is the carried reader's spelling and a line the native
+  native payload type carries as the value its wire type decodes (`arguments`/`input` as strings,
+  `output` as a string or an array of typed content items — the decoder requires each and the
+  rollout reader skips a line it cannot decode), a `compacted` record required to state its string
+  `message`, a message's content blocks required to be the native
+  spellings (`input_text`/`output_text` as strings, `input_image`/`input_audio` against the string
+  reference member their untagged native form decodes from and an image's defined `detail`; `text` is
+  the carried reader's spelling and a line the native
   decoder cannot read), and a receipt that declares no
   occurrences refused before any comparison). The identity the receipt is matched on is the member the
   artifact **writes** — a call's `arguments` read exactly as written, so this route's writer's deliberate

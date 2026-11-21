@@ -50,13 +50,15 @@ acceptance runs) is untouched, so its verdict is the regression clause's own evi
 - `--validate <artifact> [--receipt <document>] [--json]` — the CLI half: prints `oracle: PASS` /
   `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — <reason>`, exit 0/1/2.
 
-**Rules (15), and why each is sound.** Each is measured on Codex `0.170.0`'s own 25 host sessions *and* on
+**Rules (16), and why each is sound.** Each is measured on Codex `0.170.0`'s own 25 host sessions *and* on
 artifacts this build's writer produces (the record type vocabulary, first-record-is-session_meta, exactly one
 session_meta, non-empty `id`/`originator`/`cli_version`, non-decreasing envelope instants, every message's
-blocks typed as the native text channel, every call and result stating the member its native payload type
-carries, every `user_message`/`agent_message` event carrying
-a non-empty string, no duplicate call id and no output naming an absent call). Structural rules are stated
-over the artifact alone; four are stated over the artifact **and** an explicit receipt — and every row's
+blocks typed as the native content items (the text spellings and the media references), every call and
+result stating the member its native payload type carries as the value its wire type decodes, every
+`compacted` record stating its string `message`, every `user_message`/`agent_message` event carrying
+a non-empty string, no duplicate call id and no output naming an absent call). Eleven structural rules are
+stated over the artifact alone, one states the receipt's own schema, and four are stated over the artifact
+**and** an explicit receipt — and every row's
 shipped wording is the `ORACLE_RULES` sentence in the shipped checker, the `oracle.plan-accounted` row
 below having been replaced in place by the mechanism repair (the superseding note above):
 
@@ -68,13 +70,14 @@ below having been replaced in place by the mechanism repair (the superseding not
 | `oracle.session-meta` | the artifact's first record is its only `session_meta` |
 | `oracle.session-meta-members` | its payload's `id`, `originator`, `cli_version` are non-empty strings |
 | `oracle.clock` | envelope instants never decrease |
-| `oracle.message` | a `response_item` message: non-empty `role`; a non-empty `content` whose blocks are typed `input_text`/`output_text` with string `text`, at least one non-blank (`text` is a reader spelling the version's content-item enum lacks and is refused) |
+| `oracle.message` | a `response_item` message: non-empty `role`; a non-empty `content` whose blocks are the native spellings — `input_text`/`output_text` with string `text`, `input_image`/`input_audio` with the string reference member their untagged native form decodes from (and an image's defined `detail` where stated), at least one text block non-blank where the message carries any (`text` is a reader spelling the version's content-item enum lacks and is refused; a media block is native content and its receipt-mode refusal is below) |
 | `oracle.event-message` | a `user_message`/`agent_message` event carries a non-empty string `message` |
 | `oracle.call-pairing` | call ids are non-empty and unique and a call carries the non-empty `name` the carried reader registers — a record without one is no call, so an output naming it attaches to nothing; every call output names a call the artifact carries **before it** |
-| `oracle.call-members` | a tool call states the member its native type requires (`arguments` on `function_call`, `input` on `custom_tool_call`) and a `*_call_output` states its `output` — the native decoder requires each and its rollout reader skips a line without it |
+| `oracle.call-members` | a tool call states the member its native type requires (`arguments` on `function_call`, `input` on `custom_tool_call`) and a `*_call_output` states its `output`, each as the value its wire type decodes (a string; an output a string or an array of typed content items) — the native decoder requires each and its rollout reader skips a line it cannot decode |
+| `oracle.compacted` | every `compacted` record states the string `message` its payload type requires (the version's `CompactedItemWire` decodes it without a default; an explicit empty string is the valid empty summary, an absent or non-string member is a line the native decoder skips) |
 | `oracle.receipt` | the receipt is an object whose `occurrences` are well-formed entries (`kind`, the identity its kind needs — a result's is its call id **and its recorded text**, a call's its call id, name and recorded input, the receipt's `arguments` member naming whichever of the artifact's `arguments`/`input` members wrote it, read exactly as written — `disposition` ∈ `emitted`/`omitted`); a receipt that declares no occurrences is refused rather than compared |
 | `oracle.plan-emitted` | every occurrence the receipt marks emitted is present in the artifact, as many times as it is marked — a dialogue message in both of the artifact's channels (the model-visible `response_item` and the turn-view `event_msg`) |
-| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, an occurrence it names nowhere, a compaction boundary's `replacement_history` or `retained_context` (an empty member holds nothing), a record whose `type` is one the format defines while its payload carries dialogue no occurrence kind can name (`retained_context`, `inter_agent_communication`, `realtime_item`), and the shapes whose receipt-facing identity the artifact's own bytes cannot state — a call whose recorded input is written as two members (`arguments` and `input`) or as a member that is not a string, a result whose recorded text is written as a member that is not a string, a `compacted` record whose `message` member is present but not a string (an absent summary is the empty boundary the plan can name), a `message` whose `role` is a non-empty string outside the receipt's vocabulary, and a `session_meta` carrying `forked_from_id` — each refused where a comparison runs and silent without one, in both of the target's dialogue channels |
+| `oracle.plan-accounted` | the artifact holds nothing the receipt does not mark emitted — an occurrence the receipt marks omitted, an occurrence it names nowhere, a compaction boundary's `replacement_history` or `retained_context` (an empty member holds nothing), a record whose `type` is one the format defines while its payload carries dialogue no occurrence kind can name (`retained_context`, `inter_agent_communication`, `realtime_item`), and the shapes whose receipt-facing identity the artifact's own bytes cannot state — a call whose recorded input is written as two members (`arguments` and `input`), a result whose recorded text is written as the content-item array the receipt's string identity cannot name, a `message` carrying a media block, a `message` whose `role` is a non-empty string outside the receipt's vocabulary, an `event_msg` whose payload type is `thread_rolled_back`, and a `session_meta` carrying `forked_from_id` — each refused where a comparison runs and silent without one, in both of the target's dialogue channels |
 | `oracle.plan-order` | the emitted occurrences stand in the artifact in the receipt's own order, and so do its dialogue messages in the artifact's turn view — a compaction boundary moved past later turns compacts a different history with every count unchanged; the receipt names no turn, so which `turn_context` record a record stands after is outside what the receipt can state and is not compared |
 | `oracle.plan-pairs` | a call and its recorded result carry the same disposition |
 
@@ -158,15 +161,15 @@ a surviving structural rule or to the manifest receipt's own statement (0009c/00
   `wait_agent` with its output left as plain text certified a result no read returns). The family is
   asked of the name the read **registers** (`rememberToolCall` Go-trims it), not the written spelling,
   while the written name stays the occurrence identity (review round r10's second finding).
-- *A non-string identity member is refused where a plan is compared, not matched by its JSON spelling* —
-  the identity serializes a non-string `arguments`/`input`/`output` member back to compact JSON, which
-  can reconstruct the receipt's own string key (a space after a colon is lost) while the carried reader
-  answers the member's own raw bytes (`extractCodexInputJSON`, `parseCodexFunctionOutput`) and this
-  route's writer writes strings (`internal/ccc/codex_target.go`'s `codexFunctionCallPayload`): the
-  receipt names the member as written, so a member whose own spelling the decoded value cannot recover is
-  refused rather than matched on a spelling neither reader answers (review round r7's finding). The
-  `null` member's identity is the string `null` the read answers, distinguished from an absent member's
-  empty string.
+- *A member the native decoder cannot read is refused structurally; the receipt's limit is the valid
+  array's* — the wire types make `arguments`/`input` strings and `output` a string or an array of typed
+  content items (`protocol/src/models.rs`), so a member written outside those shapes is a line the
+  native decoder refuses and its rollout reader skips: `oracle.call-members` refuses it in **both**
+  modes (review round r3's finding). The identity still serializes a non-string member back to compact
+  JSON, and a *valid* content-item array is admitted structurally while the receipt cannot name it — a
+  decoded value cannot recover the member's own bytes (a space after a colon is lost) — so it is
+  refused where a plan is compared (review rounds r7's and r3's findings). The `null` member's identity
+  is the string `null` the read answers, distinguished from an absent member's empty string.
 - *A record's turn is outside the receipt's vocabulary* — the plan states occurrences, identities,
   dispositions and order, and names no turn; the artifact's dialogue records name no turn either. A
   `turn_context` moved across records changes the turn the carried read answers for the records after it
@@ -246,8 +249,8 @@ a surviving structural rule or to the manifest receipt's own statement (0009c/00
   moves the metadata record behind another record with each slot keeping the instant it held, so the
   clock stays legal and no other rule can fail; the deleted, duplicated and emptied fixtures all fail
   without it (review round r6's finding). Likewise the envelope's non-empty-`type` arm, the metadata
-  members' `originator` arm, the plan-accounted non-string-input and both-members arms, each with its own
-  mutation (review round r7's finding), and the `oracle.message` role arm, which review round r8's
+  members' `originator` arm, the plan-accounted both-members and result-array arms, each with its own
+  mutation (review rounds r7's and r3's findings), and the `oracle.message` role arm, which review round r8's
   finding named as having no negative fixture: removing its guard left every case green, and the round's
   artifact-only mutation pins it (`a message with no role`). Review round r9's finding named the rule's
   **string-type** arm (`content[i].text` must be a string) as missing its fixture too: a mutation that
@@ -268,7 +271,10 @@ receipts: `session.jsonl` (a two-turn session with a call, its result and a comp
 `world_state` and one `token_usage_record` so a real-only envelope type is exercised) with
 `session-receipt.json`; `reduced.jsonl` — the same session's own records with the second turn taken out —
 with `reduced-receipt.json`, which is D2's fixture: a reduced artifact validated against its plan, the source
-absent from the process. Negative fixtures are the shipped rule table's own mutations, held in the test as
+absent from the process; and `session-media.jsonl` — `session.jsonl` with one well-formed `input_image`
+block beside the first user message's text, validated without a receipt, because the media the receipt's
+text-only vocabulary cannot name is refused where a plan is compared (review round r3's finding). Negative
+fixtures are the shipped rule table's own mutations, held in the test as
 one mutation (or more) per rule, each asserted to turn *that rule* red and no other.
 
 **Freeze and lock.** D4's statement lives in four places a later lane reads: the oracle section's own header
@@ -384,8 +390,8 @@ path, another payload type carrying a `user`/`assistant` role and readable text,
 `custom_tool_call_output` whose read answers an outcome this route's writer's own results have no member
 for — is refused where a plan is compared, an object-valued `content` a read iterates
 the member values of is refused the same way (review round r5's finding), a call whose recorded input or
-result whose recorded text is written as a non-string member is refused there too — its JSON spelling can
-reconstruct the receipt's string key while the carried reader answers the member's raw bytes — and a
+result whose recorded text is written as a member the native wire type cannot decode is refused in
+**both** modes (review round r3's finding), and a
 result the carried read does not establish (a call the read answers elsewhere — `spawn_agent`,
 `wait`/`wait_agent`, the exec-cell poll excepted — or no output a read appends a result from) is refused
 the same way (both review round r7's finding), or one whose recorded text is the text of the result

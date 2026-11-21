@@ -15,19 +15,19 @@
 # table in bijection — every rule has at least one committed synthetic fixture whose mutation turns that
 # rule red and no other, and a mutation without a rule fails too
 # (`test_every_rule_has_a_mutation_that_turns_its_fixture_red`, the increment's D1). The fixtures are
-# `scripts/tests/testdata/codex-oracle/` (the two synthetic artifacts, their manifest receipts).
+# `scripts/tests/testdata/codex-oracle/` (the three synthetic artifacts, their manifest receipts).
 #
 # Deliberately not covered, with the reason (form-based: a row is one Go test in a package
 # scripts/gate-targets.txt covers, so a rule whose gate re-derivation is a python case the required
 # `selftest` step runs, or a native harness run, cannot hold one):
 #   oracle.receipt, oracle.plan-emitted, oracle.plan-accounted, oracle.plan-order, oracle.plan-pairs —
-#         the manifest-receipt half (21 of the shipped corpus's 58 fixture pairs). No Go test grounds it,
+#         the manifest-receipt half (22 of the shipped corpus's 68 fixture pairs). No Go test grounds it,
 #         because nothing in this tree produces a receipt yet: the receipt's producer is goal
 #         0009c/0009d (this goal's Non-scope), and the rules are stated over the synthetic receipts
 #         committed with the fixtures. Their re-derivation is the same `selftest` case's mutation table
 #         — `--selftest-mutations` executes it, on every arm through the shipped command's own
 #         `--validate`/`--receipt`/`--disable-rule` path, and the case's bijection asserts it from both
-#         ends (four mutations for `oracle.receipt`, two for `oracle.plan-emitted`, twelve for
+#         ends (four mutations for `oracle.receipt`, two for `oracle.plan-emitted`, thirteen for
 #         `oracle.plan-accounted`, two for `oracle.plan-order` and one for `oracle.plan-pairs`) —
 #         beside the surviving corpus cases:
 #         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
@@ -40,17 +40,26 @@
 #         names it there), `test_a_written_empty_object_input_is_part_of_the_identity` (the identity is
 #         the member the artifact writes — the writer's own `arguments: "{}"` is not the read's empty
 #         answer — its both-members arm among the refusals below),
-#         `test_a_non_string_identity_member_is_refused_with_a_plan` (a call's recorded input or a
-#         result's recorded text written as a non-string member is refused where a plan is compared),
+#         `test_a_valid_content_item_array_output_is_refused_with_a_plan` (a result's `output` written
+#         as a typed content-item array is natively decodable and refused where a plan is compared,
+#         because the receipt's recorded-text identity is a string),
+#         `test_a_native_media_block_is_accepted_and_refused_with_a_plan` (a well-formed `input_image`
+#         beside a message's text is structurally green and refused where a plan is compared, because
+#         the receipt names a message by its role and its text),
+#         `test_a_rollback_event_is_refused_with_a_plan` (an appended `thread_rolled_back` event,
+#         whose replay drops recorded turns, is refused where a plan is compared; without one it is a
+#         native record),
 #         `test_a_boundarys_replacement_history_is_refused_with_a_plan` (a boundary carrying a native
 #         `replacement_history` is refused where a plan is compared),
 #         `test_a_retained_checkpoint_or_record_is_refused_with_a_plan` (a boundary's `retained_context`
 #         checkpoint and a `retained_context`/`inter_agent_communication`/`realtime_item` record — the
 #         vocabulary's dialogue-bearing types — are refused where a plan is compared, an empty
 #         checkpoint member the green control),
-#         `test_a_boundary_with_a_non_string_summary_is_refused_with_a_plan` (a boundary whose
-#         `message` member is present but not a string is refused where a plan is compared; an absent
-#         summary — the empty boundary the plan may name — is the green control),
+#         `test_a_boundary_without_a_string_summary_is_refused_in_both_modes` (a boundary whose
+#         `message` member is absent or not a string is refused without a receipt, and a plan naming
+#         the empty text cannot certify it; the explicit empty string is the valid empty summary and
+#         the green control; the counting half is
+#         `test_a_boundary_with_an_explicit_empty_summary_is_counted`),
 #         `test_a_message_role_outside_the_receipts_vocabulary_is_refused_with_a_plan` (a
 #         `response_item` `message` in a role outside the receipt's vocabulary is refused where a plan
 #         is compared, so the plan's omitted prompt cannot survive as a role the vocabulary skips),
@@ -61,12 +70,12 @@
 #         `test_a_moved_turn_context_is_outside_the_receipts_vocabulary` (a record's turn placement is
 #         outside what the receipt states and the rule's sentence says so, the finding's own
 #         `turn_context` move validating green), `test_occurrence_identity_is_counted_not_deduplicated`
-#         (multiplicity is identity-counted), `test_a_compacted_record_without_a_summary_is_counted`
-#         (every `compacted` record is a boundary occurrence, a summary or none),
+#         (multiplicity is identity-counted),
 #         `test_the_corpus_arms_run_the_shipped_command_not_the_python_validator` (every arm of every
 #         pair is read through the shipped command's `--validate`/`--disable-rule` path, so the flag is
 #         exercised for every declared rule rather than only the one a CLI case names), and the
 #         structural refusals a plan comparison reaches — `test_a_line_with_a_duplicate_member_is_refused`,
+#         `test_a_member_the_native_decoder_refuses_is_refused_alone`,
 #         `test_a_lone_surrogate_escape_is_refused_before_any_identity_comparison` — beside their own
 #         rows and mutations above.
 #   the oracle's `--validate` mode — the CLI half of the same python subject
@@ -95,7 +104,8 @@ oracle.record-type	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracl
 oracle.session-meta	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the exact sequence opens with one `session_meta` and carries no second)
 oracle.session-meta-members	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (its `id`, `originator` and `cli_version` are asserted against the values the conversion used)
 oracle.clock	TestCodexRolloutStampsRecordsInOneOrderedRun	./internal/ccc	0009a-native-oracle.md §1 (every line's timestamp parses as RFC3339Nano and no line goes back in time)
-oracle.message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (each written message is exactly one model-visible record, under its role's own native block spelling (`input_text`/`output_text`), holding its text)
+oracle.message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (each written message is exactly one model-visible record, under its role's own native block spelling (`input_text`/`output_text`), holding its text — the media spellings have no Go producer to cite, and `oracle.message`'s media arms are re-derived by the `selftest` mutations on `session-media.jsonl`)
 oracle.event-message	TestCodexRolloutWritesTheTargetsOwnViewRecordForEachMessage	./internal/ccc	0009a-native-oracle.md §1 (exactly one `user_message`/`agent_message` event per written message, carrying that message's text)
 oracle.call-pairing	TestCodexRolloutDoesNotReportOmittedResultsAsCarried	./internal/ccc	0009a-native-oracle.md §1 (a result whose call the conversion did not write is not written as an output at all)
-oracle.call-members	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the writer's own `function_call` states its recorded input in `arguments` and its `function_call_output` states its `output`, both asserted verbatim — the members Codex 0.170.0's decoder requires on those payload types)
+oracle.call-members	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle.md §1 (the writer's own `function_call` states its recorded input in `arguments` and its `function_call_output` states its `output`, both asserted verbatim as the strings the native wire types decode — the members Codex 0.170.0's decoder requires on those payload types; the rule's content-item-array arm has no Go producer to cite and is re-derived by the `selftest` mutations)
+oracle.compacted	TestCodexRolloutCarriesACompactionBoundaryAndKeepsTheHistoryBeforeIt	./internal/ccc	0009a-native-oracle.md §1 (the writer's compacted record carries the boundary's summary in the string `message` member, asserted verbatim — the member Codex 0.170.0's `CompactedItemWire` requires without a default and whose absence its rollout reader skips)

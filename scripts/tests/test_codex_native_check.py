@@ -1375,12 +1375,21 @@ _mutation_call_id_duplicated = NATIVE_CHECK._mutation_call_id_duplicated
 _mutation_call_id_lone_surrogate = NATIVE_CHECK._mutation_call_id_lone_surrogate
 _mutation_call_input_member_renamed = NATIVE_CHECK._mutation_call_input_member_renamed
 _mutation_result_without_its_output = NATIVE_CHECK._mutation_result_without_its_output
+_mutation_call_input_not_a_string = NATIVE_CHECK._mutation_call_input_not_a_string
+_mutation_custom_call_input_not_a_string = NATIVE_CHECK._mutation_custom_call_input_not_a_string
+_mutation_result_output_null = NATIVE_CHECK._mutation_result_output_null
+_mutation_result_output_not_a_typed_array = NATIVE_CHECK._mutation_result_output_not_a_typed_array
+_mutation_boundary_without_its_message = NATIVE_CHECK._mutation_boundary_without_its_message
+_mutation_boundary_summary_not_a_string = NATIVE_CHECK._mutation_boundary_summary_not_a_string
+_mutation_message_image_without_a_reference = NATIVE_CHECK._mutation_message_image_without_a_reference
 _mutation_message_block_type_is_text = NATIVE_CHECK._mutation_message_block_type_is_text
 _mutation_plan_boundary_retained_context = NATIVE_CHECK._mutation_plan_boundary_retained_context
 _mutation_plan_retained_context_record = NATIVE_CHECK._mutation_plan_retained_context_record
 _mutation_plan_boundary_replacement_history = NATIVE_CHECK._mutation_plan_boundary_replacement_history
 _mutation_plan_boundary_without_a_summary = NATIVE_CHECK._mutation_plan_boundary_without_a_summary
-_mutation_plan_boundary_non_string_summary = NATIVE_CHECK._mutation_plan_boundary_non_string_summary
+_mutation_plan_result_content_items = NATIVE_CHECK._mutation_plan_result_content_items
+_mutation_plan_rollback_event = NATIVE_CHECK._mutation_plan_rollback_event
+_mutation_plan_message_media_block = NATIVE_CHECK._mutation_plan_message_media_block
 _mutation_plan_forked_from_id = NATIVE_CHECK._mutation_plan_forked_from_id
 _mutation_plan_unnameable_message_role = NATIVE_CHECK._mutation_plan_unnameable_message_role
 _without_record = NATIVE_CHECK._without_record
@@ -1442,6 +1451,7 @@ class CodexArtifactOracle(unittest.TestCase):
             ("session.jsonl + its plan", session, "session-receipt.json"),
             ("reduced.jsonl", reduced, None),
             ("reduced.jsonl + its plan", reduced, "reduced-receipt.json"),
+            ("session-media.jsonl", oracle_fixture("session-media.jsonl"), None),
         ):
             with self.subTest(fixture=name):
                 violations = (NATIVE_CHECK.validate_artifact(text, receipt=oracle_receipt(receipt))
@@ -1589,7 +1599,8 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertEqual(refusal.exception.code, 2,
                          f"--selftest-mutations accepted --validate: {errors.getvalue()}")
 
-        names = ("session.jsonl", "reduced.jsonl", "session-receipt.json", "reduced-receipt.json")
+        names = ("session.jsonl", "reduced.jsonl", "session-media.jsonl", "session-receipt.json",
+                 "reduced-receipt.json")
         before = {name: (ORACLE_FIXTURES / name).read_bytes() for name in names}
         proc = subprocess.run([sys.executable, str(SCRIPTS / "codex-native-check.py"),
                                "--selftest-mutations"], capture_output=True, text=True)
@@ -2003,161 +2014,115 @@ class CodexArtifactOracle(unittest.TestCase):
             NATIVE_CHECK.validate_artifact(empty, receipt=oracle_receipt("reduced-receipt.json")), [],
             "an empty replacement_history holds no dialogue and was refused")
 
-    def test_a_boundary_with_a_non_string_summary_is_refused_with_a_plan(self) -> None:
-        """A boundary whose `message` member is present but not a string is refused where a plan is
-        compared, while an absent summary stays the empty boundary a plan can name.
+    def test_a_boundary_without_a_string_summary_is_refused_in_both_modes(self) -> None:
+        """A `compacted` record whose `message` member is absent, or present and not a string, is
+        refused structurally — no receipt needed — and no plan naming the empty text can rescue it.
 
-        The post-repair review round's finding: `oracle_boundary_text` reads a non-string `message` as
-        the empty string — the identity an absent summary has — so a receipt entry rewritten to
-        `text: ""` compared green, by identity, count and order, against a boundary whose member the
-        artifact's own bytes state is not text, and the malformed summary travelled as an absence. The
-        shape is refused where a plan is compared, and the absence stays nameable: the writer's own
-        `compacted` records need carry no summary, and the plan is total over every boundary record.
-        The malformed artifact is structurally green — a native rollout may carry the member, and no
-        structural rule reads it.
-        """
-        reduced = oracle_fixture("reduced.jsonl")
-        malformed, plan = _mutation_plan_boundary_non_string_summary(
-            reduced, oracle_receipt("reduced-receipt.json"))
-        self.assertEqual(NATIVE_CHECK.validate_artifact(malformed), [],
-                         "the malformed boundary is not structurally green")
-        refused = NATIVE_CHECK.validate_artifact(malformed, receipt=plan)
-        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
-                         f"the non-string summary was certified as an absence: {refused}")
-        self.assertIn("`message`", refused[0].detail, f"{refused[0]}")
-        self.assertNotIn("Summary:", refused[0].detail,
-                         f"the refusal echoed the summary text: {refused[0]}")
-        self.assertEqual(NATIVE_CHECK.validate_artifact(malformed, receipt=plan,
-                                                        disabled=["oracle.plan-accounted"]), [],
-                         "disabling the rule that owns the refusal did not leave the pair green")
-        # The absence is the control: the same boundary with its `message` member removed, read
-        # against the same plan — which names the empty text — stays green, so what is refused is the
-        # member's type, not the empty identity a plan may name.
-        absent = oracle_edit(reduced, oracle_record_is("compacted"),
-                             change=lambda record: record["payload"].pop("message"))
-        self.assertEqual(NATIVE_CHECK.validate_artifact(absent, receipt=plan), [],
-                         "an absent summary against a plan naming the empty boundary was refused")
-
-    def test_a_non_string_identity_member_is_refused_with_a_plan(self) -> None:
-        """A call's recorded input or a result's recorded text written as a non-string member is refused
-        where a plan is compared, because the receipt's own identity members are strings.
-
-        Review round r7's finding: the fixture's call with `arguments` rewritten as a JSON object — the
-        same field, a space after its colon — still matched the receipt, because the oracle serializes a
-        non-string member back to compact JSON and so reconstructs the receipt's own string key, while
-        the carried reader answers the member's own raw bytes (`extractCodexInputJSON`) and this route's
-        writer's calls write `arguments` as a string (`internal/ccc/codex_target.go`'s
-        `codexFunctionCallPayload`). A receipt names the member as written, and a decoded value cannot
-        recover a member's own spelling — a space after a colon, a number's written form — so the shape
-        is refused rather than matched on a spelling neither reader answers. The same holds for the
-        `input` member a custom call records its input in (`extractCodexInputJSON` falls through to it) —
-        written on a `custom_tool_call`, because a `function_call` carrying `input` instead of
-        `arguments` states no `arguments` member and is refused by `oracle.call-members` as a record the
-        native format cannot decode — and for a result's `output` (`parseCodexFunctionOutput` reads a
-        non-string member's raw text).
-        Every arm is structurally green — native files carry non-string outputs (122 list-valued
-        `custom_tool_call_output` outputs measured, §0) — and the explicit-`null` arm's identity is
-        pinned as the string `null`, distinct from the absent member's empty string.
+        Review round r3's finding: `CompactedItemWire` decodes `message: Cow<str>` without a default
+        (`history/src/rollout_payload.rs`), so the native decoder refuses the line and its rollout
+        reader skips it — yet the oracle read an absent member as the empty boundary identity a plan
+        may name, and its refusal lived in receipt mode, leaving the artifact-only verdict green for
+        both shapes. They are `oracle.compacted`'s in both modes (its corpus pairs carry no receipt),
+        and the valid empty-summary control is an **explicit** empty string: the member is there and is
+        text, and a plan naming it accounts for the boundary.
         """
         session = oracle_fixture("session.jsonl")
-
-        def replaced_member(match, member: str, written: str) -> str:
-            """The fixture with the matched record's `member` replaced by the raw JSON text `written`.
-
-            `written` is the whole ``"member":…`` span, not the value alone: the `input` arm moves the
-            recorded input to its other member name. A non-string member's *spelling* is this case's
-            subject and `oracle_quote` writes compact JSON, so the member is spliced into the line's own
-            text rather than set on a parsed record.
-            """
-            for index, line in enumerate(session.splitlines()):
-                record = json.loads(line)
-                if not match(record):
-                    continue
-                needle = oracle_quote({member: record["payload"][member]})[1:-1]
-                if needle not in line:
-                    raise AssertionError(f"the fixture's `{member}` is not written as this case assumes")
-                return "\n".join(session.splitlines()[:index]
-                                 + [line.replace(needle, written, 1)]
-                                 + session.splitlines()[index + 1:]) + "\n"
-            raise AssertionError("the fixture holds no record this case edits")
-
-        compact_input = '{"file_path":"/work/oracle-fixture/notes.md"}'
-        list_output = '["# notes", "more"]'
-
-        def custom_call_input(written_value: str) -> str:
-            """The fixture's call rewritten as a custom call whose `input` is written as `written_value`.
-
-            Review round r2's finding moved the rename shape out of this arm: a `function_call` carrying
-            `input` instead of `arguments` states no `arguments` member, which `oracle.call-members`
-            refuses on its own, so the non-string `input` this arm is about is written on the payload
-            type that *does* carry its input in `input` — a `custom_tool_call`, whose extra `arguments`
-            member would otherwise turn the refusal into the two-member arm.
-            """
-            custom = oracle_edit(
-                session, oracle_item_is("function_call", "call_oracle_0001"),
-                change=lambda record: record["payload"].update(
-                    {"type": "custom_tool_call", "name": "apply_patch",
-                     "input": "*** Begin Patch\n*** End Patch"}))
-            custom = oracle_edit(custom, oracle_item_is("custom_tool_call", "call_oracle_0001"),
-                                 change=lambda record: record["payload"].pop("arguments"))
-            needle = '"input":"*** Begin Patch\\n*** End Patch"'
-            if needle not in custom:
-                raise AssertionError("the rewritten call does not write the input this case edits")
-            return custom.replace(needle, f'"input":{written_value}', 1)
-
-        def custom_receipt(arguments: str) -> dict:
-            receipt = oracle_receipt("session-receipt.json")
-            for entry in receipt["occurrences"]:
-                if entry.get("kind") == "tool_call":
-                    entry["name"] = "apply_patch"
-                    entry["arguments"] = arguments
-            return receipt
-
-        def receipt_with_result_text(text: str) -> dict:
-            receipt = oracle_receipt("session-receipt.json")
-            oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"),
-                                lambda entry: entry.__setitem__("text", text))
-            return receipt
-
-        for label, artifact, receipt, identity, member in (
-            ("the call's recorded input as a JSON object, spaces after its colons",
-             replaced_member(oracle_item_is("function_call", "call_oracle_0001"), "arguments",
-                             '"arguments":{"file_path": "/work/oracle-fixture/notes.md"}'),
-             oracle_receipt("session-receipt.json"),
-             ("tool_call", "call_oracle_0001", "Read", compact_input), "arguments"),
-            ("the `input` member a custom call records its input in",
-             custom_call_input('{"file_path": "/work/oracle-fixture/notes.md"}'),
-             custom_receipt(compact_input),
-             ("tool_call", "call_oracle_0001", "apply_patch", compact_input), "input"),
-            ("a result's recorded text as a JSON array",
-             replaced_member(oracle_item_is("function_call_output", "call_oracle_0001"), "output",
-                             f'"output":{list_output}'),
-             receipt_with_result_text('["# notes","more"]'),
-             ("tool_result", "call_oracle_0001", '["# notes","more"]'), "output"),
-            ("a result's recorded text written as `null`",
-             replaced_member(oracle_item_is("function_call_output", "call_oracle_0001"), "output",
-                             '"output":null'),
-             receipt_with_result_text("null"),
-             ("tool_result", "call_oracle_0001", "null"), "output"),
+        reduced = oracle_fixture("reduced.jsonl")
+        empty_named = oracle_receipt("reduced-receipt.json")
+        oracle_receipt_edit(empty_named, oracle_entry_kind("compaction_boundary"),
+                            lambda entry: entry.__setitem__("text", ""))
+        for label, artifact, receipt in (
+            ("a boundary whose `message` member is deleted",
+             _mutation_boundary_without_its_message(session, None)[0], None),
+            ("a boundary whose `message` member is deleted, a plan naming the empty text",
+             _mutation_boundary_without_its_message(reduced, None)[0], empty_named),
+            ("a boundary whose `message` member is not a string",
+             _mutation_boundary_summary_not_a_string(reduced, None)[0], None),
+            ("a boundary whose `message` member is not a string, a plan naming the empty text",
+             _mutation_boundary_summary_not_a_string(reduced, None)[0], empty_named),
         ):
             with self.subTest(arm=label):
-                self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
-                                 f"{label} is not structurally green")
-                keys = [key for key, _ in NATIVE_CHECK.oracle_occurrences(
-                    NATIVE_CHECK.oracle_records(artifact)[0])]
-                self.assertIn(identity, keys,
-                              f"the non-string member is not the occurrence's identity: {keys}")
-                refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
-                self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
-                                 f"{label} certified the shape against the receipt's own string key: "
-                                 f"{refused}")
+                refused = (NATIVE_CHECK.validate_artifact(artifact) if receipt is None
+                           else NATIVE_CHECK.validate_artifact(artifact, receipt=receipt))
+                self.assertEqual([violation.rule for violation in refused], ["oracle.compacted"],
+                                 f"{label} was not refused by its own rule: {refused}")
+                self.assertIn("`message`", refused[0].detail, f"{refused[0]}")
+                self.assertNotIn("Summary:", refused[0].detail,
+                                 f"the refusal echoed the summary text: {refused[0]}")
+        # The explicit empty string is the valid empty summary: native text, and the plan that names
+        # the empty boundary accounts for it.
+        explicit = oracle_edit(reduced, oracle_record_is("compacted"),
+                               change=lambda record: record["payload"].__setitem__("message", ""))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(explicit), [],
+                         "the explicit empty summary is not structurally green")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(explicit, receipt=empty_named), [],
+                         "the explicit empty summary was not accounted by the plan naming it")
+
+    def test_a_member_the_native_decoder_refuses_is_refused_alone(self) -> None:
+        """A call's recorded input or a result's recorded text the native wire type cannot decode is
+        refused by `oracle.call-members` with no receipt in hand.
+
+        Review round r3's finding: the rule checked only the member's *presence*, so a `function_call`
+        whose `arguments` was written as an object, or a `function_call_output` whose `output` was
+        `null` or an array of bare strings, left the artifact-only verdict green although Codex 0.170.0
+        decodes `arguments`/`input` as strings and `output` as a string or a `Vec` of typed content
+        items (`protocol/src/models.rs`) and its rollout reader skips a line that fails to decode. Each
+        arm below is refused by the structural rule alone — no receipt is needed, because the member's
+        own native type is the subject — while the receipt-mode limit for a *valid* content-item array
+        is the case beside this one. The member's value is named by kind, never echoed.
+        """
+        session = oracle_fixture("session.jsonl")
+        for label, artifact, member in (
+            ("a call's recorded input written as an object",
+             _mutation_call_input_not_a_string(session, None)[0], "arguments"),
+            ("a custom call's recorded input written as an object",
+             _mutation_custom_call_input_not_a_string(session, None)[0], "input"),
+            ("a call output written as `null`",
+             _mutation_result_output_null(session, None)[0], "output"),
+            ("a call output written as an array of bare strings",
+             _mutation_result_output_not_a_typed_array(session, None)[0], "output"),
+        ):
+            with self.subTest(arm=label):
+                refused = NATIVE_CHECK.validate_artifact(artifact)
+                self.assertEqual([violation.rule for violation in refused], ["oracle.call-members"],
+                                 f"{label} was not refused structurally: {refused}")
                 self.assertIn(f"`{member}`", refused[0].detail,
                               f"the refusal does not name the member it read: {refused[0]}")
                 self.assertNotIn("notes.md", refused[0].detail,
                                  f"the refusal echoed the member's text: {refused[0]}")
 
-        # The identity's two absences: the absent member is the empty string, the explicit `null` the
-        # JSON spelling `null` the reader answers for the member's raw bytes — two identities, not one.
+    def test_a_valid_content_item_array_output_is_refused_with_a_plan(self) -> None:
+        """A result's `output` written as a typed content-item array is native — and refused where a
+        plan is compared.
+
+        The array is `FunctionCallOutputBody`'s other arm (`Vec<FunctionCallOutputContentItem>`,
+        `protocol/src/models.rs`), so the structural rule admits it (review round r3's finding: the
+        layer that refuses a member the *decoder* reads is the structural rule's, and the receipt-mode
+        limit stays for a shape the receipt cannot name). The oracle's identity serializes the array
+        back to compact JSON, so the receipt rewritten to that spelling matches the artifact by
+        identity, count and order, and only the refusal can turn the pair red: the receipt's
+        recorded-text member is a string, and a decoded value cannot recover the member's own bytes (a
+        space after a colon, an item's written form are spellings a receipt could not state).
+        """
+        session = oracle_fixture("session.jsonl")
+        typed, plan = _mutation_plan_result_content_items(session,
+                                             oracle_receipt("session-receipt.json"))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(typed), [],
+                         "the typed content-item array is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(typed, receipt=plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the array output was certified against the receipt's own string key: "
+                         f"{refused}")
+        self.assertIn("`output`", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn("# notes", refused[0].detail,
+                         f"the refusal echoed the member's text: {refused[0]}")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(typed, receipt=plan,
+                                                        disabled=["oracle.plan-accounted"]), [],
+                         "disabling the rule that owns the refusal did not leave the pair green")
+
+        # The identity's two absences are unchanged: the absent member is the empty string, the
+        # explicit `null` the JSON spelling `null` the reader answers for the member's raw bytes — two
+        # identities, not one.
         absent = oracle_edit(session, oracle_item_is("function_call_output", "call_oracle_0001"),
                              change=lambda record: record["payload"].pop("output"))
         keys = [key for key, _ in NATIVE_CHECK.oracle_occurrences(
@@ -2229,6 +2194,30 @@ class CodexArtifactOracle(unittest.TestCase):
             len(NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(artifact)[0])), 5,
             "the appended record moved the occurrence count the vocabulary reads")
         self.assertEqual(NATIVE_CHECK.validate_artifact(artifact, receipt=plan,
+                                                        disabled=["oracle.plan-accounted"]), [],
+                         "disabling the rule that owns the refusal did not leave the pair green")
+
+    def test_a_rollback_event_is_refused_with_a_plan(self) -> None:
+        """A `thread_rolled_back` event is a native record and a receipt-mode refusal.
+
+        Codex's own replay drops the last `num_turns` user turns from model history for this record
+        (`core/src/session/rollout_reconstruction.rs`'s `drop_last_n_user_turns`), and the artifact's
+        occurrence list does not move — an `event_msg` is no occurrence of either compared channel — so
+        every count and order a plan compares still matches while the receipt's `emitted` marks certify
+        history the harness does not hold (review round r3's finding). The event is appended at the last
+        record's instant, so the clock stays nondecreasing; without a plan the artifact is green,
+        because a native rollout may carry the record.
+        """
+        session = oracle_fixture("session.jsonl")
+        rolled, plan = _mutation_plan_rollback_event(session, oracle_receipt("session-receipt.json"))
+        self.assertNotEqual(rolled, session, "the case's own edit changed nothing")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(rolled), [],
+                         "the native rollback event was refused without a plan")
+        refused = NATIVE_CHECK.validate_artifact(rolled, receipt=plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the rollback event was certified against the unchanged receipt: {refused}")
+        self.assertIn("thread_rolled_back", refused[0].detail, f"{refused[0]}")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(rolled, receipt=plan,
                                                         disabled=["oracle.plan-accounted"]), [],
                          "disabling the rule that owns the refusal did not leave the pair green")
 
@@ -2426,6 +2415,53 @@ class CodexArtifactOracle(unittest.TestCase):
             session, receipt=oracle_receipt("session-receipt.json")), [],
             "the unmutated fixture is not green, so the case moved something else")
 
+    def test_a_native_media_block_is_accepted_and_refused_with_a_plan(self) -> None:
+        """A well-formed `input_image` is native content, refused only where the receipt cannot name it.
+
+        Review round r3's finding: the block-type check enumerated the two text spellings only, so a
+        message carrying a well-formed `input_image` — a type Codex 0.170.0's `ContentItem` enum
+        defines (`protocol/src/models.rs`), with the string reference member its untagged native form
+        decodes from — was refused as a *decoder failure* even without a receipt, and the invalid `text`
+        spelling was that same arm's negative. The structural rule now admits the native media
+        spellings, each checked against its own reference member and the image's optional `detail`
+        (`oracle_content_item_problem`), while the receipt's text-only vocabulary is its own refusal:
+        the receipt names a message by its role and its text, and a media block is content no plan
+        entry can account for. The fixture is the session fixture with one well-formed image block
+        beside the first user message's text — asserted here so the pair cannot drift.
+        """
+        session = oracle_fixture("session.jsonl")
+        media = oracle_fixture("session-media.jsonl")
+        block = '{"type":"input_image","image_url":"data:image/png;base64,b3JhY2xl"}'
+        self.assertIn(block, media, "the media fixture holds no well-formed image block")
+        self.assertEqual(media.replace("," + block, "", 1), session,
+                         "the media fixture is no longer the session fixture with one image block added")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(media), [],
+                         "the well-formed image block was refused without a receipt")
+        keys = [key for key, _ in NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(media)[0])]
+        self.assertIn(("message", "user", "Which fixture is this?"), keys,
+                      f"the media block moved the message's text identity: {keys}")
+        refused = NATIVE_CHECK.validate_artifact(media,
+                                                 receipt=oracle_receipt("session-receipt.json"))
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the media block the receipt cannot name was not refused: {refused}")
+        self.assertIn("input_image", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn("b3JhY2xl", refused[0].detail,
+                         f"the refusal echoed the reference's value: {refused[0]}")
+        # What the fix admitted is the native spelling, not any block: the reference-less image and the
+        # reader spelling `text` are still structural refusals of the message rule's own.
+        for label, artifact in (
+            ("a media block without its reference member",
+             _mutation_message_image_without_a_reference(media, None)[0]),
+            ("a block typed with the reader's spelling the format lacks",
+             oracle_edit(session, oracle_item_is("message", "Which fixture is this?"),
+                         change=lambda record: record["payload"]["content"][0].__setitem__(
+                             "type", "text"))),
+        ):
+            with self.subTest(arm=label):
+                self.assertEqual([violation.rule for violation in
+                                  NATIVE_CHECK.validate_artifact(artifact)], ["oracle.message"],
+                                 f"{label} is no longer refused by the message rule")
+
     def test_a_retained_checkpoint_or_record_is_refused_with_a_plan(self) -> None:
         """The retained families are dialogue no receipt entry can name, beside a boundary or as a record.
 
@@ -2507,16 +2543,18 @@ class CodexArtifactOracle(unittest.TestCase):
                 self.assertEqual(NATIVE_CHECK.validate_artifact(planted), [],
                                  f"a record type the version persists was refused: {kind}")
 
-    def test_a_compacted_record_without_a_summary_is_counted(self) -> None:
-        """Every `compacted` record is a boundary occurrence, with or without a summary.
+    def test_a_boundary_with_an_explicit_empty_summary_is_counted(self) -> None:
+        """Every `compacted` record is a boundary occurrence, and the empty summary is written out.
 
         The carried reader appends a boundary for every `compacted` record — `handleCompacted` reads the
         summary where there is one and records an empty boundary where there is not — so an oracle that
-        counted only records holding a string `message` let a boundary stand outside the plan: an empty
-        payload appended to the artifact left every count it read unchanged and passed with a receipt
-        that names no boundary at all (review round r2's finding 2). The boundary is counted here as the
-        empty text it reads as, and a receipt that names it accounts for it; the mutation under
-        `oracle.plan-accounted` pins the refusal when the plan names it nowhere.
+        counted only records holding a non-empty `message` let a boundary stand outside the plan
+        (review round r2's finding 2). Since review round r3's finding, the record's shape is the native
+        one: the member must be the string `CompactedItemWire` requires, and an **absent** member is a
+        record the decoder skips, so this case's empty boundary is the explicit empty string. The
+        boundary is counted here as the empty text it is, and a receipt that names it accounts for it;
+        the mutation under `oracle.plan-accounted` pins the refusal when the plan names it nowhere, and
+        the absent-member shape is `oracle.compacted`'s own case beside this one.
         """
         appended = _mutation_plan_boundary_without_a_summary(oracle_fixture("session.jsonl"), None)[0]
         self.assertEqual(NATIVE_CHECK.validate_artifact(appended), [],

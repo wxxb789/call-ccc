@@ -822,13 +822,15 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # no occurrences at all is refused rather than compared, because both comparisons would pass vacuously on
 # an artifact that holds none. A `compacted` record is a boundary occurrence whether or not it carries a
 # summary — the occurrence vocabulary counts every one of them — so no boundary can stand outside the
-# plan by carrying no `message`; and where a plan is compared, a boundary that carries a native
-# `replacement_history` is refused as well, because dialogue that member holds is dialogue the plan
-# cannot account for — the receipt's boundary identity is the summary text alone, and this route's
-# writer emits only the summary. A boundary whose `message` member is *present* but not a string is
-# refused where a plan is compared too: the member's own bytes state that a summary is there and is
-# not text, and naming the boundary by the empty text it reads as would certify a summary the
-# artifact does not hold (an **absent** member is the empty boundary the plan can name).
+# plan by carrying no `message`; and the payload type is the version's own: a boundary must state the
+# string `message` `CompactedItemWire` decodes without a default (`oracle.compacted`), so a record whose
+# member is absent or not a string is refused in **both** modes while its occurrence identity is still
+# the empty boundary a plan may name (an explicit `message: ""` is the valid empty summary, and an
+# absent member is not it: the native decoder skips such a line, so a receipt naming the empty text
+# would certify a boundary that never takes effect). Where a plan is compared, a boundary that carries a
+# native `replacement_history` or `retained_context` is refused as well, because dialogue those members
+# hold is dialogue the plan cannot account for — the receipt's boundary identity is the summary text
+# alone, and this route's writer emits only the summary.
 #
 # **What the oracle decides, and what it does not (the mechanism repair).** The oracle's subject is the
 # artifact's own structure: its JSONL framing, its envelope schema, its record vocabulary, its ordering,
@@ -847,18 +849,20 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 # disclosed as a residual in this increment's evidence record.
 #
 # The refusals that remain where a plan is compared are the shapes whose receipt-facing identity the
-# artifact's own bytes cannot state: a call whose recorded input is written as two members (`arguments`
-# and `input`) or as a member that is not a string, and a result whose recorded text is written as a
-# non-string member (the receipt's identity members are strings, and a decoded value cannot recover the
-# member's own spelling); a `compacted` record whose `message` member is present but not a string (the
-# receipt's boundary identity is the summary text, and such a member states none); a `response_item`
-# `message` whose `role` is a non-empty string outside the receipt's vocabulary (`user`/`assistant`),
-# because the receipt names a message by its role and a record in any other role carries dialogue no
-# plan entry can account for — the role is the artifact's own bytes and not a projection of a read; and
-# a `session_meta` carrying `forked_from_id`, whose own statement that its history continues another
-# transcript's leaves unstated which of its records are this session's own. Each is silent without a
-# plan — a native rollout may carry the shape (the host's own sessions hold 57 `developer`-role
-# messages, §0 of the evidence record), and the structural rules say nothing about it.
+# artifact's own bytes cannot state, each natively decodable and therefore silent without a plan: a call
+# whose recorded input is written as two members (`arguments` and `input`); a result whose recorded text
+# is written as the content-item array the receipt's string identity cannot name (a decoded value cannot
+# recover the member's own bytes — a space after a colon, an item's written form); a `response_item`
+# `message` carrying a media block (`input_image`/`input_audio`), because the receipt names a message by
+# its role and its text and a media block is content no plan entry can account for; a `message` whose
+# `role` is a non-empty string outside the receipt's vocabulary (`user`/`assistant`) — the role is the
+# artifact's own bytes and not a projection of a read; an `event_msg` whose payload type is
+# `thread_rolled_back`, whose `num_turns` states turns the harness's own replay drops from model history
+# (`drop_last_n_user_turns`), so a receipt marking those turns' dialogue `emitted` certifies history the
+# harness does not hold; and a `session_meta` carrying `forked_from_id`, whose own statement that its
+# history continues another transcript's leaves unstated which of its records are this session's own.
+# Each is silent without a plan — a native rollout may carry the shape (the host's own sessions hold 57
+# `developer`-role messages, §0 of the evidence record), and the structural rules say nothing about it.
 #
 # The structural half refuses an output written before its owner in either mode: this route's writer
 # never emits one there.
@@ -893,9 +897,13 @@ ORACLE_RULES: dict[str, str] = {
         "before it",
     "oracle.message":
         "a `response_item` message's `role` is a non-empty string and its `content` is a non-empty list "
-        "of blocks typed as text a native message carries (`input_text`, `output_text` — `text` is a "
+        "of blocks a native message carries — the text spellings `input_text`/`output_text`, each with "
+        "a string `text`, at least one of a message's text blocks non-blank where it carries any, and "
+        "the media references `input_image`/`input_audio`, each with the string reference member its "
+        "untagged native form decodes from (`image_url`/`audio_url` or `file_id`) and, on an image, a "
+        "`detail` the version defines where one is stated; `text` is not among the spellings — it is a "
         "reader spelling Codex 0.170.0's content-item enum does not define, so such a line fails to "
-        "decode and its rollout reader skips it), at least one of them non-blank",
+        "decode and its rollout reader skips it",
     "oracle.event-message":
         "a `user_message`/`agent_message` event carries a non-empty string `message` — the record the "
         "harness's own view of the turn is built from",
@@ -906,11 +914,18 @@ ORACLE_RULES: dict[str, str] = {
         "output names a call the artifact carries before it",
     "oracle.call-members":
         "a tool call states the member its native type requires — `arguments` on `function_call`, "
-        "`input` on `custom_tool_call` — and a `function_call_output`/`custom_tool_call_output` states "
-        "its `output`: Codex 0.170.0's own decoder requires each member on that payload type and its "
-        "rollout reader skips a line that fails to decode, so a record missing one is a record the "
-        "target's read does not carry while the artifact's bytes and this oracle's occurrence "
-        "vocabulary can still name it",
+        "`input` on `custom_tool_call` — and that member is the string its wire type decodes, and a "
+        "`function_call_output`/`custom_tool_call_output` states its `output` as a string or an array "
+        "of typed content items: Codex 0.170.0's own decoder requires each member on that payload type "
+        "and its rollout reader skips a line that fails to decode, so a record missing one, or stating "
+        "a value its wire type cannot decode, is a record the target's read does not carry while the "
+        "artifact's bytes and this oracle's occurrence vocabulary can still name it",
+    "oracle.compacted":
+        "every `compacted` record states the string `message` its payload type requires: Codex "
+        "0.170.0's `CompactedItemWire` decodes `message` without a default and its rollout reader skips "
+        "a line it cannot decode, so a boundary whose `message` member is absent or not a string is one "
+        "the target's read does not carry while this oracle's occurrence vocabulary counts it (a "
+        "summary may be empty — the explicit empty string is the boundary a plan can name)",
     "oracle.receipt":
         "a manifest receipt is an object whose `occurrences` are entries with a `kind` of this route's "
         "occurrence vocabulary, the identity that kind needs — a tool call's `call_id`, `name` and "
@@ -929,11 +944,13 @@ ORACLE_RULES: dict[str, str] = {
         "record whose `type` is one the format defines while its payload carries conversation text no "
         "occurrence kind can name (`retained_context`, `inter_agent_communication`, `realtime_item`); and "
         "the shapes whose receipt-facing identity the artifact's own bytes cannot state — a call whose "
-        "recorded input is written as two members (`arguments` and `input`) or as a member that is not "
-        "a string, a result whose recorded text is written as a member that is not a string, a "
-        "`compacted` record whose `message` member is present but not a string, a `message` whose "
-        "`role` is a non-empty string "
-        "outside the receipt's vocabulary, and a `session_meta` carrying `forked_from_id` — each refused "
+        "recorded input is written as two members (`arguments` and `input`), a result whose recorded "
+        "text is written as the content-item array the receipt's string identity cannot name, a "
+        "`message` carrying a media block (the receipt names a message by its role and its text), a "
+        "`message` whose `role` is a non-empty string "
+        "outside the receipt's vocabulary, an `event_msg` whose payload type is `thread_rolled_back` "
+        "(its `num_turns` states turns the harness's own replay drops from model history), and a "
+        "`session_meta` carrying `forked_from_id` — each refused "
         "where a comparison runs and silent without one, because a native rollout may carry the shape "
         "and the structural rules say nothing about it; the plan is total, in both of the target's "
         "dialogue channels",
@@ -977,18 +994,34 @@ ORACLE_UNACCOUNTABLE_RECORD_TYPES = (
 )
 
 #: The content-block types a native message's `content` may carry: Codex 0.170.0's `ContentItem` enum
-#: defines exactly these two text spellings (`codex-rs/protocol/src/models.rs`), and a block of any
-#: other type makes the record fail to decode — its rollout reader skips the line. `text` is **not**
-#: one of them, however a read of the bytes answers it; that spelling is `ORACLE_TEXT_BLOCK_TYPES`'.
-ORACLE_MESSAGE_BLOCK_TYPES = ("input_text", "output_text")
+#: defines exactly these — the two text spellings and the two media references
+#: (`codex-rs/protocol/src/models.rs`) — and a block of any other type makes the record fail to decode
+#: — its rollout reader skips the line. `text` is **not** one of them, however a read of the bytes
+#: answers it; that spelling is `ORACLE_TEXT_BLOCK_TYPES`'.
+ORACLE_MESSAGE_BLOCK_TYPES = ("input_text", "output_text", "input_image", "input_audio")
 
-#: The block types this oracle reads a message's text from when it counts an occurrence: the native two
-#: and `text`, the further spelling the carried reader reads text from (`internal/parser/codex.go`'s
-#: `extractCodexTextBlocks`). The occurrence identity is the dialogue the artifact's own bytes write as
+#: The content-item types a call output's array arm may carry: Codex 0.170.0's
+#: `FunctionCallOutputContentItem` (`codex-rs/protocol/src/models.rs`) is the message enum's text-input
+#: and media arms, plus `encrypted_content`; `FunctionCallOutputBody` decodes the `output` member as a
+#: plain string or a vector of these, so an item of any other type fails the decode.
+ORACLE_OUTPUT_CONTENT_ITEM_TYPES = ("input_text", "input_image", "input_audio", "encrypted_content")
+
+#: The content-block types whose content is not the text a receipt names: a message carrying one holds
+#: media no plan entry can account for, refused where a plan is compared (`oracle.plan-accounted`).
+ORACLE_MEDIA_BLOCK_TYPES = ("input_image", "input_audio")
+
+#: The spellings `ImageDetail` decodes (`codex-rs/protocol/src/models.rs`, `rename_all = "lowercase"`):
+#: an image block's optional `detail` member is one of these, and any other spelling fails the decode.
+ORACLE_IMAGE_DETAILS = ("auto", "low", "high", "original")
+
+#: The block types this oracle reads a message's text from when it counts an occurrence: the native
+#: text two and `text`, the further spelling the carried reader reads text from
+#: (`internal/parser/codex.go`'s `extractCodexTextBlocks`); a media block contributes no text. The
+#: occurrence identity is the dialogue the artifact's own bytes write as
 #: a read of them names it, which is what a receipt's `text` member is matched on, so a message
 #: carrying its text in a spelling the native format does not define is still counted here while
-#: `oracle.message` refuses the record: the receipt comparison is not the place that decides whether
-#: the artifact is a rollout the target's own reader can read.
+#: `oracle.message` refuses the record: the receipt comparison is not the place that decides whether the
+#: artifact is a rollout the target's own reader can read.
 ORACLE_TEXT_BLOCK_TYPES = ("input_text", "output_text", "text")
 
 #: The message roles this route's occurrence vocabulary names: the two its writer writes.
@@ -1379,13 +1412,60 @@ def oracle_clock_violations(records: list[tuple[int, dict]]) -> list[Violation]:
     return violations
 
 
+def oracle_content_item_problem(place: str, item: object, spellings: tuple[str, ...],
+                                native: str) -> str | None:
+    """What one native content item states wrong, or None where Codex 0.170.0's decoder reads it.
+
+    `place` is the diagnostic's own name for where the item stands (`content[2]`, `output[0]`),
+    `spellings` the enum's own types for that position, and `native` the payload the enum belongs to
+    (`message`, `call output`): `ContentItem` and `FunctionCallOutputContentItem` share the input-text,
+    image and audio arms, the message's enum adding `output_text` and the output's `encrypted_content`.
+    A text spelling states a string `text`; a media spelling states the string reference member its
+    untagged native reference decodes from — `image_url`/`audio_url` or `file_id`, either one — and an
+    image's optional `detail` is one of `ORACLE_IMAGE_DETAILS`. The item's own words are never echoed
+    (`oracle_value_text` names the value's kind and, for strings, its length).
+    """
+    if not isinstance(item, dict):
+        return f"{place} is not an object"
+    kind = item.get("type")
+    if kind not in spellings:
+        return (f"{place}.type is {oracle_value_text(kind)}, not one a native {native} carries — the "
+                f"native decoder refuses the record and its rollout reader skips the line")
+    if kind in ("input_text", "output_text"):
+        text = item.get("text")
+        if not isinstance(text, str):
+            return f"{place}.text is {oracle_value_text(text)}, not a string"
+        return None
+    if kind == "encrypted_content":
+        encrypted = item.get("encrypted_content")
+        if not isinstance(encrypted, str):
+            return f"{place}.encrypted_content is {oracle_value_text(encrypted)}, not a string"
+        return None
+    reference = "image_url" if kind == "input_image" else "audio_url"
+    if not any(isinstance(item.get(member), str) for member in (reference, "file_id")):
+        return (f"{place} states neither a string `{reference}` nor a string `file_id`: the native "
+                f"untagged reference decodes from one of them and the record fails to decode without "
+                f"one")
+    if kind == "input_image":
+        detail = item.get("detail")
+        if detail is not None and detail not in ORACLE_IMAGE_DETAILS:
+            return (f"{place}.detail is {oracle_value_text(detail)}, not one of "
+                    f"{', '.join(ORACLE_IMAGE_DETAILS)}")
+    return None
+
+
 def oracle_message_violations(records: list[tuple[int, dict]]) -> list[Violation]:
     """`oracle.message`: a message record is one the native format carries and a read of it can see.
 
-    The block types are the native ones (`ORACLE_MESSAGE_BLOCK_TYPES`): a block of any other type makes
-    the record fail to decode, so a record holding one is a record the target's own reader skips — while
-    `oracle_message_text` still reads the further spelling a *carried reader* answers, which is why this
-    rule, not the receipt comparison, is where the unsupported spelling is refused.
+    The block types are the native ones (`ORACLE_MESSAGE_BLOCK_TYPES`): the two text spellings and the
+    two media references, each checked against the members its native form requires
+    (`oracle_content_item_problem`), so a block the decoder refuses — a `text` spelling among them, and
+    a media reference with no string reference member — makes the record one the target's own reader
+    skips. A media-only message is a record the format carries (the content-item enum has no
+    text-required arm), and a message carrying text blocks whose every `text` is blank is refused as
+    one no read sees dialogue in; what stays refused is a spelling the enum does not define — the
+    reader's `text` among them — and a media block without its reference member (review round r3's
+    finding: media is native content and was refused as a decoder failure).
     """
     violations: list[Violation] = []
     for line, record in records:
@@ -1409,24 +1489,13 @@ def oracle_message_violations(records: list[tuple[int, dict]]) -> list[Violation
             continue
         texts: list[str] = []
         for index, block in enumerate(content):
-            if not isinstance(block, dict):
-                violations.append(Violation("oracle.message", line,
-                                            f"content[{index}] is not an object"))
+            problem = oracle_content_item_problem(f"content[{index}]", block,
+                                                  ORACLE_MESSAGE_BLOCK_TYPES, "message")
+            if problem is not None:
+                violations.append(Violation("oracle.message", line, problem))
                 continue
-            if block.get("type") not in ORACLE_MESSAGE_BLOCK_TYPES:
-                violations.append(Violation("oracle.message", line,
-                                            f"content[{index}].type is "
-                                            f"{oracle_value_text(block.get('type'))}, not one a native "
-                                            f"message's content blocks carry — the native decoder "
-                                            f"refuses the record and its rollout reader skips the "
-                                            f"line"))
-            text = block.get("text")
-            if not isinstance(text, str):
-                violations.append(Violation("oracle.message", line,
-                                            f"content[{index}].text is {oracle_value_text(text)}, not a "
-                                            f"string"))
-            else:
-                texts.append(text)
+            if block.get("type") in ORACLE_TEXT_BLOCK_TYPES:
+                texts.append(block["text"])
         if texts and not any(not oracle_blank(text) for text in texts):
             violations.append(Violation("oracle.message", line,
                                         "every content block's text is blank, so no read of this record "
@@ -1511,19 +1580,43 @@ def oracle_call_pairing_violations(records: list[tuple[int, dict]]) -> list[Viol
     return violations
 
 
+def oracle_result_output_problem(output: object) -> str | None:
+    """What one call output's `output` member states wrong, or None where the native decoder reads it.
+
+    Codex 0.170.0's `FunctionCallOutputPayload` deserializes its untagged `FunctionCallOutputBody`: a
+    plain string, or a vector of `FunctionCallOutputContentItem`s — the message content-item enum's
+    input-text, image and audio arms, plus `encrypted_content`
+    (`codex-rs/protocol/src/models.rs`). Anything else the member is written as — `null`, a number, an
+    object, an array holding an item one of those spellings cannot decode — is a line the native
+    decoder refuses and its rollout reader skips. The value's own words are never echoed
+    (`oracle_value_text`, and `oracle_content_item_problem` for one array item).
+    """
+    if isinstance(output, str):
+        return None
+    if isinstance(output, list):
+        for index, item in enumerate(output):
+            problem = oracle_content_item_problem(f"output[{index}]", item,
+                                                  ORACLE_OUTPUT_CONTENT_ITEM_TYPES, "call output")
+            if problem is not None:
+                return f"an array whose {problem}"
+        return None
+    return f"{oracle_value_text(output)}, not a string or an array of typed content items"
+
+
 def oracle_call_members_violations(records: list[tuple[int, dict]]) -> list[Violation]:
-    """`oracle.call-members`: a call or result states the member its own payload type requires.
+    """`oracle.call-members`: a call or result states the member its own payload type requires, as the
+    wire type the native decoder reads it with.
 
     Codex 0.170.0's decoder requires `arguments` (a string) on `function_call`, `input` (a string) on
-    `custom_tool_call`, and `output` on either `*_call_output`, and its rollout reader skips a line that
-    fails to decode (`codex-rs/rollout/src/recorder.rs`): a record missing its member is one the
-    target's read does not carry, although this oracle's occurrence vocabulary could still name it —
-    from the other family's member, or from the empty text an absent member reads as. So the *presence*
-    of the native member is this rule's own subject; which written member is the identity's is
-    `oracle_call_arguments`' (a `function_call` carrying only `input` is natively undecodable while its
-    occurrence identity is still the written string), and a member written as a non-string is refused
-    where a plan is compared (`oracle_unnameable_shape_violations`), the receipt's identity members
-    being strings.
+    `custom_tool_call`, and `output` — a string or an array of typed content items
+    (`oracle_result_output_problem`) — on either `*_call_output`, and its rollout reader skips a line
+    that fails to decode (`codex-rs/rollout/src/recorder.rs`): a record missing its member, or stating
+    a value the wire type cannot decode, is one the target's read does not carry, although this
+    oracle's occurrence vocabulary could still name it — from the other family's member, or from the
+    serialized text a non-string member reads as. So the member's own native decodability is this
+    rule's subject; which written member is the identity's is `oracle_call_arguments`', and the shape
+    the receipt cannot name — a valid array output — is `oracle_unnameable_shape_violations`' where a
+    plan is compared.
     """
     violations: list[Violation] = []
     for line, record in records:
@@ -1540,12 +1633,64 @@ def oracle_call_members_violations(records: list[tuple[int, dict]]) -> list[Viol
                                             f"skips a line it cannot decode, so the artifact holds a "
                                             f"record the target's read does not carry while its "
                                             f"occurrence identity is still counted"))
-        elif item in ORACLE_RESULT_ITEMS and "output" not in payload:
-            violations.append(Violation("oracle.call-members", line,
-                                        f"the {item} states no `output` member: the native decoder "
-                                        f"requires it on this payload type and the rollout reader skips "
-                                        f"a line it cannot decode, and an absent member is not the "
-                                        f"written empty result the occurrence vocabulary reads it as"))
+                continue
+            value = payload[member]
+            if not isinstance(value, str):
+                violations.append(Violation("oracle.call-members", line,
+                                            f"the {item}'s `{member}` is {oracle_value_text(value)}, not "
+                                            f"the string its native wire type decodes: the native decoder "
+                                            f"requires a string on this payload type and the rollout "
+                                            f"reader skips a line it cannot decode, so the artifact holds "
+                                            f"a record the target's read does not carry while its "
+                                            f"occurrence identity is still counted"))
+        elif item in ORACLE_RESULT_ITEMS:
+            if "output" not in payload:
+                violations.append(Violation("oracle.call-members", line,
+                                            f"the {item} states no `output` member: the native decoder "
+                                            f"requires it on this payload type and the rollout reader "
+                                            f"skips a line it cannot decode, and an absent member is not "
+                                            f"the written empty result the occurrence vocabulary reads "
+                                            f"it as"))
+                continue
+            problem = oracle_result_output_problem(payload["output"])
+            if problem is not None:
+                violations.append(Violation("oracle.call-members", line,
+                                            f"the {item}'s `output` is {problem}: the native decoder "
+                                            f"reads the member as a string or an array of typed content "
+                                            f"items and the rollout reader skips a line it cannot "
+                                            f"decode, so the artifact holds a record the target's read "
+                                            f"does not carry while its occurrence identity is still "
+                                            f"counted"))
+    return violations
+
+
+def oracle_compacted_violations(records: list[tuple[int, dict]]) -> list[Violation]:
+    """`oracle.compacted`: a boundary states the string `message` its payload type requires.
+
+    Codex 0.170.0's `CompactedItemWire` decodes `message: Cow<str>` with no default
+    (`codex-rs/history/src/rollout_payload.rs`), and its rollout reader skips a line that fails to
+    decode: a `compacted` record whose `message` member is absent, or present and not a string, is one
+    the target's read does not carry while this oracle's occurrence vocabulary still counts it — so a
+    receipt naming the empty boundary would certify a boundary that never takes effect (review round
+    r3's finding). An explicit empty string is the valid empty summary: the member is there and is
+    text. The member's own words are never echoed (`oracle_value_text`).
+    """
+    violations: list[Violation] = []
+    for line, record in records:
+        if record.get("type") != "compacted":
+            continue
+        payload = oracle_payload(record)
+        message = payload.get("message")
+        if isinstance(message, str):
+            continue
+        found = "absent" if "message" not in payload else oracle_value_text(message)
+        violations.append(Violation("oracle.compacted", line,
+                                    f"the compaction boundary's `message` is {found}, not the string the "
+                                    f"native decoder requires on this payload type and its rollout reader "
+                                    f"skips a line it cannot decode, so the record is one the target's "
+                                    f"read does not carry while its occurrence identity is still the "
+                                    f"empty boundary a plan can name (an explicit empty string is the "
+                                    f"valid empty summary)"))
     return violations
 
 
@@ -1630,18 +1775,17 @@ def oracle_call_arguments(payload: dict) -> str:
 
 def oracle_boundary_text(payload: dict) -> str:
     """One compaction boundary's own text, as the occurrence identity counts it: the string `message`
-    where the record carries one, and the empty string where it holds none.
+    where the record carries one, and the empty string where it holds none or holds one that is not a
+    string.
 
     The occurrence vocabulary counts **every** `compacted` record, so a record without a summary is an
     empty boundary the artifact holds, not a record outside the vocabulary; counting only records with a
-    string `message` would let such a boundary stand outside the plan. A record's `replacement_history`
-    is not part of this identity; a boundary carrying one is `oracle_unnameable_shape_violations`'
-    refusal where a plan is compared, because the receipt's boundary identity is the summary text alone
-    and the plan cannot account for what that member holds. A **present but non-string** `message` also
-    reads as the empty identity here — the count stays total over every boundary — and is refused by
-    that same rule where a plan is compared: the receipt naming the empty text would otherwise certify
-    a summary the artifact's own bytes state is not text (an absent member is the empty boundary the
-    plan can name).
+    string `message` would let such a boundary stand outside the plan. The record itself is refused in
+    both modes by `oracle.compacted` — the payload type requires the string member — while this identity
+    keeps the count total over every boundary record, so a plan comparison never silently drops one. A
+    record's `replacement_history` is not part of this identity; a boundary carrying one is
+    `oracle_unnameable_shape_violations`' refusal where a plan is compared, because the receipt's
+    boundary identity is the summary text alone and the plan cannot account for what that member holds.
     """
     message = payload.get("message")
     return message if isinstance(message, str) else ""
@@ -1653,15 +1797,23 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
 
     The occurrence vocabulary names a call by its written recorded input and a result by its written
     recorded text, and the receipt's own identity members are strings. The shapes outside what that
-    identity can name, each decidable from the artifact's own bytes alone:
+    identity can name, each natively decodable and each decidable from the artifact's own bytes alone:
 
     - a call carrying **both** an `arguments` and an `input` member: the artifact writes two recorded
       inputs under one call id, and a receipt's single `arguments` member names one;
-    - a call whose `arguments`/`input` member is written as a value that is not a string: the identity
-      is the member's own bytes, and a decoded value cannot recover the spelling (a space after a
-      colon, a number's written form) a receipt would have to name it by;
-    - a result whose `output` member is written as a value that is not a string: the same, for the
-      result's recorded text;
+    - a result whose `output` member is written as the content-item array the native decoder reads (a
+      string or a typed array): the receipt's recorded-text identity is a string, and a decoded value
+      cannot recover the member's own bytes — a space after a colon, an item's written form — so no
+      receipt can name the output exactly;
+    - a `response_item` `message` carrying a media block (`input_image`/`input_audio`): the receipt
+      names a message by its role and its text, and a media block is content no plan entry can account
+      for (review round r3's finding: the block is native and structurally admitted, and the receipt's
+      vocabulary is text-only);
+    - an `event_msg` whose payload type is `thread_rolled_back`: its `num_turns` states how many
+      recorded turns the harness's own replay drops from model history
+      (`core/src/session/rollout_reconstruction.rs`'s `drop_last_n_user_turns`), so a receipt marking
+      those turns' dialogue `emitted` certifies history the harness does not hold (review round r3's
+      finding);
     - a `compacted` record carrying a `replacement_history` that holds something: the receipt's
       boundary identity is the summary text alone, so the plan cannot account for what the member
       holds (an empty list holds nothing and is not refused);
@@ -1674,10 +1826,6 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
       retained message text, an `inter_agent_communication`'s `content`, a `realtime_item`'s
       `transcript_segment` text): the plan's vocabulary is this route's four occurrence kinds, so
       dialogue kept in such a record is dialogue no entry can account for;
-    - a `compacted` record whose `message` member is **present but not a string**: the member's own
-      bytes state that a summary is there and is not text, and the empty identity it reads as is the
-      identity an absent summary has, so a receipt naming that empty text would certify a summary the
-      artifact does not hold (an absent member is the empty boundary the plan can name);
     - a `response_item` `message` whose `role` is a non-empty string outside the receipt's vocabulary
       (`user`/`assistant`): the receipt names a message by its role and its text, so a record in any
       other role carries dialogue no plan entry can account for. The role is the artifact's own bytes
@@ -1698,13 +1846,6 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
         kind = record.get("type")
         if kind == "compacted":
             payload = oracle_payload(record)
-            if "message" in payload and not isinstance(payload["message"], str):
-                violations.append(Violation("oracle.plan-accounted", line,
-                                            f"the compaction boundary's `message` is "
-                                            f"{oracle_value_text(payload['message'])}, not a string: "
-                                            f"the receipt's boundary identity is the summary text, and "
-                                            f"naming this boundary by the empty text the member reads "
-                                            f"as would certify a summary the artifact does not hold"))
             if "replacement_history" not in payload and "retained_context" not in payload:
                 continue
             history = payload.get("replacement_history")
@@ -1734,6 +1875,18 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
                                             "session's own is not stated by the artifact alone, so a "
                                             "receipt cannot certify them"))
             continue
+        if kind == "event_msg":
+            payload = oracle_payload(record)
+            if payload.get("type") == "thread_rolled_back":
+                violations.append(Violation("oracle.plan-accounted", line,
+                                            "the artifact holds an `event_msg` whose payload type is "
+                                            "`thread_rolled_back`: its `num_turns` states how many "
+                                            "recorded turns the harness's own replay drops from model "
+                                            "history (`drop_last_n_user_turns`), and the receipt's "
+                                            "occurrence vocabulary names no rollback, so a receipt "
+                                            "marking those turns' dialogue `emitted` certifies history "
+                                            "the harness does not hold"))
+            continue
         if kind in ORACLE_UNACCOUNTABLE_RECORD_TYPES:
             violations.append(Violation("oracle.plan-accounted", line,
                                         f"the artifact holds a `{kind}` record: its payload carries "
@@ -1754,6 +1907,17 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
                                             f"({', '.join(ORACLE_MESSAGE_ROLES)}): the receipt names "
                                             f"a message by its role, so this record's dialogue is one "
                                             f"no plan entry can account for"))
+            content = payload.get("content")
+            if isinstance(content, list):
+                media = [block.get("type") for block in content
+                         if isinstance(block, dict)
+                         and block.get("type") in ORACLE_MEDIA_BLOCK_TYPES]
+                if media:
+                    violations.append(Violation("oracle.plan-accounted", line,
+                                                f"the message's content carries a `{media[0]}` block: "
+                                                f"the receipt names a message by its role and its text, "
+                                                f"and a media block is content no plan entry can "
+                                                f"account for"))
             continue
         if item in ORACLE_CALL_ITEMS:
             if "arguments" in payload and "input" in payload:
@@ -1762,22 +1926,10 @@ def oracle_unnameable_shape_violations(records: list[tuple[int, dict]]) -> list[
                                             "and `input`: the receipt's single `arguments` identity "
                                             "names one recorded input while the record writes two, so "
                                             "the plan cannot account for the invocation"))
-                continue
-            for member in ("arguments", "input"):
-                if member in payload and not isinstance(payload[member], str):
-                    violations.append(Violation("oracle.plan-accounted", line,
-                                                f"the call's recorded input is written as the "
-                                                f"non-string `{member}` member "
-                                                f"({oracle_value_text(payload[member])}): the receipt's "
-                                                f"`arguments` identity is a string and a decoded value "
-                                                f"cannot recover the member's own bytes, so no receipt "
-                                                f"can name this invocation exactly"))
-                    break
         elif item in ORACLE_RESULT_ITEMS:
-            if "output" in payload and not isinstance(payload["output"], str):
+            if isinstance(payload.get("output"), list):
                 violations.append(Violation("oracle.plan-accounted", line,
-                                            f"the result's recorded text is written as the non-string "
-                                            f"`output` member "
+                                            f"the result's `output` is written as a content-item array "
                                             f"({oracle_value_text(payload['output'])}): the receipt's "
                                             f"recorded-text identity is a string and a decoded value "
                                             f"cannot recover the member's own bytes, so no receipt can "
@@ -1792,7 +1944,9 @@ def oracle_occurrences(records: list[tuple[int, dict]]) -> list[tuple[tuple, int
     tool call, a tool result and a compaction boundary. Identity is the occurrence's own: role and text
     for a message, `call_id` and the emitted tool's `name` and recorded input for a call, `call_id` and
     the recorded text for a result (two results under one call id are two occurrences), the summary's
-    text for a boundary (`""` where the record carries none — every `compacted` record is an occurrence).
+    text for a boundary (`""` where the record carries no string `message` — every `compacted` record is
+    an occurrence, and a record without the string member is refused by `oracle.compacted` while its
+    identity keeps the count total).
     Multiplicity is part of the record: two identical messages are two occurrences, and the receipt is
     counted the same way. A `message` whose role is not one of the two is no occurrence of this
     vocabulary; where a plan is compared, `oracle_unnameable_shape_violations` refuses it, because the
@@ -2112,6 +2266,7 @@ def oracle_reading(text: str, receipt: object = _NO_RECEIPT,
     violations += oracle_event_message_violations(records)
     violations += oracle_call_pairing_violations(records)
     violations += oracle_call_members_violations(records)
+    violations += oracle_compacted_violations(records)
     occurrences = oracle_occurrences(records)
     if receipt is not _NO_RECEIPT:
         plan, receipt_violations = oracle_plan(receipt)
@@ -2425,7 +2580,46 @@ def _role_dropped(record: dict) -> None:
 
 
 def _content_block_type_is_not_read(record: dict) -> None:
-    record["payload"]["content"][0]["type"] = "input_image"
+    record["payload"]["content"][0]["type"] = "input_video"
+
+
+def _content_block_becomes_an_image_without_a_reference(record: dict) -> None:
+    """One message's media block loses the reference member its untagged native form decodes from.
+
+    The block is still typed `input_image`, one of the enum's own spellings, so the type arm cannot see
+    it: the reference is what the block no longer states.
+    """
+    for block in record["payload"]["content"]:
+        if isinstance(block, dict) and block.get("type") == "input_image":
+            block.pop("image_url")
+            return
+    raise AssertionError("the fixture holds no image block this mutation edits")
+
+
+def _content_block_image_reference_not_a_string(record: dict) -> None:
+    """One message's image reference written as a number rather than the string the reference decodes.
+
+    The member is present, so an absence test cannot see it; a value that is not a string decodes as
+    neither the inline reference nor the file one.
+    """
+    for block in record["payload"]["content"]:
+        if isinstance(block, dict) and block.get("type") == "input_image":
+            block["image_url"] = 7
+            return
+    raise AssertionError("the fixture holds no image block this mutation edits")
+
+
+def _content_block_image_detail_unknown(record: dict) -> None:
+    """One message's image block given a `detail` spelling `ImageDetail` does not define.
+
+    `detail` is optional, so its absence is the valid shape; a stated value outside the four spellings
+    fails the variant's decode exactly as a missing reference does.
+    """
+    for block in record["payload"]["content"]:
+        if isinstance(block, dict) and block.get("type") == "input_image":
+            block["detail"] = "gigantic"
+            return
+    raise AssertionError("the fixture holds no image block this mutation edits")
 
 
 def _content_text_becomes_blank(record: dict) -> None:
@@ -2667,8 +2861,45 @@ def _mutation_message_content_empty(text: str, receipt: dict | None) -> tuple[st
 
 
 def _mutation_message_block_type_not_read(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """One message block retyped a spelling the native content-item enum does not define.
+
+    The block's `text` and the receipt's identity are untouched: the record is refused as one the
+    native decoder cannot read, so no receipt comparison can stand for the refusal.
+    """
     return oracle_edit(text, oracle_item_is("message", "Which fixture is this?"),
                        change=_content_block_type_is_not_read), receipt
+
+
+def _mutation_message_image_without_a_reference(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The media fixture's well-formed image block loses its `image_url` member.
+
+    The type arm cannot see the change — `input_image` is one of the enum's own spellings — so this
+    pair is the reference member's own arm: the positive fixture (the image beside the user's text) is
+    green, and the mutated one fails because the untagged native reference decodes from a string
+    `image_url` or `file_id` (review round r3's finding).
+    """
+    return oracle_edit(text, oracle_item_is("message", "Which fixture is this?"),
+                       change=_content_block_becomes_an_image_without_a_reference), receipt
+
+
+def _mutation_message_image_reference_not_a_string(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The media fixture's image reference rewritten as a number.
+
+    The member is present, so the reference's own type is the whole defect: `ImageReference` is untagged
+    over a string `image_url`/`file_id`, and a number decodes as neither.
+    """
+    return oracle_edit(text, oracle_item_is("message", "Which fixture is this?"),
+                       change=_content_block_image_reference_not_a_string), receipt
+
+
+def _mutation_message_image_detail_unknown(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The media fixture's image block given a `detail` value outside the version's four spellings.
+
+    The member is optional but typed (`ImageDetail` is an enum of `auto`/`low`/`high`/`original`), so a
+    stated value outside them fails the variant's decode.
+    """
+    return oracle_edit(text, oracle_item_is("message", "Which fixture is this?"),
+                       change=_content_block_image_detail_unknown), receipt
 
 
 def _mutation_message_block_type_is_text(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2792,6 +3023,64 @@ def _mutation_result_without_its_output(text: str, receipt: dict | None) -> tupl
                        change=lambda record: record["payload"].pop("output")), receipt
 
 
+def _mutation_call_input_not_a_string(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The call's recorded input written as a JSON object, spaces after its colons.
+
+    The member is present, so the presence arm cannot see it; a `function_call`'s `arguments` is a
+    string in the native wire type (`protocol/src/models.rs`), so the native decoder refuses the line
+    and its rollout reader skips it (review round r3's finding: the member's own native type is the
+    structural rule's subject). The bytes are spliced in rather than set on a parsed record, because
+    the object with spaces after its colons is a spelling a decoded value could not recover — exactly
+    the shape the receipt's string identity cannot name, which is why the refusal is structural.
+    """
+    needle = '"arguments":"{\\"file_path\\":\\"/work/oracle-fixture/notes.md\\"}"'
+    replacement = '"arguments":{"file_path": "/work/oracle-fixture/notes.md"}'
+    for line in text.splitlines():
+        if not oracle_item_is("function_call", "call_oracle_0001")(json.loads(line)):
+            continue
+        if needle not in line:
+            raise AssertionError("the fixture no longer writes the call's arguments this mutation edits")
+        return text.replace(needle, replacement, 1), receipt
+    raise AssertionError("the fixture no longer holds the call this mutation edits")
+
+
+def _mutation_custom_call_input_not_a_string(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The custom call's `input` member written as an object: the same arm on the other family.
+
+    A `custom_tool_call` states its recorded input in `input`, a string in the native wire type, so the
+    decoder refuses the record and its rollout reader skips it; the record is rewritten as the custom
+    family whole, because a `function_call` carrying only an object-valued `input` states no
+    `arguments` and would turn the presence arm red instead.
+    """
+    def to_custom(record: dict) -> None:
+        record["payload"] = {"type": "custom_tool_call", "name": "apply_patch",
+                             "call_id": "call_oracle_0001",
+                             "input": {"patch": "*** Begin Patch\n*** End Patch"}}
+    return oracle_edit(text, oracle_item_is("function_call", "call_oracle_0001"), change=to_custom), receipt
+
+
+def _mutation_result_output_null(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The result's `output` member written as `null`, which neither native arm decodes.
+
+    `FunctionCallOutputBody` is untagged over a string and a vector of typed content items; `null`
+    decodes as neither, so the line is one the rollout reader skips (review round r3's finding).
+    """
+    return oracle_edit(text, oracle_item_is("function_call_output", "call_oracle_0001"),
+                       change=lambda record: record["payload"].__setitem__("output", None)), receipt
+
+
+def _mutation_result_output_not_a_typed_array(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The result's `output` written as an array of bare strings.
+
+    An array is the native member's other arm, but each item must be a typed content item
+    (`FunctionCallOutputContentItem`); a bare string decodes as none of them, so the line is one the
+    rollout reader skips (review round r3's finding).
+    """
+    return oracle_edit(text, oracle_item_is("function_call_output", "call_oracle_0001"),
+                       change=lambda record: record["payload"].__setitem__(
+                           "output", ["# notes", "more"])), receipt
+
+
 def _mutation_receipt_declares_nothing(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """The receipt left declaring no occurrences at all: a plan that accounts for nothing."""
     assert receipt is not None
@@ -2894,23 +3183,55 @@ def _mutation_plan_unnameable_message_role(text: str, receipt: dict | None) -> t
     return "\n".join(lines + [oracle_quote(planted)]) + "\n", receipt
 
 
-def _mutation_plan_non_string_call_input(text: str, receipt: dict | None) -> tuple[str, dict | None]:
-    """The call's recorded input written as a JSON object, spaces after its colons.
+def _mutation_plan_result_content_items(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The result's recorded text written as a typed content-item array, the receipt naming its
+    serialized spelling.
 
-    The oracle's identity serializes a non-string member back to compact JSON and so reconstructs the
-    receipt's own `arguments` string, while this route's writer's own calls write `arguments` as a
-    string: a changed member would be certified as the unchanged invocation without the refusal. The
-    receipt is untouched — it still names the compact spelling the mutation reconstructs.
+    The array is a shape the native decoder reads (`FunctionCallOutputBody`'s content-items arm), so
+    the structural rule admits it; the receipt cannot name it — its recorded-text identity is a string,
+    and a decoded value cannot recover the member's own bytes — so the shape is refused only where a
+    plan is compared (review round r3's finding). The receipt edit is part of the mutation: the
+    occurrence identity serializes the array back to compact JSON, and the plan must name that exact
+    spelling so the comparison itself stays green and only the refusal can turn the pair red.
     """
-    needle = '"arguments":"{\\"file_path\\":\\"/work/oracle-fixture/notes.md\\"}"'
-    replacement = '"arguments":{"file_path": "/work/oracle-fixture/notes.md"}'
-    for line in text.splitlines():
-        if not oracle_item_is("function_call", "call_oracle_0001")(json.loads(line)):
-            continue
-        if needle not in line:
-            raise AssertionError("the fixture no longer writes the call's arguments this mutation edits")
-        return text.replace(needle, replacement, 1), receipt
-    raise AssertionError("the fixture no longer holds the call this mutation edits")
+    assert receipt is not None
+    items = [{"type": "input_text", "text": "# notes\n"}]
+    text = oracle_edit(text, oracle_item_is("function_call_output", "call_oracle_0001"),
+                       change=lambda record: record["payload"].__setitem__("output", items))
+    serialized = json.dumps(items, separators=(",", ":"), ensure_ascii=False)
+    return text, oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"),
+                                     lambda entry: entry.__setitem__("text", serialized))
+
+
+def _mutation_plan_rollback_event(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A `thread_rolled_back` event appended at the last record's instant, the receipt unchanged.
+
+    Codex's own replay drops the last `num_turns` user turns from model history for this record
+    (`drop_last_n_user_turns`), and the artifact's occurrence list does not move — an `event_msg` is no
+    occurrence of either compared channel — so every count and order the plan compares still matches
+    while the receipt's `emitted` marks certify history the harness does not hold (review round r3's
+    finding). The event is appended, so the clock stays nondecreasing.
+    """
+    assert receipt is not None
+    lines = text.splitlines()
+    stamp = json.loads(lines[-1])["timestamp"]
+    rolled = {"timestamp": stamp, "type": "event_msg",
+              "payload": {"type": "thread_rolled_back", "num_turns": 1}}
+    return "\n".join(lines + [oracle_quote(rolled)]) + "\n", receipt
+
+
+def _mutation_plan_message_media_block(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """An `input_image` planted beside the fixture's first user message text, its receipt unchanged.
+
+    The block is well-formed and native — the structural rule admits it — and the message's text, its
+    two channels and every count and order the plan compares are unchanged, so only the receipt's own
+    text-only vocabulary can refuse the media no plan entry can name (review round r3's finding).
+    """
+    assert receipt is not None
+    return oracle_edit(
+        text, oracle_item_is("message", "Which fixture is this?"),
+        change=lambda record: record["payload"]["content"].append(
+            {"type": "input_image", "image_url": "data:image/png;base64,b3JhY2xl"})), receipt
 
 
 def _mutation_plan_two_input_members(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2960,39 +3281,47 @@ def _mutation_plan_emitted_view_shortfall(text: str, receipt: dict | None) -> tu
     return _without_record(text, oracle_event_message_is("Which fixture is this?")), receipt
 
 
-def _mutation_plan_boundary_without_a_summary(text: str, receipt: dict | None) -> tuple[str, dict | None]:
-    """A `compacted` record appended with an empty payload, which the plan names nowhere.
+def _mutation_boundary_without_its_message(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A boundary's `message` member deleted, the rest of the record untouched.
 
-    The occurrence vocabulary counts every `compacted` record, summary or not, so the artifact holds an
-    occurrence the receipt never planned although every rule that reads only string summaries — and
-    every count — stayed unchanged.
+    Codex 0.170.0's `CompactedItemWire` decodes `message` as a string without a default, so the record
+    is one the native decoder refuses and its rollout reader skips — in both modes, receipt or none
+    (review round r3's finding: an absent member is not the empty boundary a plan may name).
     """
-    lines = text.splitlines()
-    stamp = json.loads(lines[-1])["timestamp"]
-    lines.append(oracle_quote({"timestamp": stamp, "type": "compacted", "payload": {}}))
-    return "\n".join(lines) + "\n", receipt
+    def drop(record: dict) -> None:
+        record["payload"].pop("message")
+
+    return oracle_edit(text, oracle_record_is("compacted"), change=drop), receipt
 
 
-def _mutation_plan_boundary_non_string_summary(text: str, receipt: dict | None) -> tuple[str, dict | None]:
-    """A boundary's summary rewritten as an object, with the plan naming the boundary's empty text.
+def _mutation_boundary_summary_not_a_string(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A boundary's summary rewritten as an object: a member the native decoder cannot read.
 
-    A non-string `message` reads as the empty occurrence identity — the same identity an absent summary
-    has — so a receipt whose boundary entry was rewritten to `text: ""` compares green, by identity,
-    count and order, against a boundary whose member the artifact states is not text. The receipt edit
-    is part of the mutation because the plan names the summary it read: the artifact-only edit would
-    turn `oracle.plan-emitted` and `oracle.plan-accounted` red over the count, not the member's type.
+    The record is refused structurally in both modes; the plan is untouched, so the pair is the member
+    type's own arm rather than an identity mismatch.
     """
-    assert receipt is not None
-
     def corrupt(record: dict) -> None:
         if not isinstance(record["payload"].get("message"), str):
             raise AssertionError("the fixture's boundary no longer carries its string summary")
         record["payload"]["message"] = {"text": record["payload"]["message"]}
 
-    text = oracle_edit(text, oracle_record_is("compacted"), change=corrupt)
-    receipt = oracle_receipt_edit(receipt, oracle_entry_kind("compaction_boundary"),
-                                  lambda entry: entry.__setitem__("text", ""))
-    return text, receipt
+    return oracle_edit(text, oracle_record_is("compacted"), change=corrupt), receipt
+
+
+def _mutation_plan_boundary_without_a_summary(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A `compacted` record appended with an explicit empty summary, which the plan names nowhere.
+
+    The member is the string the payload type requires — the valid empty summary — and the occurrence
+    vocabulary counts every `compacted` record, so the artifact holds an occurrence the receipt never
+    planned although every rule that reads only the string summaries — and every count the plan
+    compares — stayed unchanged (review round r3's finding: the empty summary is written out, not
+    absent, because an absent member is a record the native decoder skips).
+    """
+    lines = text.splitlines()
+    stamp = json.loads(lines[-1])["timestamp"]
+    lines.append(oracle_quote({"timestamp": stamp, "type": "compacted",
+                               "payload": {"message": ""}}))
+    return "\n".join(lines) + "\n", receipt
 
 
 def _mutation_plan_omitted_present(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -3161,7 +3490,7 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
     "oracle.message": (
         OracleMutation("a message with no content", "session.jsonl", None,
                        _mutation_message_content_empty),
-        OracleMutation("a block the oracle does not read", "session.jsonl", None,
+        OracleMutation("a block type the native format does not define", "session.jsonl", None,
                        _mutation_message_block_type_not_read),
         OracleMutation("a block typed with the reader's spelling the format lacks", "session.jsonl",
                        "session-receipt.json", _mutation_message_block_type_is_text),
@@ -3170,6 +3499,12 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
         OracleMutation("a message with no role", "session.jsonl", None, _mutation_message_role_dropped),
         OracleMutation("a block whose text is not a string beside a valid one", "session.jsonl", None,
                        _mutation_message_text_not_a_string),
+        OracleMutation("a media block without its reference member", "session-media.jsonl", None,
+                       _mutation_message_image_without_a_reference),
+        OracleMutation("a media block whose reference member is not a string", "session-media.jsonl",
+                       None, _mutation_message_image_reference_not_a_string),
+        OracleMutation("a media block whose `detail` is outside the version's spellings",
+                       "session-media.jsonl", None, _mutation_message_image_detail_unknown),
     ),
     "oracle.event-message": (
         OracleMutation("an event message that is not a string", "session.jsonl", None,
@@ -3193,6 +3528,20 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "session-receipt.json", _mutation_call_input_member_renamed),
         OracleMutation("a call output without its `output` member", "session.jsonl", None,
                        _mutation_result_without_its_output),
+        OracleMutation("a call's recorded input written as an object", "session.jsonl", None,
+                       _mutation_call_input_not_a_string),
+        OracleMutation("a custom call's recorded input written as an object", "session.jsonl", None,
+                       _mutation_custom_call_input_not_a_string),
+        OracleMutation("a call output written as `null`", "session.jsonl", None,
+                       _mutation_result_output_null),
+        OracleMutation("a call output written as an array of bare strings", "session.jsonl", None,
+                       _mutation_result_output_not_a_typed_array),
+    ),
+    "oracle.compacted": (
+        OracleMutation("a boundary whose `message` member is deleted", "session.jsonl", None,
+                       _mutation_boundary_without_its_message),
+        OracleMutation("a boundary whose `message` member is not a string", "reduced.jsonl", None,
+                       _mutation_boundary_summary_not_a_string),
     ),
     "oracle.receipt": (
         OracleMutation("a disposition the vocabulary does not hold", "session.jsonl",
@@ -3224,16 +3573,18 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_plan_boundary_retained_context),
         OracleMutation("a retained_context record carrying the dialogue the plan omits", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_retained_context_record),
-        OracleMutation("a boundary whose summary member is not a string", "reduced.jsonl",
-                       "reduced-receipt.json", _mutation_plan_boundary_non_string_summary),
         OracleMutation("a message role the receipt's vocabulary cannot name", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_unnameable_message_role),
         OracleMutation("an omitted message that survives in the turn view", "reduced.jsonl",
                        "reduced-receipt.json", _mutation_plan_omitted_event_survives),
-        OracleMutation("a call whose recorded input is not a string", "session.jsonl",
-                       "session-receipt.json", _mutation_plan_non_string_call_input),
         OracleMutation("a call carrying both recorded-input members", "session.jsonl",
                        "session-receipt.json", _mutation_plan_two_input_members),
+        OracleMutation("a result's recorded text written as a typed content-item array", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_result_content_items),
+        OracleMutation("a message carrying a media block the receipt cannot name", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_message_media_block),
+        OracleMutation("an event that rolls a recorded turn back", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_rollback_event),
         OracleMutation("a session_meta carrying explicit fork lineage", "session.jsonl",
                        "session-receipt.json", _mutation_plan_forked_from_id),
     ),
