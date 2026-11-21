@@ -1,0 +1,13 @@
+# Revisions whose diff is a whole-tree rename. `git blame` (and GitHub's blame view, which reads this
+# file by itself) skips them, so a line's history keeps pointing at the commit that wrote it instead of
+# at the commit that moved the file.
+#
+# The layout migration -- the carried AgentsView tree into `agentsview/`, this repository's own module
+# into `ccc/` -- is one squash commit, so it has one SHA and it does not exist until that commit is
+# made. Whoever merges the migration appends it here (nothing else may be appended without the same
+# reason, and no other revision of this repository has been a rename yet):
+#
+#   git log --oneline -1 --format='%H  %s' main    # the squash commit's subject names the migration
+#
+# Locally: `git config blame.ignoreRevsFile .git-blame-ignore-revs` once per clone, or
+# `git blame --ignore-revs-file .git-blame-ignore-revs <path>` per call.

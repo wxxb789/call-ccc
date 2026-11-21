@@ -124,7 +124,10 @@ from native_check_common import (  # noqa: E402
 #: Where this repository keeps its committed native-shaped fixtures. A Claude transcript and an OMP
 #: session are each one file inside a provider directory; the OMP fixture sits one project-directory
 #: level deeper, exactly as the harness files its own sessions.
-FIXTURE_ROOT = Path("internal/ccc/testdata/fixtures")
+#: Where this repository's module keeps the fixtures: the carried tree has a directory of its own
+#: (``agentsview/``) and this repository's module is ``ccc/``, so every path this check reads
+#: inside the module starts there.
+FIXTURE_ROOT = Path("ccc/internal/ccc/testdata/fixtures")
 SOURCE_PROVIDER = "claude"
 SOURCE_SESSION = "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"
 OMP_TARGET = "omp"
@@ -1096,8 +1099,10 @@ def _build_ccc(args: argparse.Namespace, repo: Path, scratch: Path) -> int | Non
     """
     build_parent = (repo / BINARY).parent
     build_parent.mkdir(parents=True, exist_ok=True)
-    build = run([shutil.which("go") or "go", "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY),
-                 "./cmd/ccc"], cwd=repo, env={"CGO_ENABLED": "1"})
+    # The module is a directory of its own inside the repository, so the package pattern is the
+    # module's own (``./cmd/ccc``) and the command runs *in* it.
+    build = run([shutil.which("go") or "go", "build", f"-tags={GO_TAGS}", "-o",
+                 str(repo / BINARY), "./cmd/ccc"], cwd=repo / "ccc", env={"CGO_ENABLED": "1"})
     if build.returncode != 0:
         record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
         return finish(args, scratch, {})

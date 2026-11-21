@@ -5,46 +5,16 @@ remote https://github.com/kenn-io/agentsview
 describe v0.47.0-181-g83195c8a
 commit-date 2026-11-14T16:19:32+00:00
 upstream-files 5580
-carried 5553
-deviations 28
+carried 5579
+deviations 2
+layout agentsview/ ccc
 #
 # file	shape	blob-sha1	size	path  (mode 100644/100755, 120000 = symlink)
 # skip	shape	blob-sha1	size	path	reason  (upstream paths deliberately not carried as upstream's bytes)
 # skip	...	stored-blob-sha1	stored-size  (when the path is carried anyway: the bytes this tree stores for it)
 # input	shape	sha256	size	path	reason  (generated build inputs, not tracked upstream)
 # owned	path-prefix  (this repository owns the path; a trailing / means a directory)
-owned	.github/
-owned	.gitignore
-owned	AGENTS.md
-owned	README.md
-owned	cmd/ccc/
-owned	docs/README.md
-owned	docs/conventions.md
-owned	docs/core-design/
-owned	docs/decisions/
-owned	docs/evidence/
-owned	docs/goals/
-owned	docs/harness.md
-owned	docs/plans/
-owned	docs/upstream.md
-owned	internal/ccc/
-owned	scripts/claude-native-check.py
-owned	scripts/codex-native-check.py
-owned	scripts/gate-goflags.txt
-owned	scripts/gate-required.txt
-owned	scripts/gate-targets.txt
-owned	scripts/gate.py
-owned	scripts/native_check_common.py
-owned	scripts/obligation-citations.py
-owned	scripts/omp-native-check.py
-owned	scripts/opencode-native-check.py
-owned	scripts/pi-native-check.py
-owned	scripts/tests/
-owned	scripts/upstream-compare.py
-owned	scripts/upstream-import.py
-owned	scripts/upstream_manifest.py
-owned	scripts/upstream-manifest.txt
-owned	scripts/upstream-parity.py
+# layout	<carry root> <this repository's own module directory>  (where the two halves of this tree sit; '.' means the repository root)
 file	100644	c2c19b7a45a738cc119f38facfa32b72ced47802	2394	.agents/skills/localization-paraglide/SKILL.md
 file	100644	458fe765c0c9c14f34070d17af44308c68962c78	214	.agents/skills/localization-paraglide/agents/openai.yaml
 file	100644	c399901f2dafa76e732bcfee62152c88aa0f524d	4136	.agents/skills/localization-paraglide/references/paraglide-formatting.md
@@ -59,6 +29,29 @@ file	120000	6f0cbf81e6dac5c0647ec83e852fd29b21658503	48	.claude/skills/testing-w
 file	100644	2b49de3f2d1d7bd132a2b3cf22b63cecc0167963	254	.custom-gcl.yml
 file	100644	1608d110902bce0bb9c0589c1c0602c1a05bbf6e	146	.dockerignore
 file	100644	0a02024361d5c5906229f95a838fbd02c0fde067	745	.gitattributes
+file	100644	d688bd0866605d29cfda78f52f1c6a275cb31f57	1573	.github/ISSUE_TEMPLATE/agent_support.yml
+file	100644	d01bf75684db1818c961bac73a5e40df70452132	2952	.github/ISSUE_TEMPLATE/bug_report.yml
+file	100644	9c44b90f998ba5e7d9b9aca7797a873da34fb4c2	238	.github/ISSUE_TEMPLATE/config.yml
+file	100644	961d2e2b9f3bdb66d54b4b5b5f47398dde0c919c	832	.github/ISSUE_TEMPLATE/feature_request.yml
+file	100644	3953a5ce69911a4fc1510dfe3a19b463fa2a166c	6294	.github/actions/build-desktop-artifact/action.yml
+file	100644	8788ed1e7046619ad066bd60d519b3db6207f02a	2801	.github/actions/go-cache-restore/action.yml
+file	100644	566fa392476e9d1cb88dd5c44c272b5e41ed3e90	291	.github/actions/go-cache-restore/select-paths.sh
+file	100644	fe65953076157ac5f4a921ccc7e839d6d8b8caa3	1535	.github/actions/go-cache-save/action.yml
+file	100644	0220f143e29faf56b835dae091f2af3c5ffc7d35	652	.github/actions/windows-go-paths/action.yml
+file	100644	8489030184cafe1aa7d266f4805eae24b639a319	5648	.github/workflows/actions.lock
+file	100644	ce0a72a1586cd84877bd51f97460e4f1de1036fd	4915	.github/workflows/ci-macos-main.yml
+file	100644	61ecfb5f9e42f670a4d98d3abea34731d0a5f800	458	.github/workflows/ci-pr.yml
+file	100644	ca933371f96bf3ff3204f3e7a91174dd2dd81a84	53317	.github/workflows/ci.yml
+file	100644	530440878b7b46183565789164620021f8090b5d	2777	.github/workflows/cjk-fts.yml
+file	100644	abc45fa68cb7d748378fb5cfe89b3c6ca4271ee5	496	.github/workflows/desktop-artifacts-pr.yml
+file	100644	f48a121d4be3fa08d290621e04be427de6e89477	3005	.github/workflows/desktop-artifacts.yml
+file	100644	407cd2b5030941be51c99d0ed5a324dad3ea1634	1927	.github/workflows/desktop-macos-main.yml
+file	100644	821eda79a0dededade9b50e248ebcfb421d9d612	7513	.github/workflows/fuzz.yml
+file	100644	57512488743f506298b4992c483601a6763e53b0	5048	.github/workflows/msys2-update-check.yml
+file	100644	239ec499aa028994d9222371790bd395a4717774	682	.github/workflows/release-commands.yml
+file	100644	46050b9223b00b4ef4bfb202d7f9b06d57fa46db	1443	.github/workflows/sibling-pins.yml
+file	100644	c575a7707fd9a65ff61151a2f87ff835070c2911	833	.github/workflows/workflow-validation.yml
+file	100644	3830cb05d330f8961b92611cac6d2cc1e9893942	1394	.gitignore
 file	100644	00e05eb73406c3b0b0d3b8bb13c1b52101344eed	384	.golangci.nilaway.yml
 file	100644	03c251bfbaffd8507db4f18f86167d178c3ef3e0	619	.golangci.overlay.yml
 file	100644	58aeb1ef27b01b9b9c6168e2ebb31de4aab2ce5d	5583	.golangci.yml
@@ -80,6 +73,7 @@ file	100644	7b92666bdaa9286a70cf2f1cd2b68739703c1ce1	337	.scratch/project-classi
 file	100644	603ea69d50b1494d8113a926881455c46b50131c	9575	.scratch/project-classification-redesign/issues/12-audit-current-project-classification-capabilities.md
 file	100644	92493453906e8928a60fc35e28ba6ed8d8277cb9	463	.scratch/project-classification-redesign/issues/13-approve-the-implementation-handoff.md
 file	100644	692b41b678feb5cc31b84f2afab6882ad6fb4dbc	4790	.scratch/project-classification-redesign/map.md
+file	100644	1994077070e40fd664e0fa8ce795b9803135523f	14091	AGENTS.md
 file	120000	47dc3e3d863cfb5727b87d785d09abf9743c0a72	9	CLAUDE.md
 file	100644	3be46054f542eb8056535c2081a68552c3e019bb	3184	CONTEXT.md
 file	100644	6545b99c78a9e3474680d54d39413e3a4896d81e	11023	DESIGN.md
@@ -87,6 +81,7 @@ file	100644	6ab88d3c51b033def7632625096c4d0b9bd4edc6	2351	Dockerfile
 file	100644	116080a15c61d845e144d52514be7758b2eeb691	1074	LICENSE
 file	100644	45f740b0ebf9fa9e5315b14b96640bee4c715476	39922	Makefile
 file	100644	98433742d28492ebe6ea1baabd17fadc50166d2b	1674	PRODUCT.md
+file	100644	78df1ebf747602a5199c20ea469f8922061d5517	60258	README.md
 file	100644	d8650a4cbd1026c6bc01711aeaa6fae0d1faa6a6	22810	SECURITY.md
 file	100644	d10cdc90004afc4f7af93d5b995c112641c48b8f	13848	build_script_test.go
 file	100644	59e95c6120e59087d58a8dc314c08f459a7946ea	22810	cmd/agentsview/activity.go
@@ -515,6 +510,7 @@ file	100644	ac1c44db233d1fe792006977c8b758f369e0f760	2353	desktop_sidecar_test.g
 file	100644	8ec48e19d2e5e11b60241d67b836f4bfc7602b74	1415	docker-bake.hcl
 file	100644	2a7a9e4eb9c17657e3a233d3d36248014c042cbf	1174	docker-compose.prod.yaml
 file	100644	e94f758ee2b66a7b9639cc7313677d62ea1c90e6	1065	docker-compose.test.yml
+file	100644	994b4fbcfc5377a67db2262c7eb4fd3adf626d16	5940	docs/README.md
 file	100644	466595b51eac89ab4bd90e6740353c2e5f222b47	17612	docs/activity.md
 file	100644	66693e2455c0c0c0df6301e67d9891b09792275f	8128	docs/agents/background-work.md
 file	100644	0069fc49da05e69a06e4229708713d67fc0c1c89	4475	docs/agents/build.md
@@ -5598,31 +5594,5 @@ file	100644	d39d8c22b1da0b07743b0c70bf86168e90c3bef0	4745	testdata/visualstudio-
 file	100644	2175551f7fcbb19f5abf7589c937d30908479a09	7985	testdata/visualstudio-copilot/redacted/sample-4_VSGitHubCopilot_traces.jsonl
 file	100644	c3ae7f24d61cfa33813c9216ec19b633946d1e57	628	tools/go.mod
 file	100644	ace146a7bc8e9ffa2cbc68eec63252fd8622d47f	3223	tools/go.sum
-skip	100644	d688bd0866605d29cfda78f52f1c6a275cb31f57	1573	.github/ISSUE_TEMPLATE/agent_support.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	d01bf75684db1818c961bac73a5e40df70452132	2952	.github/ISSUE_TEMPLATE/bug_report.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	9c44b90f998ba5e7d9b9aca7797a873da34fb4c2	238	.github/ISSUE_TEMPLATE/config.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	961d2e2b9f3bdb66d54b4b5b5f47398dde0c919c	832	.github/ISSUE_TEMPLATE/feature_request.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	3953a5ce69911a4fc1510dfe3a19b463fa2a166c	6294	.github/actions/build-desktop-artifact/action.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	8788ed1e7046619ad066bd60d519b3db6207f02a	2801	.github/actions/go-cache-restore/action.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	566fa392476e9d1cb88dd5c44c272b5e41ed3e90	291	.github/actions/go-cache-restore/select-paths.sh	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	fe65953076157ac5f4a921ccc7e839d6d8b8caa3	1535	.github/actions/go-cache-save/action.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	0220f143e29faf56b835dae091f2af3c5ffc7d35	652	.github/actions/windows-go-paths/action.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	8489030184cafe1aa7d266f4805eae24b639a319	5648	.github/workflows/actions.lock	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	ce0a72a1586cd84877bd51f97460e4f1de1036fd	4915	.github/workflows/ci-macos-main.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	61ecfb5f9e42f670a4d98d3abea34731d0a5f800	458	.github/workflows/ci-pr.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	ca933371f96bf3ff3204f3e7a91174dd2dd81a84	53317	.github/workflows/ci.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	530440878b7b46183565789164620021f8090b5d	2777	.github/workflows/cjk-fts.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	abc45fa68cb7d748378fb5cfe89b3c6ca4271ee5	496	.github/workflows/desktop-artifacts-pr.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	f48a121d4be3fa08d290621e04be427de6e89477	3005	.github/workflows/desktop-artifacts.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	407cd2b5030941be51c99d0ed5a324dad3ea1634	1927	.github/workflows/desktop-macos-main.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	821eda79a0dededade9b50e248ebcfb421d9d612	7513	.github/workflows/fuzz.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	57512488743f506298b4992c483601a6763e53b0	5048	.github/workflows/msys2-update-check.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	239ec499aa028994d9222371790bd395a4717774	682	.github/workflows/release-commands.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	46050b9223b00b4ef4bfb202d7f9b06d57fa46db	1443	.github/workflows/sibling-pins.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	c575a7707fd9a65ff61151a2f87ff835070c2911	833	.github/workflows/workflow-validation.yml	upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests
-skip	100644	3830cb05d330f8961b92611cac6d2cc1e9893942	1394	.gitignore	project-owned: call/ccc keeps its own ignore rules at this path
-skip	100644	1994077070e40fd664e0fa8ce795b9803135523f	14091	AGENTS.md	project-owned: call/ccc's control file lives at this path
-skip	100644	78df1ebf747602a5199c20ea469f8922061d5517	60258	README.md	project-owned: call/ccc's project README lives at this path
-skip	100644	994b4fbcfc5377a67db2262c7eb4fd3adf626d16	5940	docs/README.md	project-owned: call/ccc's docs index lives at this path
 skip	100644	ebcc03dcf9314fe43dacd5db0edbad7987041218	1441138	frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json	carried with one byte normalised: upstream's blob holds a single CRLF pair that this repository's carried .gitattributes turns into LF, so git stores the file one byte shorter	48adf87eda451584a61c61fdcc34e384d92a6bb8	1441137
 input	100644	75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8	56068	internal/pricing/snapshot/litellm_snapshot.json.gz	generated build input embedded by internal/pricing; upstream restores it from a pinned artifact before every Go build (sha256 pinned in internal/pricing/cmd/litellm-snapshot/main.go)

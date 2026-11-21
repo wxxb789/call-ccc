@@ -42,6 +42,40 @@ TOOL = "internal/pricing/cmd/litellm-snapshot/main.go"
 MANIFEST = "scripts/upstream-manifest.txt"
 
 
+def scratch_tree(prefix: str) -> Path:
+    """A throw-away tree for one case, always absolute and always outside the repository.
+
+    ``tempfile.gettempdir()`` answers whatever ``TMPDIR`` says, and a *relative* ``TMPDIR`` -- or one
+    that points inside the repository -- would put the tree under the process's current directory
+    (the repository root when the gate runs this suite), where a killed run leaves it behind: 81 empty
+    ``parity-root-*`` directories were found in the repository root on 2026-11-21 for exactly that
+    reason. The base is therefore resolved first, a base inside the repository is refused, and the
+    patterns are named in the repository's own ``.gitignore`` as the second line of defence -- a stray
+    tree must never be something ``git status`` offers to commit.
+    """
+    base = Path(tempfile.gettempdir())
+    if not base.is_absolute():
+        base = Path(os.path.abspath(base))
+    attempts: list[str] = []
+    for candidate_base in (base, Path("/tmp"), Path("/var/tmp")):
+        if candidate_base in (Path("/tmp"), Path("/var/tmp")) and (
+                not candidate_base.is_dir() or candidate_base == REPO_ROOT
+                or REPO_ROOT in candidate_base.parents):
+            continue
+        try:
+            candidate = Path(tempfile.mkdtemp(prefix=prefix, dir=str(candidate_base))).resolve()
+        except OSError as exc:
+            attempts.append(f"{candidate_base}: {exc}")
+            continue
+        if candidate != REPO_ROOT and REPO_ROOT not in candidate.parents:
+            return candidate
+        shutil.rmtree(candidate, ignore_errors=True)
+        attempts.append(f"{candidate_base}: inside {REPO_ROOT}")
+    raise AssertionError(
+        f"no scratch directory outside {REPO_ROOT} is available ({'; '.join(attempts)}), and a tree "
+        f"inside the repository is what this helper exists to prevent")
+
+
 def tool_result(cmd, rc=0, out="", err=""):
     """A ``CompletedProcess`` shaped like the ones the shipped runners return."""
     return subprocess.CompletedProcess(cmd, rc, out, err)
@@ -68,7 +102,7 @@ class ParityTree:
     """One throw-away tree carrying a tiny, valid manifest, plus helpers to break it."""
 
     def __init__(self) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="parity-root-"))
+        self.root = scratch_tree("parity-root-")
         self.manifest_module = load_script("upstream_manifest.py")
         self.parity = load_script("upstream-parity.py")
         self.import_script = load_script("upstream-import.py")
@@ -329,7 +363,7 @@ class ParityTreeCase:
 
     def assert_clean(self, code: int, output: str) -> None:
         self.assertEqual(code, 0, output)
-        self.assertIn("reported by cmd/ccc: " + PIN, output)
+        self.assertIn("reported by cmd/ccc/pin.go: " + PIN, output)
         self.assertIn(f"carried: {len(self.tree.carried)} file(s) identical to the pinned revision",
                       output)
 
@@ -1270,27 +1304,53 @@ class ImportCase(unittest.TestCase):
     def setUp(self) -> None:
         self.import_script = load_script("upstream-import.py")
 
+    def layout(self):
+        """The shape this tree has, which decides which declarations are the tree's own."""
+        return self.import_script.detect_layout(REPO_ROOT)
+
     def test_every_owned_prefix_exists_in_this_repository(self) -> None:
-        """A typo in the owned list would make the checker accept an unexplained file."""
-        missing = [entry for entry in self.import_script.OWNED if not (REPO_ROOT / entry).exists()]
+        """A typo in an owned list would make the checker accept an unexplained file.
+
+        Which list is the tree's own is the layout's answer: in the root layout the prefixes the
+        importer spells out, and in the directory layout none at all -- the carry's own directory is
+        the boundary there, and a list would be a second spelling of it.
+        """
+        owned = self.import_script.owned_prefixes(self.layout())
+        if self.layout().carry:
+            self.assertEqual(owned, (), "the directory layout declares no owned prefix")
+        missing = [entry for entry in owned if not (REPO_ROOT / entry).exists()]
         self.assertEqual(missing, [], f"owned entries with no path in the tree: {missing}")
 
     def test_the_owned_list_and_the_manifest_agree(self) -> None:
         manifest = load_script("upstream_manifest.py").load_manifest(REPO_ROOT / MANIFEST)
-        self.assertEqual(sorted(manifest.owned), sorted(self.import_script.OWNED))
+        self.assertEqual(sorted(manifest.owned),
+                         sorted(self.import_script.owned_prefixes(self.layout())))
 
-    def test_every_carried_path_is_skipped_for_a_stated_reason(self) -> None:
-        for path in (".gitignore", "AGENTS.md", "README.md", "docs/README.md"):
-            self.assertIn("project-owned", self.import_script.skip_reason(path))
-        self.assertIn("CI definitions", self.import_script.skip_reason(".github/workflows/ci.yml"))
-        self.assertEqual(self.import_script.skip_reason("internal/parser/claude.go"), "")
+    def test_every_path_this_shape_declares_has_a_stated_reason(self) -> None:
+        layout = self.layout()
+        for path in self.import_script.skip_reasons(layout):
+            self.assertTrue(self.import_script.skip_reason(path, layout).strip(), path)
+        if not layout.carry:
+            for path in (".gitignore", "AGENTS.md", "README.md", "docs/README.md"):
+                self.assertIn("project-owned", self.import_script.skip_reason(path, layout))
+            self.assertIn("CI definitions",
+                          self.import_script.skip_reason(".github/workflows/ci.yml", layout))
+        self.assertEqual(self.import_script.skip_reason("internal/parser/claude.go", layout), "")
 
     def test_no_carried_path_is_declared_project_owned(self) -> None:
-        """The importer must not carry a path this repository claims to own, or vice versa."""
+        """The importer must not carry a path this repository claims to own, or vice versa.
+
+        The two halves are read in the shape's own terms: at the root layout a carried record's path
+        must not match an owned prefix, and at the directory layout -- where nothing outside the carry
+        directory is a record at all -- no carried record may be declared a skip. The record paths are
+        *upstream* paths in both, which is why the owned question is asked about the tree path.
+        """
         manifest = load_script("upstream_manifest.py").load_manifest(REPO_ROOT / MANIFEST)
+        layout = self.layout()
         for record in manifest.files:
-            self.assertFalse(manifest.is_owned(record.path), record.path)
-            self.assertEqual(self.import_script.skip_reason(record.path), "", record.path)
+            if not layout.carry:
+                self.assertFalse(manifest.is_owned(record.path), record.path)
+            self.assertEqual(self.import_script.skip_reason(record.path, layout), "", record.path)
 
     def test_the_importer_refuses_a_pin_that_is_not_the_checkouts_head(self) -> None:
         """A pin that is not the checkout's HEAD must stop the import, named as such.
@@ -1343,7 +1403,7 @@ class ImportWriteCase(unittest.TestCase):
     def setUp(self) -> None:
         self.import_script = load_script("upstream-import.py")
         self.manifest_module = load_script("upstream_manifest.py")
-        self.root = Path(tempfile.mkdtemp(prefix="import-root-"))
+        self.root = scratch_tree("import-root-")
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
     def entry(self, path: str, data: bytes, mode: str = "100644"):
@@ -1402,7 +1462,9 @@ class ImportWriteCase(unittest.TestCase):
         self.write([entry], contents)
         self.assertEqual((self.root / path).read_bytes(), b"upstream\nreadme\n")
 
-        record = self.import_script.deviation_record("100644", blob_sha1(upstream), upstream, path)
+        layout = self.import_script.detect_layout(REPO_ROOT)
+        record = self.import_script.deviation_record("100644", blob_sha1(upstream), upstream, path,
+                                                     layout)
         self.assertEqual(record.stored_digest, blob_sha1(b"upstream\nreadme\n"))
         self.assertEqual(record.stored_size, len(b"upstream\nreadme\n"))
 
@@ -1414,6 +1476,33 @@ class ImportWriteCase(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised:
             self.write([entry], contents)
         self.assertIn("carry it as a file instead", str(raised.exception))
+
+
+class ScratchTreeCase(unittest.TestCase):
+    """The suite's own scratch trees stay outside the repository: the ``parity-root-*`` leak's rule."""
+
+    def setUp(self) -> None:
+        self.addCleanup(setattr, tempfile, "tempdir", tempfile.tempdir)
+
+    def test_a_temp_root_inside_the_repository_is_refused(self) -> None:
+        inside = REPO_ROOT / "scratch-tmp-for-parity-cases"
+        inside.mkdir(exist_ok=True)
+        try:
+            tempfile.tempdir = str(inside)
+            root = scratch_tree("parity-root-")
+        finally:
+            shutil.rmtree(inside, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.assertTrue(root.is_absolute(), root)
+        self.assertNotEqual(root, REPO_ROOT)
+        self.assertNotIn(REPO_ROOT, root.parents)
+
+    def test_a_relative_temp_root_does_not_land_under_the_current_directory(self) -> None:
+        tempfile.tempdir = "relative-parity-scratch"
+        root = scratch_tree("parity-root-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.assertTrue(root.is_absolute(), root)
+        self.assertNotIn(REPO_ROOT, root.parents)
 
 
 class ManifestCase(unittest.TestCase):
@@ -1477,12 +1566,35 @@ class RepositoryCase(unittest.TestCase):
         self.assertRegex(manifest.header["pin"], re.compile(r"^[0-9a-f]{40}$"))
         self.assertEqual(manifest.header["carried"], str(len(manifest.files)))
         self.assertTrue(any(record.path == SNAPSHOT for record in manifest.inputs))
-        pinned = module.pinned_snapshot_sha256(REPO_ROOT / TOOL)
+        pinned = module.pinned_snapshot_sha256(REPO_ROOT / manifest.tree_path(TOOL))
         self.assertTrue(pinned, "the carried snapshot tool no longer pins a SHA-256")
         recorded = next(record.digest for record in manifest.inputs if record.path == SNAPSHOT)
         self.assertEqual(recorded, pinned)
-        for path in ("cmd/ccc/", "internal/ccc/", "docs/plans/", "scripts/tests/"):
+        for path in ("ccc/cmd/ccc/", "ccc/internal/ccc/", "docs/plans/", "scripts/tests/"):
             self.assertTrue(manifest.is_owned(path), path)
+        self.assertFalse(manifest.is_owned(manifest.tree_path("internal/parser/parser.go")),
+                         "a carried record's own path must not read as project-owned")
+
+    def test_the_two_modules_declare_one_go_directive(self) -> None:
+        """The workflow builds with ``ccc/go.mod``; a carry needing a newer Go must be noticed here.
+
+        ``docs/harness.md`` §CI states the claim -- the workflow, this repository's module and the
+        carried tree cannot disagree about the toolchain -- and this is the half a case can hold: in
+        the directory layout the two ``go.mod`` files state one ``go`` directive, and this module's
+        file declares the layout's one edge (the module path, the requirement, the replace). A pin
+        update that raised the carried module's directive without raising ours would leave CI building
+        our module with a toolchain the carried code does not accept.
+        """
+        layout = load_script("upstream_manifest.py").detect_layout(REPO_ROOT)
+        if not layout.carry:
+            self.skipTest("the root layout has one module: no second directive to compare")
+        ours = (REPO_ROOT / layout.module / "go.mod").read_text(encoding="utf-8")
+        carried = (REPO_ROOT / layout.carry / "go.mod").read_text(encoding="utf-8")
+        self.assertEqual(re.search(r"^go (\S+)$", ours, re.M).group(1),
+                         re.search(r"^go (\S+)$", carried, re.M).group(1))
+        self.assertIn("module go.kenn.io/agentsview/ccc", ours)
+        self.assertIn("replace go.kenn.io/agentsview => ../agentsview", ours)
+        self.assertNotIn("go.work", {p.name for p in REPO_ROOT.iterdir()})
 
     def test_the_declared_normalisation_records_the_bytes_this_tree_stores(self) -> None:
         """The one path upstream's attribute file rewrites must pin the bytes this tree stores.
@@ -1499,7 +1611,7 @@ class RepositoryCase(unittest.TestCase):
                          sorted(load_script("upstream-import.py").NORMALISED))
         for path, record in normalised.items():
             self.assertNotEqual(record.stored_digest, record.digest, path)
-            digest, size, _ = module.hashed_path(REPO_ROOT, path)
+            digest, size, _ = module.hashed_path(REPO_ROOT, manifest.tree_path(path))
             forms = {record.stored_digest: record.stored_size, record.digest: record.size}
             self.assertIn(digest, forms, f"{path} holds bytes the manifest does not name")
             self.assertEqual(forms[digest], size, path)
@@ -1524,7 +1636,7 @@ class CompareCheckoutCase(unittest.TestCase):
         return run
 
     def checkout(self, status_output: str) -> Path:
-        directory = tempfile.TemporaryDirectory(prefix="compare-checkout-")
+        directory = tempfile.TemporaryDirectory(prefix="compare-checkout-", dir=str(scratch_tree("compare-base-")))
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
         (root / ".git").mkdir()

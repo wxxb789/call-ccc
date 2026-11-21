@@ -20,5 +20,5 @@ implementing a goal must not silently weaken the Core Design.
 This repository keeps the AgentsView reader, parser and SQLite archive **source-identical** to the
 pinned upstream revision — verified on every gate run by `scripts/upstream-parity.py` — and adds a
 separately reusable continuation engine plus a thin CLI beside it. Upstream's own guides are carried
-with its code (`docs/agents/*`) and govern changes to carried files; this repository's rules govern
+with its code (`agentsview/docs/agents/*`) and govern changes to carried files; this repository's rules govern
 everything else.

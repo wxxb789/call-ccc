@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """call/ccc project gate — one command, real exit codes, no network.
 
-Steps, in order: gofmt, build, vet, test, selftest, parity, citations, secrets.
+Steps, in order: gofmt, build, vet, test, portability, selftest, parity, citations, secrets.
 Exit 0 only when every step that RAN passed. A step that could not run prints
 SKIP/BOUNDARY with its reason, a step whose hook is not in the tree prints N/A,
 and none of the three is counted as a pass: the verdict line names every one of
@@ -9,6 +9,17 @@ them, so a run that never checked something cannot read as a full ``GATE: PASS``
 -- it says ``GATE: PASS (partial: ...)``. A step named in
 scripts/gate-required.txt must be PASS: any other status -- FAIL, SKIP, BOUNDARY
 or N/A -- is rewritten to FAIL before the verdict, so it exits 1.
+
+The Go steps are handed a *module directory*: this tree's own Go module, whose
+directory is read from the tree's own ``go.mod`` files (``upstream_manifest``'s
+``detect_layout``), so the same targets mean the same packages in either layout
+this repository has had -- the module at the root beside the carry, or the carry
+in ``agentsview/`` beside the module in ``ccc/``. ``gofmt`` stays one step over
+every tracked ``*.go`` file: formatting has no module boundary, and splitting it
+would only narrow the check. The ``portability`` step is the one that uses the
+network (``scripts/portability.py``: build and test this module against a
+pristine checkout of the pin); it is not required, and a host that cannot fetch
+one is disclosed in the verdict line rather than passed.
 
 Knobs (in-repo, auditable):
   scripts/gate-targets.txt    Go package patterns for build/vet/test; absent = ./...
@@ -18,11 +29,14 @@ Knobs (in-repo, auditable):
   scripts/gate-required.txt   steps that MUST be PASS; a listed step that is
                               skipped, unavailable or a platform boundary fails
   scripts/upstream-parity.py  source-side parity check, run when present
+  scripts/portability.py      this module against a pristine pinned carry, run when present
   scripts/obligation-citations.py  the obligation manifests under docs/evidence/, run when present
   scripts/tests/              stdlib-unittest regression tests for this gate,
                               run by the selftest step
   CALLCCC_GATE_ROOT           run against another tree (used by
                               scripts/tests/test_gate.py); defaults to this repo
+  CCC_UPSTREAM_DIR / CCC_UPSTREAM_CACHE  where the portability step takes its pinned checkout from
+                              (read by scripts/portability.py; see docs/harness.md)
 
 The platform boundary and the reason behind each status are stated in
 docs/harness.md; this file implements them.
@@ -40,11 +54,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from upstream_manifest import ManifestError, load_manifest  # noqa: E402  (path set up above)
+from upstream_manifest import (  # noqa: E402  (path set up above)
+    ManifestError,
+    detect_layout,
+    load_manifest,
+)
 
 ROOT = Path(os.environ.get("CALLCCC_GATE_ROOT") or Path(__file__).resolve().parent.parent).resolve()
 PASS, FAIL, SKIP, BOUNDARY, NA = "PASS", "FAIL", "SKIP", "BOUNDARY", "N/A"
-KNOWN_STEPS = ("gofmt", "build", "vet", "test", "selftest", "parity", "citations", "secrets")
+KNOWN_STEPS = ("gofmt", "build", "vet", "test", "portability", "selftest", "parity", "citations",
+               "secrets")
 
 #: How many characters of ``*.go`` paths one ``gofmt`` invocation may carry. Windows caps a process
 #: command line at 32 767 characters, and the carried tree's file list is far past that, so the step
@@ -57,6 +76,12 @@ GOFMT_BATCH_CHARS = 8000
 #: reach is one it still has time to answer on, and this budget is only the backstop for a checker that
 #: could not report at all (its ``TimeoutExpired`` is caught and answered as FAIL, below).
 CITATIONS_TIMEOUT = 3600 + 300
+
+#: The portability step's budget. The checker fetches a pinned checkout when it has none cached
+#: (network) and then builds and tests this module against it, which on a cold runner is minutes; this
+#: is the backstop for a run that ends without a verdict, answered as FAIL below -- a bound the checker
+#: reaches is not a pass either.
+PORTABILITY_TIMEOUT = 3600
 
 
 def read_list(name: str) -> list[str]:
@@ -71,12 +96,13 @@ def read_list(name: str) -> list[str]:
     return items
 
 
-def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = 1800):
+def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = 1800,
+        cwd: Path | None = None):
     merged = os.environ.copy()
     merged.update(env or {})
     try:
         return subprocess.run(
-            cmd, cwd=str(ROOT), env=merged, capture_output=True, text=True, timeout=timeout
+            cmd, cwd=str(cwd or ROOT), env=merged, capture_output=True, text=True, timeout=timeout
         )
     except OSError as exc:
         # A missing binary is a step result, not a crash: report it as rc=127. Every other OSError --
@@ -127,6 +153,25 @@ def tracked_go_files() -> list[str]:
 
 def go_targets() -> list[str]:
     return read_list("gate-targets.txt") or ["./..."]
+
+
+def module_dir() -> Path:
+    """The directory of this repository's own Go module, as this tree's ``go.mod`` files state it.
+
+    The layout is read off the tree (``upstream_manifest.detect_layout``) rather than configured: in
+    the layout this repository had first, that module is the repository root and the carried tree sits
+    beside our packages; in the layout it moved to, the carried tree has a directory of its own
+    (``agentsview/``) and this module is ``ccc/`` with its own ``go.mod``. A throw-away tree with one
+    ``go.mod`` at its root answers the root layout, which is what the gate's own cases build.
+    """
+    return ROOT / detect_layout(ROOT).module
+
+
+def module_spelling(directory: Path) -> str:
+    """``directory`` relative to the tree, or ``.`` when it *is* the tree."""
+    if directory == ROOT:
+        return "."
+    return directory.relative_to(ROOT).as_posix()
 
 
 def go_flags() -> list[str]:
@@ -200,11 +245,12 @@ def step_gofmt(go_files: list[str]) -> tuple[str, str]:
 
 
 def step_go(
-    sub: str, go_files: list[str], boundary: str | None, targets: list[str], flags: list[str]
+    sub: str, go_files: list[str], boundary: str | None, targets: list[str], flags: list[str],
+    module: Path,
 ) -> tuple[str, str]:
     name = {"build": "go build", "vet": "go vet", "test": "go test -count=1"}[sub]
-    if not (ROOT / "go.mod").exists():
-        return SKIP, "no go.mod yet"
+    if not (module / "go.mod").exists():
+        return SKIP, f"no go.mod in {module_spelling(module)} yet"
     if not go_files:
         return SKIP, "no Go sources in the tree yet"
     if boundary:
@@ -216,14 +262,17 @@ def step_go(
         cmd = ["go", "test", "-count=1", *flags, *targets]
     else:
         cmd = ["go", sub, *flags, *targets]
-    proc = run(cmd, env=env)
+    proc = run(cmd, env=env, cwd=module)
     detail = tail((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else ""))
+    # The command is run *in the module*, so a failure's paths are the module's own; the detail names
+    # which module answered (the step's name cannot: the step names the tool, not the tree).
+    where = "" if module == ROOT else f" (in {module_spelling(module)})"
     if proc.returncode != 0:
-        return FAIL, f"{name} {' '.join(targets)} -> rc={proc.returncode}\n{detail}"
+        return FAIL, f"{name} {' '.join(targets)}{where} -> rc={proc.returncode}\n{detail}"
     if sub == "test":
         passed = sum(1 for line in (proc.stdout or "").splitlines() if line.startswith("ok "))
-        return PASS, f"{passed} package(s) ok"
-    return PASS, f"{name} {' '.join(targets)} -> rc=0"
+        return PASS, f"{passed} package(s) ok{where}"
+    return PASS, f"{name} {' '.join(targets)}{where} -> rc=0"
 
 
 def step_selftest() -> tuple[str, str]:
@@ -375,15 +424,54 @@ def step_secrets() -> tuple[str, str]:
     return SKIP, f"gitleaks did not complete (rc={proc.returncode}): " + tail(proc.stderr, 400)
 
 
+def step_portability() -> tuple[str, str]:
+    """This module, built and tested against a pristine checkout of the pin.
+
+    ``scripts/portability.py`` is the checker (its own docstring states what it does and does not
+    prove); it is the one step that needs the network -- to fetch the pinned checkout when the host
+    has none cached -- and it is deliberately **not** in ``gate-required.txt``: the gate's subject is
+    this tree, and a host that cannot reach the pin would then fail a tree with nothing wrong with it.
+    What it must not do is pass quietly: an exit code of 2 is the checker saying it could not run, and
+    that is reported as SKIP with the checker's own reason, so the verdict line names it and a run
+    that never checked portability cannot read as a full pass. Any other non-zero code is a failure,
+    and a run that ends without a verdict at all (the timeout) is one too.
+    """
+    script = ROOT / "scripts" / "portability.py"
+    if not script.exists():
+        return NA, "no scripts/portability.py in this tree yet"
+    try:
+        proc = run([sys.executable, str(script)], timeout=PORTABILITY_TIMEOUT)
+    except subprocess.TimeoutExpired as expired:
+        out = expired.stdout if isinstance(expired.stdout, str) else ""
+        return FAIL, (
+            f"portability.py -> no verdict within {PORTABILITY_TIMEOUT} s\n" + tail(out, 400)
+        )
+    text = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode == 0:
+        return PASS, tail(proc.stdout, 800).replace("\n", " | ") or "rc=0"
+    if proc.returncode == 2:
+        verdicts = [
+            line for line in (proc.stdout or "").splitlines()
+            if line.startswith("portability: INCOMPLETE")
+        ]
+        reason = verdicts[-1] if verdicts else "portability.py could not run here"
+        return SKIP, reason + " — " + tail(
+            "\n".join(line for line in (proc.stdout or "").splitlines()
+                      if line.startswith("  not checked:")), 300)
+    return FAIL, tail(text, 1500)
+
+
 def build_steps() -> list[tuple[str, str, str]]:
     go_files = tracked_go_files()
     targets = go_targets()
     flags = go_flags()
+    module = module_dir()
     _, boundary = go_env()
     steps: list[tuple[str, str, str]] = []
     steps.append(("gofmt", *step_gofmt(go_files)))
     for sub in ("build", "vet", "test"):
-        steps.append((sub, *step_go(sub, go_files, boundary, targets, flags)))
+        steps.append((sub, *step_go(sub, go_files, boundary, targets, flags, module)))
+    steps.append(("portability", *step_portability()))
     steps.append(("selftest", *step_selftest()))
     steps.append(("parity", *step_parity()))
     steps.append(("citations", *step_citations()))
@@ -415,9 +503,10 @@ def main() -> int:
         steps.append((f"required:{name}", FAIL, f"gate-required.txt names an unknown step: {name}"))
 
     print(f"gate: {ROOT}")
-    print(f"gate: go={shutil.which('go') or 'missing'} targets={' '.join(go_targets())}")
+    print(f"gate: go={shutil.which('go') or 'missing'} module={module_spelling(module_dir())} "
+          f"targets={' '.join(go_targets())}")
     for name, status, detail in steps:
-        print(f"  {status:<8} {name:<8} {detail}")
+        print(f"  {status:<8} {name:<11} {detail}")
 
     failed = [s[0] for s in steps if s[1] == FAIL]
     if failed:

@@ -308,6 +308,7 @@ class GateCase(GateTree, unittest.TestCase):
             ("build", "SKIP"),
             ("vet", "SKIP"),
             ("test", "SKIP"),
+            ("portability", "N/A"),
             ("selftest", "SKIP"),
             ("parity", "N/A"),
             ("citations", "N/A"),
@@ -316,7 +317,8 @@ class GateCase(GateTree, unittest.TestCase):
             self.assertEqual(self.step_line(proc.stdout, step)[0], status, proc.stdout)
         self.assertEqual(
             self.partial_steps(proc.stdout),
-            ["gofmt", "build", "vet", "test", "selftest", "parity", "citations", "secrets"],
+            ["gofmt", "build", "vet", "test", "portability", "selftest", "parity", "citations",
+             "secrets"],
             proc.stdout,
         )
 
@@ -338,7 +340,8 @@ class GateCase(GateTree, unittest.TestCase):
         ]
         self.assertEqual(
             names,
-            ["gofmt", "build", "vet", "test", "selftest", "parity", "citations", "secrets"],
+            ["gofmt", "build", "vet", "test", "portability", "selftest", "parity", "citations",
+             "secrets"],
             proc.stdout,
         )
         gate = load_shipped_gate()
@@ -462,9 +465,12 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.assertEqual(self.step_line(text, "gofmt")[0], "PASS", text)
         self.assertEqual(
             self.partial_steps(text),
-            ["build", "vet", "test", "selftest", "parity", "citations", "secrets"],
+            ["build", "vet", "test", "portability", "selftest", "parity", "citations", "secrets"],
             text,
         )
+        # The portability step is N/A here for its own reason: this throw-away tree has no
+        # ``scripts/portability.py`` -- and the verdict names it for that, like every other status.
+        self.assertEqual(self.step_line(text, "portability")[0], "N/A", text)
 
     def test_gofmt_failure_results_are_failures_not_skips(self) -> None:
         """``gofmt -l`` naming a file, or ``gofmt`` itself failing, is a FAIL.
@@ -591,7 +597,7 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.write("main.go", "package main\n")
         seen: list[list[str]] = []
 
-        def refusing(cmd, env=None, timeout=1800):
+        def refusing(cmd, env=None, timeout=1800, cwd=None):
             seen.append(list(cmd))
             return tool_result(cmd, 1, "", "boom\n")
 
@@ -623,7 +629,7 @@ class GateProbeCase(GateTree, unittest.TestCase):
         )
         seen: list[list[str]] = []
 
-        def accepting(cmd, env=None, timeout=1800):
+        def accepting(cmd, env=None, timeout=1800, cwd=None):
             if cmd[0] == "go":
                 seen.append(list(cmd))
             return tool_result(cmd)
@@ -642,6 +648,39 @@ class GateProbeCase(GateTree, unittest.TestCase):
         for step in ("build", "vet", "test"):
             self.assertEqual(self.step_line(text, step)[0], "PASS", text)
 
+    def test_the_go_steps_run_in_this_trees_own_module(self) -> None:
+        """The directory layout: the carry in ``agentsview/``, this repository's module in ``ccc/``.
+
+        The layout is read off the tree's own ``go.mod`` files, so the same targets mean the same
+        packages in either shape; where the command *ran* is the half the shape decides, and the
+        step's own detail names it -- a run that built something other than this module cannot read
+        as a run of this module.
+        """
+        self.write("agentsview/go.mod", "module go.kenn.io/agentsview\n\ngo 1.27.4\n")
+        self.write("ccc/go.mod", "module go.kenn.io/agentsview/ccc\n\ngo 1.27.4\n")
+        self.write("ccc/main.go", "package main\n")
+        self.stub("go")
+        seen: list[tuple[list[str], str]] = []
+
+        def accepting(cmd, env=None, timeout=1800, cwd=None):
+            if cmd[0] == "go":
+                seen.append((list(cmd), str(cwd)))
+            return tool_result(cmd)
+
+        rc, text = self.run_in_process(tracked_go_files=lambda: ["ccc/main.go"], run=accepting)
+        self.assertEqual(rc, 0, text)
+        self.assertEqual([cmd for cmd, _ in seen], [
+            ["go", "build", "./..."],
+            ["go", "vet", "./..."],
+            ["go", "test", "-count=1", "./..."],
+        ], text)
+        for _, cwd in seen:
+            self.assertEqual(Path(cwd), self.root / "ccc", text)
+        for step in ("build", "vet", "test"):
+            status, detail = self.step_line(text, step)
+            self.assertEqual(status, "PASS", text)
+            self.assertIn("(in ccc)", detail, text)
+
     def test_gate_goflags_file_is_folded_into_the_go_commands(self) -> None:
         """``scripts/gate-goflags.txt`` reaches build/vet/test, ahead of the targets.
 
@@ -656,7 +695,7 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.write("scripts/gate-targets.txt", "./cmd/ccc/...\n")
         seen: list[list[str]] = []
 
-        def accepting(cmd, env=None, timeout=1800):
+        def accepting(cmd, env=None, timeout=1800, cwd=None):
             if cmd[0] == "go":
                 seen.append(list(cmd))
             return tool_result(cmd)
@@ -750,7 +789,7 @@ class GateProbeCase(GateTree, unittest.TestCase):
         seen: list[list[str]] = []
         scopes: list[Path] = []
 
-        def accepting(cmd, env=None, timeout=1800):
+        def accepting(cmd, env=None, timeout=1800, cwd=None):
             if cmd[0] == "gitleaks":
                 seen.append(list(cmd))
                 source = Path(cmd[cmd.index("--source") + 1])
@@ -773,7 +812,7 @@ class GateProbeCase(GateTree, unittest.TestCase):
         self.write("loose.txt", "no manifest here\n")
         seen: list[list[str]] = []
 
-        def accepting(cmd, env=None, timeout=1800):
+        def accepting(cmd, env=None, timeout=1800, cwd=None):
             if cmd[0] == "gitleaks":
                 seen.append(list(cmd))
             return tool_result(cmd)

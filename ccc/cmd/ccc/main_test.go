@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.kenn.io/agentsview/internal/ccc"
+	"go.kenn.io/agentsview/ccc/internal/ccc"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
 )
