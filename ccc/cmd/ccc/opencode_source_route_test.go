@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.kenn.io/agentsview/internal/ccc/opencodefixture"
+	"go.kenn.io/agentsview/ccc/internal/ccc/opencodefixture"
 	"go.kenn.io/agentsview/internal/pathutil"
 )
 

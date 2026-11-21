@@ -16,7 +16,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"go.kenn.io/agentsview/internal/ccc/parity"
+	"go.kenn.io/agentsview/ccc/internal/ccc/parity"
 )
 
 func main() {

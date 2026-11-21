@@ -11,13 +11,31 @@ python3 scripts/gate.py     # must print GATE: PASS; CI runs this same file
 | Step | Tool | What it proves |
 | --- | --- | --- |
 | `gofmt` | `gofmt -l` over the tree's `*.go` (below) | formatting is not drifting |
-| `build` | `go build <flags> <targets>` with `CGO_ENABLED=1` | the tree compiles with the inherited SQLite driver |
-| `vet` | `go vet <flags> <targets>` | no obvious static defects |
-| `test` | `go test -count=1 <flags> <targets>` | the tests actually run and pass |
+| `build` | `go build <flags> <targets>` with `CGO_ENABLED=1`, **in this repository's module** | the tree compiles with the inherited SQLite driver |
+| `vet` | `go vet <flags> <targets>`, in the same module | no obvious static defects |
+| `test` | `go test -count=1 <flags> <targets>`, in the same module | the tests actually run and pass |
+| `portability` | `scripts/portability.py` (network) | this module builds and tests against a *pristine* checkout of the pin, not only against the carry in the tree |
 | `selftest` | `python3 -m unittest discover -s scripts/tests` | the harness's own rules still hold |
 | `parity` | `scripts/upstream-parity.py` (required) | every carried AgentsView file still matches the pinned revision |
 | `citations` | `scripts/obligation-citations.py` (required) | every row of every `docs/evidence/*-citations.tsv` cites a Go test that runs and passes |
 | `secrets` | `gitleaks detect --no-git --source <scope>` when available | no credentials in the files this repository owns |
+
+The layout the tree has decides *where* the Go steps run, never what they check. This repository's
+own module is at the root in the shape it began with (the carried tree beside our packages, one
+module) and in `ccc/` in the shape it moved to (the carried tree in `agentsview/`, two modules); the
+directory is read from the tree's own `go.mod` files (`upstream_manifest.detect_layout`), and the
+step's own line names it (`...(in ccc)`), so a run that built something other than this module cannot
+read as a run of this module. `scripts/gate-targets.txt`'s patterns are the module's own
+(`./cmd/ccc/...`), which is why they mean the same packages in either shape. `gofmt` is the one Go
+step that stays whole-tree: formatting has no module boundary, and splitting it would only narrow a
+check that costs nothing.
+
+The `portability` step is the one step that uses the network, and it is deliberately **not** required
+(`scripts/gate-required.txt`): its subject is a second checkout of the pin, which a host may have no
+way of getting, and a tree with nothing wrong with it must not fail for that. It cannot pass quietly
+either: the checker's exit code 2 is "could not run here" and the step reports it as a disclosed SKIP
+carrying the checker's own reason, so the verdict line names it and a run that never checked
+portability cannot read as a full pass. What it does is described under `portability` below.
 
 `gofmt` is the one step that also has to answer in a tree without git: it takes `git ls-files '*.go'`
 when the tree is a repository (the normal case, CI included), and otherwise walks the tree skipping
@@ -75,8 +93,12 @@ procedure; `scripts/upstream-manifest.txt` is the machine-readable record. The s
 
 It verifies, in this order:
 
-1. `docs/upstream.md` records the pin, and `cmd/ccc/pin.go` reports it, so the revision the binary
-   claims cannot drift from the revision the manifest describes;
+1. the manifest's `layout` line is the shape this tree's own `go.mod` files have (the ledger and the
+   tree cannot disagree about where the carried tree sits), `docs/upstream.md` records the pin, and
+   `ccc/cmd/ccc/pin.go` reports it, so the revision the binary claims cannot drift from the revision
+   the manifest describes. Every carried path is a *tree* path: a record names the upstream path and
+   the layout is what turns it into `agentsview/<path>`, which is the path every hash, index and
+   ignore question is asked about and the path a failure names;
 2. every carried path is what git stores for it (`git ls-files -s`, i.e. what a fresh clone receives,
    with `.gitattributes` filters applied) — or, in a tree without git, what its bytes hash to;
 3. every carried path's **working tree copy** holds the pinned bytes, shape and executable bit — hashed
@@ -113,7 +135,10 @@ It verifies, in this order:
 4. no carried path matches the tree's ignore rules, which would make `git add` skip it in a fresh
    clone;
 5. nothing git would add sits inside the tree unexplained: a tracked or untracked-but-not-ignored
-   path is either named by the manifest or inside a prefix the manifest calls project-owned;
+   path is either named by the manifest or this repository's own. Which that is comes from the
+   layout: where the carry has a directory of its own, everything outside `agentsview/` is ours by
+   construction (the boundary *is* the rule, and the ledger needs no list), and in the root layout
+   the `owned` prefixes the ledger spells out are the answer;
 6. every declared deviation still holds what the manifest declares, read from the working tree (what
    the gate actually gated) and from git's index where git is available — a project-owned file that
    has quietly become upstream's copy is a stale declaration whether it was staged or only written on
@@ -131,7 +156,7 @@ It verifies, in this order:
 7. the generated build input hashes to the SHA-256 that the carried snapshot tool pins in its own
    source, so the input is verified against upstream's pin rather than a second hard-coded copy — and,
    where git answers, that the **index** carries it: its presence there, the mode it stores and the blob
-   its own bytes hash to. The carried `internal/pricing/snapshot/.gitignore` keeps the file out of every
+   its own bytes hash to. The carried `agentsview/internal/pricing/snapshot/.gitignore` keeps the file out of every
    untracked listing, so a copy that is present on disk and ignored is compatible with every other rule
    here while a fresh clone receives nothing for the carried `go:embed` to compile.
 
@@ -169,6 +194,50 @@ be *clean* at the pin, exactly as the importer requires: the dumps are attribute
 `--record` rewrites the committed oracle with them. `internal/ccc/parity/testdata/oracle/*.json` holds
 the dumps a pristine checkout produced; the ordinary test suite re-checks this tree against them
 offline. The increment's evidence record holds a run of it with its hashes.
+
+## `portability`: this module against a pristine carry
+
+The gate's `build`/`vet`/`test` steps compile this repository's module against the carry **as it sits
+in the tree** — bytes the required `parity` step has proved to be the pin's, but on its own terms.
+`scripts/portability.py` answers the other question the two-directory layout exists for: is the carried
+module a leaf the layout's single edge can be re-aimed at? It takes a pristine checkout of the pin,
+rewrites the module's one edge (`replace go.kenn.io/agentsview => …`) to point at that checkout instead
+of the in-tree carry, and then builds and tests *this tree's own* module against it:
+
+```bash
+python3 scripts/portability.py                 # use the cache, fetching the pin if necessary
+python3 scripts/portability.py --upstream DIR  # an existing clean checkout of the pin
+```
+
+The module's own files are the ones tested — nothing is copied — through Go's `-modfile` switch: an
+alternate `go.mod` (and its `.sum`) is written into a scratch directory **outside this tree** holding
+the rewritten `replace`, and `go build`/`go test` run in the module's own directory
+(`ccc/`) with `-modfile=<scratch>`, with the same targets and flags the gate's Go steps use (read
+through `scripts/gate.py`'s own module). The repository is never written to; a checkout a caller
+handed over is never written to either, and one this run fetched itself gets the generated build input
+upstream's Makefile restores (from this tree's copy, whose SHA-256 the carried tool pins and the
+`parity` step verifies); the scratch is removed unless `--keep` says otherwise. The scratch is also
+where the `parity-root-*` class of leak is closed: a relative `TMPDIR` — the shape that once left 81
+scratch directories in the repository root — is refused, and the platform's own scratch root is taken
+instead, because a scratch tree inside the repository would be an unexplained path to the `parity`
+step.
+
+A checkout that is *used* is verified first: it is a git checkout, its `HEAD` is the pin, and
+`git status --porcelain` is empty — the same three answers `scripts/upstream-compare.py` requires
+before it attributes a dump to the pin, and the reason a result from this run may be attributed to
+that revision at all. A checkout a caller supplied that fails them is a **failure**, not a skip: the
+run was asked to use it. The checkout comes from `--upstream DIR`, `CCC_UPSTREAM_DIR`, or the cache at
+`CCC_UPSTREAM_CACHE` (default: this platform's cache directory, `ccc-upstream/<pin>`), fetched with
+`git clone --filter=blob:none --no-checkout` plus `git checkout --detach <pin>` when it is not there
+yet. A cache that is not a clean checkout at the pin is named and **not deleted** — it may be
+somebody's working copy — and a host that can fetch neither is exit code `2`, which the gate discloses
+as a SKIP naming it; a build or test that fails is exit code `1`, a failed step of its own.
+
+Two limits are stated rather than hidden. The step proves this module builds against the pin's bytes;
+it does **not** re-prove that the carry in the tree is those bytes (that is `parity`'s subject), and it
+does not run the carry's own test suites (upstream's CI and `docs/upstream.md`'s update procedure own
+those). It is not a required step, so a run whose portability step SKIPped prints
+`GATE: PASS (partial: portability did not run — …)` and can never be quoted as a full pass.
 
 ## `citations`: the obligation manifests
 
@@ -239,19 +308,22 @@ skipped step is a failure when it is required and a disclosed partial run when i
 
 ## `secrets`: what it scans, and what it does not
 
-The scan reads the files this repository **owns** — the prefixes the carry manifest records as
-project-owned — staged into a throw-away directory so `--no-git` still means "current files only,
-untracked and gitignored files included" within that scope. The carried AgentsView tree is not
-scanned here: it is upstream's content, byte-verified by the `parity` step, and upstream's own
-secret-detector corpora (`internal/secrets/rules_test.go` and friends) exist precisely to contain
-credential shapes. The step's PASS line states the scope and the file count, so a run can never be
+The scan reads the files this repository **owns** — everything the carry manifest answers `is_owned`
+for: in the layout this repository moved to, every path outside `agentsview/` (the boundary is the
+rule), and in the root layout the `owned` prefixes the ledger spells out — staged into a throw-away
+directory so `--no-git` still means "current files only, untracked and gitignored files included"
+within that scope. The carried AgentsView tree is not scanned here: it is upstream's content,
+byte-verified by the `parity` step, and upstream's own secret-detector corpora
+(`agentsview/internal/secrets/rules_test.go` and friends) exist precisely to contain credential
+shapes. The step's PASS line states the scope and the file count, so a run can never be
 read as having scanned more than it did. A tree with no readable carry manifest is scanned whole, and
 says so.
 
 ## Knobs (all in-repo, all auditable)
 
 - `scripts/gate-targets.txt` — one Go package pattern per line (`#` comments allowed) for build/vet/
-  test. Absent means `./...`.
+  test, spelled inside this repository's own module (the gate runs the commands there, which is why
+  `./cmd/ccc/...` means the same packages in either layout). Absent means `./...`.
 - `scripts/gate-goflags.txt` — extra Go flags, one per line, folded into build/vet/test ahead of the
   targets. It carries `-tags fts5`, which is not cosmetic: without it the inherited SQLite driver has
   no FTS5 module, so a binary built here could not load an archive that has a full-text index, and
@@ -261,6 +333,9 @@ says so.
   `citations` and `selftest`. The Go steps are deliberately *not* listed: on Windows without a C compiler
   they are a disclosed platform boundary (below), not a failure.
 - `scripts/upstream-parity.py` — the source-side parity check (above).
+- `scripts/portability.py` — the portability check (below). `CCC_UPSTREAM_DIR` names an existing
+  clean checkout of the pin to build against; `CCC_UPSTREAM_CACHE` moves the cache the checker fetches
+  into (default: this platform's cache directory, `ccc-upstream/<pin>`).
 - `scripts/obligation-citations.py` — the obligation manifests under `docs/evidence/` (above); run by
   the `citations` step, and runnable on its own for a faster answer on one tree.
 - `scripts/tests/` — regression tests for the gate, the parity checker, the importer, the obligation
@@ -689,8 +764,9 @@ says so.
 
 ## Why the Go steps target a subset
 
-`scripts/gate-targets.txt` is `./cmd/ccc/... ./internal/ccc/...`, and that is a disclosure, not a
-convenience. Measured on the import host (4 cores, 7 GB, Ubuntu):
+`scripts/gate-targets.txt` is `./cmd/ccc/... ./internal/ccc/...`, run in this repository's own
+module, and that is a disclosure, not a convenience. Measured on the import host (4 cores, 7 GB,
+Ubuntu), with the carried tree as its own module (`agentsview/`):
 
 | Inherited suite | Result |
 | --- | --- |
@@ -699,8 +775,11 @@ convenience. Measured on the import host (4 cores, 7 GB, Ubuntu):
 | `go test -tags fts5 ./internal/sync` | exceeds a ten-minute default timeout |
 | the module's PostgreSQL / ClickHouse / DuckDB lanes | start containers and are upstream's own CI's job |
 
-So the local gate builds and tests what call/ccc builds and depends on — which compiles the inherited
-`internal/parser`, `internal/db`, `internal/sync` and their dependencies anyway — and the inherited
+Those patterns are the carried module's own spelling, measured before the split; in this tree the
+same packages are `agentsview/<path>` from the root (or the same `./internal/...` spelled from
+`agentsview/`). So the local gate builds and tests what call/ccc builds and depends on — which
+compiles the inherited `agentsview/internal/parser`, `agentsview/internal/db`,
+`agentsview/internal/sync` and their dependencies anyway — and the inherited
 *tests* are covered by `parity` (the files are the pin's, byte for byte) plus the oracle comparison
 (those code paths run on fixtures, in both trees). Running more than that belongs to upstream's CI
 and to `docs/upstream.md`'s update procedure, not to a gate that has to finish on a laptop.
@@ -882,8 +961,12 @@ suite's own module inventory; this file and the increment's record carry that re
 Its step spells the interpreter `python`, the name both runners have — the Windows runner has no
 `python3` — while the file is `#!`-tagged `python3` for the hosts where that is the only name. CI
 installs Go and gitleaks; a CI job with fewer tools than another is the boundary above, not a different
-gate. The Go toolchain comes from `go.mod` (`go-version-file`), so the workflow and the module cannot
-disagree about the version the tree builds with.
+gate. The Go toolchain comes from this repository's own module (`go-version-file: ccc/go.mod`, its
+`go.sum` as the cache key), and that module declares the same `go` directive as the carried tree's —
+a case in `scripts/tests/test_upstream_parity.py` holds the two files to it — so the workflow, our
+module and the carry cannot disagree about the version the tree builds with. On a runner the
+`portability` step fetches the pin itself (the runners have network, and the repository is public), so
+CI runs nine steps and not a partial verdict.
 
 ## Growth policy
 

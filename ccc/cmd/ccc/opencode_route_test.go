@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"go.kenn.io/agentsview/internal/ccc/opencodefixture"
+	"go.kenn.io/agentsview/ccc/internal/ccc/opencodefixture"
 )
 
 // openCodeStubEnv makes a child of this test binary behave as the OpenCode harness. The stub answers the

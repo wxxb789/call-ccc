@@ -73,6 +73,7 @@ from upstream_manifest import (  # noqa: E402
     ManifestError,
     Record,
     blob_sha1,
+    detect_layout,
     hashed_path,
     load_manifest,
     pinned_snapshot_sha256,
@@ -82,7 +83,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_RELATIVE = Path("scripts") / "upstream-manifest.txt"
 MANIFEST = ROOT / MANIFEST_RELATIVE
 UPSTREAM_DOC = "docs/upstream.md"
-PIN_SOURCE = "cmd/ccc/pin.go"
+PIN_SOURCE = Path("cmd") / "ccc" / "pin.go"
 PIN_CONSTANT = re.compile(r'upstreamRevision\s*=\s*"([0-9a-f]{40})"')
 PRICING_TOOL = "internal/pricing/cmd/litellm-snapshot/main.go"
 PRICING_INPUT = "internal/pricing/snapshot/litellm_snapshot.json.gz"
@@ -362,14 +363,17 @@ def carried_paths(manifest: Manifest) -> list[str]:
     (that is why it is declared). Its digest is checked by :func:`check_deviations`, which is the one
     place that knows about the allowance; leaving it out of the ignore check (or of the presence check
     there) would let a normalised carried file be deleted or ignored and still pass.
+
+    The paths are the tree's own (the manifest's upstream paths through its layout), because every
+    caller asks git or the filesystem about them.
     """
-    return [record.path for record in manifest.files] + [
-        record.path for record in manifest.stored_deviations
+    return [manifest.tree_path(record.path) for record in manifest.files] + [
+        manifest.tree_path(record.path) for record in manifest.stored_deviations
     ]
 
 
-def worktree_mode(root: Path, record: Record) -> tuple[str, bool]:
-    """Whether a carried path's *working tree* copy carries the record's executable bit.
+def worktree_mode(root: Path, path: str, mode: str) -> tuple[str, bool]:
+    """Whether a carried path's *working tree* copy carries the recorded executable bit.
 
     Answers ``(problem, mode_unverified)``: ``"mode"`` when the copy's executable bit -- its owner's
     execute bit, the one the record's mode is about -- is not the one the record names, ``""`` when it
@@ -389,19 +393,22 @@ def worktree_mode(root: Path, record: Record) -> tuple[str, bool]:
     repository ships leaves its bytes, git's index mode and ``git status`` all saying "unchanged", so
     a check that read any of those as the mode's answer would pass for a modified carried path. It is
     therefore asked of the file itself, for every carried path, the same way in both branches.
+
+    ``path`` is the path as this tree holds it (a record's upstream path through the manifest's layout),
+    which is the path every filesystem and git question below is asked about.
     """
-    if record.mode == "120000":
+    if mode == "120000":
         # A link stores its target as its content and has no executable bit of its own to compare.
         return "", False
     if not executable_bit_supported():
         return "", True
-    if bool((root / record.path).stat().st_mode & 0o100) != (record.mode == "100755"):
+    if bool((root / path).stat().st_mode & 0o100) != (mode == "100755"):
         return "mode", False
     return "", False
 
 
 def worktree_state(
-    root: Path, record: Record, link_files_allowed: bool
+    root: Path, path: str, record: Record, link_files_allowed: bool
 ) -> tuple[str, bool, bool]:
     """How a carried file's *working tree* copy stands against the record the manifest keeps.
 
@@ -424,9 +431,13 @@ def worktree_state(
     that read "git reports nothing modified" as "the file is the pin's copy" would pass for modified
     carried source. The comparison is the one the bytes-only branch always made, so both branches
     answer alike; only the index adds what a stat cannot answer, namely what a fresh clone receives.
+
+    ``path`` is where this tree holds the record -- the record's upstream path through the manifest's
+    layout -- and ``record`` is the manifest's own statement of the bytes, shape and mode expected
+    there: the two are separate arguments because the layout answers the first and the pin the second.
     """
-    target = root / record.path
-    is_link = symlink_target(root, record.path) is not None
+    target = root / path
+    is_link = symlink_target(root, path) is not None
     if record.mode == "120000":
         # git stores a link as its target text; only a checkout that does not create symlinks holds
         # that text in a file, which is the one other shape the pin's link can have.
@@ -434,7 +445,7 @@ def worktree_state(
             return "shape", False, False
     elif is_link or not target.is_file():
         return "shape", False, False
-    digest, size, data = hashed_path(root, record.path)
+    digest, size, data = hashed_path(root, path)
     respelled = False
     if digest != record.digest and is_link and separators_respelled():
         # A platform that creates a link with its own separators (Git for Windows rewrites every '/'
@@ -451,7 +462,7 @@ def worktree_state(
         return "drifted", False, False
     if size != record.size:
         return "size", False, False
-    problem, mode_unverified = worktree_mode(root, record)
+    problem, mode_unverified = worktree_mode(root, path, record.mode)
     return problem, mode_unverified, respelled
 
 
@@ -487,22 +498,25 @@ def check_files(
     respelled_links = 0
     dirty: list[str] = []
     for record in manifest.files:
-        if not present(root, record.path):
-            missing.append(record.path)
+        # The path this tree holds the record at: every filesystem and git question below is asked
+        # about it, and it is the path a failure names (so the answer points at the file to look at).
+        path = manifest.tree_path(record.path)
+        if not present(root, path):
+            missing.append(path)
             continue
         problem, mode_unverified_here, respelled = worktree_state(
-            root, record, link_files_allowed)
+            root, path, record, link_files_allowed)
         if problem == "shape":
-            wrong_shape.append(record.path)
+            wrong_shape.append(path)
             continue
         if problem == "drifted":
-            drifted.append(record.path)
+            drifted.append(path)
             continue
         if problem == "size":
-            size_mismatch.append(record.path)
+            size_mismatch.append(path)
             continue
         if problem == "mode":
-            wrong_mode.append(record.path)
+            wrong_mode.append(path)
             continue
         if mode_unverified_here:
             mode_unverified += 1
@@ -510,22 +524,22 @@ def check_files(
             respelled_links += 1
         if record.mode == "120000":
             symlinks_hashed += 1
-            if symlink_target(root, record.path) is None:
+            if symlink_target(root, path) is None:
                 link_files_seen += 1
         if index is None:
             continue
-        mode, blob = index.get(record.path, ("", ""))
+        mode, blob = index.get(path, ("", ""))
         if not mode:
             # Present on disk but absent from the index: it would not exist in a fresh clone.
-            missing.append(record.path)
+            missing.append(path)
             continue
         if blob != record.digest:
-            drifted.append(record.path)
+            drifted.append(path)
             continue
         if mode != record.mode:
-            wrong_mode.append(record.path)
+            wrong_mode.append(path)
             continue
-        if modified is not None and record.path in modified and not respelled:
+        if modified is not None and path in modified and not respelled:
             # A link whose target this platform's own symlink layer re-spelled has already been
             # verified against the pin in that spelling, and git on such a host compares the same
             # link as the same bytes: its own answer is "differs from the index" for a checkout the
@@ -534,7 +548,7 @@ def check_files(
             # index still holds the pinned mode and blob, which is what a fresh clone receives. Every
             # other path, and every other difference, keeps this rule: a reported difference is a
             # failure unless the link's own target was verified in the platform's spelling here.
-            dirty.append(record.path)
+            dirty.append(path)
     if missing:
         raise Failure(f"{len(missing)} carried file(s) are absent", missing)
     if wrong_shape:
@@ -570,8 +584,10 @@ def check_untracked(root: Path, manifest: Manifest, tracked: list[str] | None,
     if tracked is None:
         return 0
     # Every path the manifest names is accounted for, whichever record kind names it: a carried file,
-    # a declared deviation (present or absent) or a generated build input.
-    named = {record.path for record in manifest.records if record.kind != "owned"}
+    # a declared deviation (present or absent) or a generated build input. The names are the tree's
+    # own -- a record's upstream path through the manifest's layout -- because `seen` is what git
+    # listed in this tree.
+    named = {manifest.tree_path(record.path) for record in manifest.records if record.kind != "owned"}
     seen = sorted(set(tracked) | set(others or []))
     unexplained = [path for path in seen if path not in named and not manifest.is_owned(path)]
     if unexplained:
@@ -641,37 +657,38 @@ def check_deviations(
     wrong_mode: list[str] = []
     mode_unverified = 0
     for record in manifest.skips:
-        target = root / record.path
+        path = manifest.tree_path(record.path)
+        target = root / path
         # Only a file or a link has bytes to compare. A directory where the manifest declares a file
         # reads as "not carried": that is the answer the git branch already gives for it (a directory
         # cannot be in the index), and hashing it would raise instead of reporting.
-        on_disk = hashed_path(root, record.path) if target.is_file() or target.is_symlink() else None
-        stored = index.get(record.path) if index is not None else None
+        on_disk = hashed_path(root, path) if target.is_file() or target.is_symlink() else None
+        stored = index.get(path) if index is not None else None
         if stored is None and on_disk is None:
             if not record.stored_digest:
                 continue  # not carried at all: the declaration is "absent", which is not stale
-            stale.append(f"{record.path}: absent, but the manifest records the bytes this tree stores")
+            stale.append(f"{path}: absent, but the manifest records the bytes this tree stores")
             continue
         if record.stored_digest:
             if record.stored_digest == record.digest:
                 stale.append(
-                    f"{record.path}: the stored bytes are recorded as upstream's own, so the path is "
+                    f"{path}: the stored bytes are recorded as upstream's own, so the path is "
                     f"carried, not deviated")
                 continue
             if index is not None:
                 if stored is None:
                     stale.append(
-                        f"{record.path}: absent from git's index, but the manifest records the bytes "
+                        f"{path}: absent from git's index, but the manifest records the bytes "
                         f"this tree stores")
                     continue
                 if stored[1] != record.stored_digest:
                     stale.append(
-                        f"{record.path}: git stores {stored[1]}, the manifest records "
+                        f"{path}: git stores {stored[1]}, the manifest records "
                         f"{record.stored_digest}")
                     continue
                 if stored[0] != record.mode:
                     stale.append(
-                        f"{record.path}: git stores mode {stored[0]}, the manifest records "
+                        f"{path}: git stores mode {stored[0]}, the manifest records "
                         f"{record.mode}")
                     continue
                 if on_disk is None:
@@ -679,23 +696,23 @@ def check_deviations(
                     # working tree this repository ships: a checkout that lost the file (or turned it
                     # into a directory) is a carried path that is gone, not a declaration that holds.
                     stale.append(
-                        f"{record.path}: it is carried, but the working tree holds no file at it")
+                        f"{path}: it is carried, but the working tree holds no file at it")
                     continue
-                if modified is not None and record.path in modified:
-                    dirty.append(record.path)
+                if modified is not None and path in modified:
+                    dirty.append(path)
                     continue
             elif on_disk[0] not in (record.stored_digest, record.digest):
                 stale.append(
-                    f"{record.path}: the file hashes to {on_disk[0]}, neither the bytes this tree "
+                    f"{path}: the file hashes to {on_disk[0]}, neither the bytes this tree "
                     f"stores ({record.stored_digest}) nor upstream's own ({record.digest})")
                 continue
             # The bytes are this path's own, but the copy this tree ships is a carried path in every
             # other respect, so its owner-executable bit is asked of the file itself -- the one answer
             # a checkout with core.filemode=false, and a git index that never saw the edit, cannot
             # give.
-            problem, mode_unverified_here = worktree_mode(root, record)
+            problem, mode_unverified_here = worktree_mode(root, path, record.mode)
             if problem == "mode":
-                wrong_mode.append(record.path)
+                wrong_mode.append(path)
                 continue
             if mode_unverified_here:
                 mode_unverified += 1
@@ -703,23 +720,23 @@ def check_deviations(
                 # A working-tree copy still holding the pre-normalisation bytes: git reads that copy
                 # as clean (its attribute file normalises it on comparison) and a clone checks out the
                 # stored form, so the declaration holds -- but the copy is named, not passed over.
-                on_disk_only.append(record.path)
+                on_disk_only.append(path)
             elif on_disk is not None and on_disk[0] != record.stored_digest:
                 stale.append(
-                    f"{record.path}: the working tree hashes to {on_disk[0]}, neither the bytes this "
+                    f"{path}: the working tree hashes to {on_disk[0]}, neither the bytes this "
                     f"tree stores ({record.stored_digest}) nor upstream's own ({record.digest})")
                 continue
-            stored_notes.append(record.path)
+            stored_notes.append(path)
             continue
         if stored is not None and stored[1] == record.digest:
-            stale.append(f"{record.path}: it holds upstream's own bytes, so the declaration is stale")
+            stale.append(f"{path}: it holds upstream's own bytes, so the declaration is stale")
             continue
         if on_disk is not None and on_disk[0] == record.digest:
             stale.append(
-                f"{record.path}: the working tree holds upstream's own bytes, so the declaration "
+                f"{path}: the working tree holds upstream's own bytes, so the declaration "
                 f"is stale")
             continue
-        notes.append(record.path)
+        notes.append(path)
     if wrong_mode:
         raise Failure(
             f"{len(wrong_mode)} carried path(s) changed mode (the owner-executable bit)", wrong_mode
@@ -752,45 +769,48 @@ def check_inputs(
     """
     problems: list[str] = []
     for record in manifest.inputs:
-        if not present(root, record.path):
-            problems.append(f"{record.path}: absent")
+        path = manifest.tree_path(record.path)
+        if not present(root, path):
+            problems.append(f"{path}: absent")
             continue
-        data = (root / record.path).read_bytes()
+        data = (root / path).read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         if digest != record.digest or len(data) != record.size:
-            problems.append(f"{record.path}: hashes to {digest}, manifest says {record.digest}")
+            problems.append(f"{path}: hashes to {digest}, manifest says {record.digest}")
             continue
         if index is None:
             continue
-        stored = index.get(record.path)
+        stored = index.get(path)
         if stored is None:
             problems.append(
-                f"{record.path}: absent from git's index, so a fresh clone would not receive the "
+                f"{path}: absent from git's index, so a fresh clone would not receive the "
                 f"build input the carried go:embed needs (git add -f it)")
             continue
         if stored[0] != record.mode:
             problems.append(
-                f"{record.path}: git stores mode {stored[0]}, the manifest records {record.mode}")
+                f"{path}: git stores mode {stored[0]}, the manifest records {record.mode}")
             continue
         blob = blob_sha1(data)
         if stored[1] != blob:
-            problems.append(f"{record.path}: git stores {stored[1]}, its bytes hash to {blob}")
+            problems.append(f"{path}: git stores {stored[1]}, its bytes hash to {blob}")
     if problems:
         raise Failure(f"{len(problems)} generated input(s) are not what this tree declares", problems)
 
-    pinned = pinned_snapshot_sha256(root / PRICING_TOOL)
+    tool_path = manifest.tree_path(PRICING_TOOL)
+    pinned = pinned_snapshot_sha256(root / tool_path)
     recorded = next((r.digest for r in manifest.inputs if r.path == PRICING_INPUT), "")
     if not pinned:
         raise Failure(
-            f"{PRICING_TOOL} no longer carries the pinned snapshot SHA-256 the input is verified against",
-            [PRICING_TOOL],
+            f"{tool_path} no longer carries the pinned snapshot SHA-256 the input is verified against",
+            [tool_path],
         )
     if recorded != pinned:
         raise Failure(
-            f"{PRICING_INPUT} is recorded as {recorded} but {PRICING_TOOL} pins {pinned}",
-            [PRICING_INPUT],
+            f"{manifest.tree_path(PRICING_INPUT)} is recorded as {recorded} but {tool_path} pins "
+            f"{pinned}",
+            [manifest.tree_path(PRICING_INPUT)],
         )
-    return [f"{PRICING_INPUT} sha256={recorded} (pinned by {PRICING_TOOL})"]
+    return [f"{manifest.tree_path(PRICING_INPUT)} sha256={recorded} (pinned by {tool_path})"]
 
 
 def check_pin_documented(root: Path, manifest: Manifest) -> None:
@@ -802,26 +822,48 @@ def check_pin_documented(root: Path, manifest: Manifest) -> None:
         raise Failure(f"{UPSTREAM_DOC} does not record the pinned revision {pin}", [UPSTREAM_DOC])
 
 
+def check_layout(root: Path, manifest: Manifest) -> None:
+    """The ledger's own layout line must be the shape this tree has.
+
+    The shape is asked of the tree's own ``go.mod`` files (:func:`detect_layout`), never of the
+    ledger alone: a ledger whose line disagrees with the tree would have every carried path checked
+    at a prefix the tree does not have, which fails loudly but as "N carried file(s) are absent" --
+    a message about the files rather than about the cause. This check names the disagreement itself,
+    because that state (a tree whose files were moved before its ledger was re-derived) is the one
+    where the checker's answer would otherwise describe the wrong tree.
+    """
+    detected = detect_layout(root)
+    if manifest.layout != detected:
+        raise Failure(
+            f"the manifest's layout line says {manifest.layout.spelling!r}, but this tree's own "
+            f"go.mod files are {detected.spelling!r} -- the ledger and the tree disagree about where "
+            f"the carried tree sits",
+            [str(MANIFEST_RELATIVE)],
+        )
+
+
 def check_reported_pin(root: Path, manifest: Manifest) -> str:
     """The revision cmd/ccc reports must be the pin, or the binary would lie about itself."""
     pin = manifest.header["pin"]
-    source = root / PIN_SOURCE
+    relative = str(Path(manifest.layout.module) / PIN_SOURCE)
+    source = root / relative
     if not source.exists():
-        raise Failure(f"{PIN_SOURCE} is missing, so the revision the CLI reports cannot be checked",
-                      [PIN_SOURCE])
+        raise Failure(f"{relative} is missing, so the revision the CLI reports cannot be checked",
+                      [relative])
     reported = PIN_CONSTANT.search(source.read_text(encoding="utf-8"))
     if not reported:
-        raise Failure(f"{PIN_SOURCE} no longer carries a literal upstreamRevision constant",
-                      [PIN_SOURCE])
+        raise Failure(f"{relative} no longer carries a literal upstreamRevision constant",
+                      [relative])
     if reported.group(1) != pin:
         raise Failure(
-            f"{PIN_SOURCE} reports {reported.group(1)} but the carried revision is {pin}",
-            [PIN_SOURCE])
+            f"{relative} reports {reported.group(1)} but the carried revision is {pin}",
+            [relative])
     return reported.group(1)
 
 
 def run(root: Path) -> list[str]:
     manifest = load_manifest(root / MANIFEST_RELATIVE)
+    check_layout(root, manifest)
     check_pin_documented(root, manifest)
     reported_pin = check_reported_pin(root, manifest)
     tracked, others = tree_files(root)
@@ -885,13 +927,19 @@ def run(root: Path) -> list[str]:
 
     return [
         f"pin {manifest.header['pin']} ({manifest.header.get('describe', '')})",
-        f"reported by cmd/ccc: {reported_pin}",
+        f"reported by {Path(manifest.layout.module) / PIN_SOURCE}: {reported_pin}",
+        f"layout: carry root {manifest.layout.carry or '.'}, this repository's module "
+        f"{manifest.layout.module}"
+        + ("" if manifest.layout.carry
+           else " (root layout: carried records name this tree's own paths)"),
         f"carried: {carried_checked} file(s) identical to the pinned revision"
         + ("" if index is None else " (compared through git's own object store)"),
         f"deviations: {len(manifest.skips)} upstream path(s) declared "
         f"({len(stored)} of them carried with the bytes this tree stores)"
         f" + {len(manifest.inputs)} generated input(s), all present as declared",
-        f"owned: {len(manifest.owned)} project-owned prefix(es); files seen by git: {seen}",
+        f"owned: {len(manifest.owned)} project-owned prefix(es)"
+        + (", plus the carry directory's own boundary" if manifest.layout.carry else "")
+        + f"; files seen by git: {seen}",
         f"inputs: {'; '.join(inputs)}",
     ] + (
         [f"symlinks hashed by their link target: {symlinks_hashed}"] if symlinks_hashed else []

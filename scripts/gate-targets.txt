@@ -1,4 +1,5 @@
-# Package patterns the gate builds, vets and tests.
+# Package patterns the gate builds, vets and tests, inside this repository's own module (the gate
+# runs the Go commands there: ``ccc/``, or the repository root in the one-module layout).
 #
 # Narrowed to what call/ccc builds and its own tests, which compile the inherited packages they
 # depend on. The rest of the carried AgentsView module is excluded for reasons that are measured in
