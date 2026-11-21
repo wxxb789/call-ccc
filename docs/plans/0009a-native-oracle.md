@@ -180,12 +180,31 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   text is not the record's written bytes. The refusal mirrors the per-record reads with the three new
   mutations; the plugin-discovery envelope is refused rather than read under either answer, because
   which record is the session's first user one is state the oracle does not model, and the reader's
-  replay suppression is turn state outside the claim (both boundaries in §16 of the evidence record).
+  replay suppression is turn state outside the claim (both boundaries in §17 of the evidence record).
+  The mirror's goal-envelope whitespace set is the reader's own Go `\s` — `[\t\n\f\r ]`, ASCII alone —
+  so a nonbreaking space before `source="goal"` keeps the text travelling, where Python's `\s` read the
+  block as system content (review round r11's third finding).
 - *A call's routing name is the name the read remembers, not the written spelling* — `rememberToolCall`
   Go-trims the emitted name and `toolCallNameForOutput` answers from it, so `" wait_agent "` is routed by
   the read as `wait_agent` and its plain-text output appends no result while the receipt's written-name
   identity still matches: the family question is asked of the trimmed name (`oracle_call_routing_name`),
   which review round r10's second finding showed the oracle asking of the raw one.
+- *A trim-colliding call id is refused where a plan is compared* — the carried read remembers calls by
+  the Go-trimmed id (`rememberToolCall` keys and replaces the pending entry; `forgetToolCall` clears one
+  by the written id it is handed), so two calls whose written ids differ only in whitespace are one
+  entry to the read; an output under the trimmed spelling is routed by that entry — the last writer's
+  name and arm — which this oracle does not model, so it is refused rather than read under either
+  answer. The **padded** spelling's own output is answered by the name written beside its own call
+  (`callNames`) and stays certifiable, and a single padded id with its receipt is the green control
+  (review round r11's first finding; §16 of the evidence record).
+- *A repeated output under an `apply_patch` the read expands is refused as a shape the oracle does not
+  model* — `handleFunctionCall` expands an `apply_patch` call into one call per file the patch names
+  (`codexApplyPatchFiles`), the first output attaching where the pending position points and each later
+  one to the last file's call, so a repetition the read trims to one text may be two kept results on two
+  calls rather than the one `hasEquivalentCallResultEvent` suppresses. Whether it is kept or suppressed
+  depends on the files the patch names, a projection this oracle does not model, so the repetition is
+  refused with that statement rather than answered; the padded name, which the read does not expand, is
+  the ordinary suppression (review round r11's second finding; §16 of the evidence record).
 - *A call whose `call_id` is not a non-empty string is refused, with no output to fail pairing on its
   own* — `handleFunctionCall` passes the raw `call_id` on and `handleFunctionCallOutput` returns on an
   empty one, so the record is no call a read answers; the round-10 mutation writes the empty string,
@@ -276,7 +295,9 @@ the lone-surrogate refusal and the message string-type mutation, beside §8's se
 first use and every study's edit chained to its `fresh` tree) and the r10 round (§15 — the message
 read-answer refusal the malformed-notification controls now assert, the trimmed routing name, the
 iterative surrogate walk and the non-empty-`call_id` fixture, with the harness-doc receipt/surrogate
-sentence aligned as the round's prose touch),
+sentence aligned as the round's prose touch) and the r11 round (§16 — the trim-collision and
+`apply_patch` refusals, the goal mirror's Go-whitespace set and the nested-input guard, beside the §9
+and §13 replay refreshes the round's sixth finding required),
 each from the scratch tree its section spells out (the replay's own `mktemp -d` root, allocated once in
 the record's preamble since review round r7's finding 4).
 
@@ -378,9 +399,12 @@ non-JSON constants, no replacement-decoded text), an unreadable-by-nesting recei
 than a traceback, a decoded string strict UTF-8 cannot encode is named by a digest that never raises
 where the diagnostic needs one, default diagnostics name occurrences and refused values by type and
 by digest without echoing their text, and a record's turn placement is stated as outside the receipt's
-vocabulary rather than half-checked (review round r7's finding). The evidence record's §1–§15 carry the re-run outputs for that state,
+vocabulary rather than half-checked (review round r7's finding). The evidence record's §1–§16 carry the re-run outputs for that state,
 with one executed revert-mutation per fix (§8 for r3's, §9 for r4's, §10 for r5's, §11 for r6's, §12
 for r7's — whose last study injects the turn check the round did not add and shows the scope case
 turning red — §13 for r8's: the collapse refusal and the structural role guard, each reverted in its
-own fresh tree with the case that pins it failing there — and §14 for r9's: the consumed-notification
-refusal, the lone-surrogate refusal and the message string-type arm, each reverted the same way).
+own fresh tree with the case that pins it failing there — §14 for r9's: the consumed-notification
+refusal, the lone-surrogate refusal and the message string-type arm, each reverted the same way — and
+§16 for r11's: the trim-collision refusal, the `apply_patch` expansion arm, the goal mirror's
+whitespace set and the `RecursionError` guard, each reverted the same way, beside the refreshed §9 and
+§13 replay recipes).

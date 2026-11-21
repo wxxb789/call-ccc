@@ -2504,6 +2504,107 @@ def _mutation_plan_result_collapsed_by_read(text: str, receipt: dict | None) -> 
     return duplicate_output(text, stripped), receipt_with_second_result(receipt, stripped)
 
 
+def _with_trim_colliding_call(text: str, output_id: str, receipt: dict) -> tuple[str, dict]:
+    """The fixture with a second call whose written id trims to the first call's, its output renamed to
+    `output_id`, and a receipt naming the same written ids.
+
+    The second call is a `wait_agent` under the first call's own instant — the clock rule admits a
+    repeated instant beside its predecessor, and any instant between the call's and the output's would
+    have to be invented — with the first call's id and one space at either end, so `oracle_go_trim` maps
+    the two written ids to one key while every identity the receipt states (the written members) still
+    matches. The insertion order is the artifact's own occurrence order: the first call, the colliding
+    call, the output. Callers that need a second colliding spelling or a different name rewrite the
+    artifact and receipt themselves; this builds the shape both the mutation and its case start from.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not oracle_item_is("function_call", "call_oracle_0001")(json.loads(line)):
+            continue
+        colliding = json.loads(line)
+        colliding["payload"] = {"type": "function_call", "name": "wait_agent", "arguments": "{}",
+                                "call_id": " call_oracle_0001 "}
+        lines.insert(index + 1, oracle_quote(colliding))
+        break
+    else:
+        raise AssertionError("the fixture no longer holds the call this shape collides with")
+    artifact = "\n".join(lines) + "\n"
+    artifact = oracle_edit(artifact, oracle_item_is("function_call_output", "call_oracle_0001"),
+                           change=lambda record: record["payload"].__setitem__("call_id", output_id))
+    for index, entry in enumerate(receipt["occurrences"]):
+        if entry.get("kind") != "tool_call":
+            continue
+        receipt["occurrences"].insert(index + 1, {
+            "kind": "tool_call", "call_id": " call_oracle_0001 ", "name": "wait_agent",
+            "arguments": "{}", "disposition": "emitted"})
+        break
+    else:
+        raise AssertionError("the fixture's plan holds no tool_call entry beside the call")
+    if output_id != "call_oracle_0001":
+        oracle_receipt_edit(receipt, oracle_entry_kind("tool_result"),
+                            lambda entry: entry.__setitem__("call_id", output_id))
+    return artifact, receipt
+
+
+def _mutation_plan_trim_collided_call_id(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A second call whose written id trims to the first call's, the output left under the first
+    spelling.
+
+    `rememberToolCall` Go-trims the id it remembers a call under and replaces the pending entry, so the
+    carried read routes the plain-text output by the **second** call's remembered name — `wait_agent`,
+    whose `status` gate returns before recording a result — while the written ids differ, so every
+    identity the receipt states still matches and the artifact is structurally green. Without the
+    refusal this artifact and receipt validate green, certifying a result no read returns (review round
+    r11's finding: the round's dedicated case drives the same shape and the padded spelling's control).
+    """
+    assert receipt is not None
+    return _with_trim_colliding_call(text, "call_oracle_0001", receipt)
+
+
+def _mutation_plan_apply_patch_repetition(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The call renamed `apply_patch` (a two-file patch) with its output repeated under a second
+    receipt entry.
+
+    The carried read expands an `apply_patch` call into one call per file the patch names
+    (`codexApplyPatchFiles`, `internal/parser/codex.go`), so the first output attaches where the
+    pending position points — the first file's call — and every later one falls back to the last file's
+    call: two raw texts the read trims to one are two kept results there, while this oracle's
+    per-call-id comparison would read the repetition as the one `hasEquivalentCallResultEvent`
+    suppresses. The receipt renames the call with the artifact (name and written arguments, so every
+    identity it states still matches) and names both outputs; the repeated output is the first output's
+    text without its trailing line feed, kept at its own slot's instant (review round r11's finding).
+    """
+    assert receipt is not None
+    patch = json.dumps({"patch": "*** Begin Patch\n*** Update File: /work/oracle-fixture/a.md\n"
+                                 "*** Update File: /work/oracle-fixture/b.md\n*** End Patch"})
+
+    def rename(record: dict) -> None:
+        record["payload"]["name"] = "apply_patch"
+        record["payload"]["arguments"] = patch
+
+    artifact = oracle_edit(text, oracle_item_is("function_call", "call_oracle_0001"), change=rename)
+    renamed = 0
+    for entry in receipt["occurrences"]:
+        if entry.get("kind") != "tool_call":
+            continue
+        entry["name"] = "apply_patch"
+        entry["arguments"] = patch
+        renamed += 1
+    if renamed != 1:
+        raise AssertionError("the plan no longer holds exactly one tool_call entry to rename")
+    for line in artifact.splitlines():
+        if not oracle_item_is("function_call_output", "call_oracle_0001")(json.loads(line)):
+            continue
+        output = json.loads(line)["payload"]["output"]
+        if not isinstance(output, str) or not output.endswith("\n"):
+            raise AssertionError("the fixture's output no longer ends with the line feed this mutation "
+                                 "removes")
+        stripped = output[:-1]
+        break
+    else:
+        raise AssertionError("the fixture no longer holds the call output this mutation repeats")
+    return duplicate_output(artifact, stripped), receipt_with_second_result(receipt, stripped)
+
+
 def _mutation_plan_pair_split(text: str, receipt: dict | None) -> tuple[str, dict | None]:
     """A call the plan emits while its recorded result is marked omitted, and the result is not there.
 
@@ -2650,6 +2751,10 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "session-receipt.json", _mutation_plan_special_result_call),
         OracleMutation("a second output the read collapses into the one before it", "session.jsonl",
                        "session-receipt.json", _mutation_plan_result_collapsed_by_read),
+        OracleMutation("a call id that trims to another call's, its output under the earlier spelling",
+                       "session.jsonl", "session-receipt.json", _mutation_plan_trim_collided_call_id),
+        OracleMutation("a repeated output under a call the read expands into one per patched file",
+                       "session.jsonl", "session-receipt.json", _mutation_plan_apply_patch_repetition),
         OracleMutation("a call whose recorded input is not a string", "session.jsonl",
                        "session-receipt.json", _mutation_plan_non_string_call_input),
         OracleMutation("an image-generation call the receipt cannot name", "reduced.jsonl",
@@ -3520,6 +3625,71 @@ class CodexArtifactOracle(unittest.TestCase):
                             NATIVE_CHECK.oracle_result_text({"output": None}),
                             "the absent member and the written `null` are one identity")
 
+    def test_a_trim_colliding_call_id_is_refused_with_a_plan(self) -> None:
+        """An output under the Go-trimmed spelling of two calls' written ids is refused where a plan is
+        compared: which of them the read answers the output by is not established.
+
+        Review round r11's finding: a `Read` call with the fixture's id, a second `wait_agent` call whose
+        written id differs from it only in surrounding whitespace, and the plain-text output under the
+        first spelling. `rememberToolCall` Go-trims the id it remembers a call under and replaces the
+        pending entry, so `toolCallNameForOutput` routes the output by the **second** call's remembered
+        name — the `wait_agent` arm, whose `status` gate returns before recording a result — while the
+        written ids differ and every identity the receipt states still matches: without the refusal the
+        artifact and its receipt validated green, certifying a result no read returns. The controls pin
+        the refusal's scope: the collision artifact is structurally green without a plan (a native
+        rollout may carry the shape; only a plan claims what a read answers), the padded spelling's own
+        output is answered by the name written beside that call (`callNames`) and stays on the
+        `wait_agent` arm's own refusal rather than the collision's, and a single padded id with no
+        collision is certified by its own written call.
+        """
+        session = oracle_fixture("session.jsonl")
+
+        def collided(output_id: str) -> tuple[str, dict]:
+            return _with_trim_colliding_call(session, output_id,
+                                             oracle_receipt("session-receipt.json"))
+
+        artifact, receipt = collided("call_oracle_0001")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                         "the collision artifact is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the collision certified a result no read returns: {refused}")
+        self.assertIn("more than one call", refused[0].detail, f"{refused[0]}")
+        self.assertIn(NATIVE_CHECK.oracle_digest(" call_oracle_0001 "), refused[0].detail,
+                      f"the refusal does not name the colliding id: {refused[0]}")
+        self.assertNotIn("# notes", refused[0].detail,
+                         f"the refusal echoed the recorded text: {refused[0]}")
+
+        # The padded spelling's own output: `toolCallNameForOutput` misses the pending entry keyed by
+        # the trimmed id for it and answers from `callNames` — the name written beside that very call —
+        # so its routing is established, and the refusal is the `wait_agent` arm's own; the collision's
+        # must not also fire, or two different claims would arrive as one.
+        artifact, receipt = collided(" call_oracle_0001 ")
+        refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the padded spelling was not refused by its own arm: {refused}")
+        self.assertIn("`wait_agent`", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn("more than one call", refused[0].detail,
+                         f"the collision refusal fired for a padded spelling it does not cover: "
+                         f"{refused[0]}")
+
+        # The control: one padded id, no collision — the read answers the output by the name written
+        # beside that call (`callNames`, the trimmed pending entry being keyed differently), so nothing
+        # about its routing is unestablished and the artifact stays green with its receipt.
+        padded = " call_oracle_0001 "
+        artifact = oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),
+                               change=lambda record: record["payload"].__setitem__("call_id", padded))
+        artifact = oracle_edit(artifact, oracle_item_is("function_call_output", "call_oracle_0001"),
+                               change=lambda record: record["payload"].__setitem__("call_id", padded))
+        receipt = oracle_receipt("session-receipt.json")
+        for entry in receipt["occurrences"]:
+            if entry.get("kind") in ("tool_call", "tool_result"):
+                entry["call_id"] = padded
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                         "the alone-padded artifact is not structurally green")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact, receipt=receipt), [],
+                         "a single padded id was refused although its own written call answers it")
+
     def test_a_result_the_read_collapses_is_refused_with_a_plan(self) -> None:
         """Two raw outputs the carried read trims to one text are two occurrences to the receipt's
         identity and one result to every read of the artifact — refused where a plan is compared.
@@ -3583,6 +3753,49 @@ class CodexArtifactOracle(unittest.TestCase):
                          "the distinct second output is not structurally green")
         self.assertEqual(NATIVE_CHECK.validate_artifact(distinct, receipt=distinct_receipt), [],
                          "a second result the read answers was refused")
+
+    def test_an_apply_patch_repetition_is_refused_as_an_unmodelled_ownership(self) -> None:
+        """A repeated output under an `apply_patch` call is refused as a shape this oracle does not
+        model, not answered as the suppression an ordinary call's repetition is.
+
+        Review round r11's finding: a two-file `apply_patch` followed by two outputs whose texts trim to
+        one. `handleFunctionCall` expands the call into one call per file the patch names
+        (`codexApplyPatchFiles`, `internal/parser/codex.go`), the first output attaches where the pending
+        position points — the first file's call — and the second falls back to the last file's call
+        (`CodexCollectingSink.callRef`), so the read keeps **both**; this oracle's per-call-id comparison
+        answered them as the one `hasEquivalentCallResultEvent` suppresses, refusing a receipt that did
+        not lie. The refusal stays — the files the patch names decide what the read answers and this
+        oracle does not model that projection — but it says so, so a reader cannot take the suppression
+        for a claim the artifact does not support. The control is the read's own expansion gate: the
+        padded `" apply_patch "` is not the written spelling `handleFunctionCall` compares, so its call
+        is not expanded and its identical repetition is the ordinary suppression refusal.
+        """
+        session = oracle_fixture("session.jsonl")
+        artifact, receipt = _mutation_plan_apply_patch_repetition(
+            session, oracle_receipt("session-receipt.json"))
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                         "the apply_patch artifact is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the apply_patch repetition was not refused: {refused}")
+        self.assertIn("one call per file", refused[0].detail, f"{refused[0]}")
+        self.assertIn("does not model", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn("suppresses this event", refused[0].detail,
+                         f"the refusal still claims the suppression the read does not answer: "
+                         f"{refused[0]}")
+        self.assertNotIn("# notes", refused[0].detail,
+                         f"the refusal echoed the recorded text: {refused[0]}")
+
+        artifact = oracle_edit(artifact, oracle_item_is("function_call", "call_oracle_0001"),
+                               change=lambda record: record["payload"].__setitem__(
+                                   "name", " apply_patch "))
+        oracle_receipt_edit(receipt, oracle_entry_kind("tool_call"),
+                            lambda entry: entry.__setitem__("name", " apply_patch "))
+        refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the padded name was not refused by the ordinary suppression: {refused}")
+        self.assertIn("suppresses this event", refused[0].detail,
+                      f"a padded `apply_patch` is not the read's expansion gate: {refused[0]}")
 
     def test_a_consumed_subagent_notification_is_refused_with_a_plan(self) -> None:
         """A `user` message the carried read's own text path removes never travels as the record.
@@ -3698,6 +3911,63 @@ class CodexArtifactOracle(unittest.TestCase):
                                  f"the control {label!r} is not structurally green")
                 self.assertEqual(NATIVE_CHECK.validate_artifact(control_text, receipt=control_plan), [],
                                  f"the control {label!r} was refused although the read answers its text")
+
+    def test_the_goal_envelope_mirror_reads_the_readers_own_whitespace(self) -> None:
+        """A goal envelope whose attribute is bordered by a character Go's `\\s` does not match is
+        preserved text, not system content.
+
+        Review round r11's finding: this oracle's mirror compiled Python's `\\s`, which matches U+00A0
+        (and every other Unicode space), while the carried reader's regex
+        (`internal/parser/codex.go`'s `codexGoalContextSourceAttrRe`) uses Go's own `\\s` —
+        `[\\t\\n\\f\\r ]`, ASCII alone — so a nonbreaking space before `source="goal"` left the reader
+        preserving the prompt while the mirror read the block as system content and refused the
+        matching receipt. The arms pin both sides of the boundary: the ordinary space spelling is the
+        reader's own goal envelope, so the read answers no message and the receipt naming it is refused
+        (the read-answer arm's "no message at all" refusal), and the nonbreaking spelling is a message
+        like any other, validated green with a receipt that names it emitted in both of the artifact's
+        channels.
+        """
+        session = oracle_fixture("session.jsonl")
+        for label, separator, refused in (
+            ("the reader's own space spelling", " ", True),
+            ("a nonbreaking space, which Go's `\\s` does not match", "\u00a0", False),
+        ):
+            with self.subTest(shape=label):
+                text = (f'<codex_internal_context{separator}source="goal">'
+                        f'Keep this</codex_internal_context>')
+                self.assertEqual(NATIVE_CHECK.oracle_is_goal_context(text), refused,
+                                 f"the mirror no longer answers this spelling the way the reader does: "
+                                 f"{text!r}")
+
+                def set_text(record: dict) -> None:
+                    if record["type"] == "event_msg":
+                        record["payload"]["message"] = text
+                        return
+                    for block in record["payload"]["content"]:
+                        block["text"] = text
+
+                artifact = oracle_edit(session, oracle_item_is("message", "And now?"),
+                                       change=set_text)
+                artifact = oracle_edit(artifact, oracle_event_message_is("And now?"),
+                                       change=set_text)
+                receipt = oracle_receipt("session-receipt.json")
+                oracle_receipt_edit(receipt, lambda entry: (entry.get("kind") == "message"
+                                                            and entry.get("text") == "And now?"),
+                                    lambda entry: entry.__setitem__("text", text))
+                self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                                 f"the {label} artifact is not structurally green")
+                violations = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
+                if refused:
+                    self.assertEqual([violation.rule for violation in violations],
+                                     ["oracle.plan-accounted"],
+                                     f"the goal envelope the read drops was certified: {violations}")
+                    self.assertIn("no message at all", violations[0].detail,
+                                  f"the refusal is not the read-answer arm's: {violations[0]}")
+                    self.assertNotIn("Keep this", violations[0].detail,
+                                     f"the refusal echoed the message text: {violations[0]}")
+                else:
+                    self.assertEqual(violations, [],
+                                     f"the preserved text was refused: {violations}")
 
     def test_a_moved_turn_context_is_outside_the_receipts_vocabulary(self) -> None:
         """The receipt names no turns, so `oracle.plan-order` compares order, not turn membership.
@@ -4220,9 +4490,10 @@ class CodexArtifactOracle(unittest.TestCase):
         artifact- or receipt-controlled string as strict UTF-8, and JSON's `\\ud800`-style escape decodes
         to a lone surrogate code point `str.encode("utf-8")` refuses — an unmatched output whose
         `call_id` was such a string raised `UnicodeEncodeError` inside the report; and a call's string
-        input was parsed by `_oracle_valid_json`, whose `json.loads` raises `RecursionError` past the
-        host's own recursion bound and whose arm caught only `ValueError` — an invocation whose recorded
-        input is deeply nested JSON raised out of validation before any verdict. Neither may end a run:
+        input is parsed by `oracle_call_input_value` (the r4 tree answered it through `_oracle_valid_json`),
+        whose `json.loads` raises `RecursionError` past the host's own recursion bound — an invocation
+        whose recorded input is deeply nested JSON raised out of validation before any verdict until the
+        guard answered None. Neither may end a run:
         the digest writes a surrogate as its own three-byte form (injective — no other text encodes to
         those bytes — so two identities stay distinguishable; pinned below by the digest literal), and no
         string member is parsed as an input, because the identity is the written one. Each arm is driven
@@ -4235,6 +4506,13 @@ class CodexArtifactOracle(unittest.TestCase):
         be one string to a read), and the digest's surrogate path is exercised through a *receipt*
         identity instead — a plan's member is not an artifact line and keeps the r4 pin: the report must
         name it by its digest rather than raise.
+
+        Review round r11 moved the nested arm onto the parser it claims to protect: the member is parsed
+        by `oracle_call_input_value` (the `RecursionError` guard is this test's subject), which only a
+        written `wait` call compared against a plan reaches (`oracle_exec_cell_wait`'s one caller,
+        `oracle_result_read_violations`), so the first arm — a nested member on the fixture's `Read`
+        call without a receipt — pins only that the no-receipt path does not parse it, and the second
+        drives the guarded parse and asserts the named refusal it must end in.
         """
         self.assertEqual(NATIVE_CHECK.oracle_digest("\ud800"), "sha256:91a681b99855",
                          "a lone surrogate is no longer digested as its own three-byte form")
@@ -4294,6 +4572,47 @@ class CodexArtifactOracle(unittest.TestCase):
             self.assertNotIn("Traceback", printed, f"a nested input ended in a traceback: {printed}")
             self.assertEqual(printed.strip().splitlines()[-1],
                              "oracle: PASS — 17 record(s), 7 occurrence(s)",
+                             f"the verdict is not the run's last line: {printed}")
+            # The arm above reaches no parser at all: `oracle_call_input_value` is called only for a
+            # written `wait` call where a plan is compared (`oracle_exec_cell_wait`'s one caller,
+            # `oracle_result_read_violations`), and a `Read` call without a receipt never gets there
+            # (review round r11's finding: removing the `RecursionError` guard would not change that
+            # arm's result). This arm drives the guarded parse: a `wait` call whose recorded input is
+            # the same 200 000 nested brackets, its plain-text output, and a receipt renaming the call
+            # with the artifact, so every identity the receipt states still matches. The host's parser
+            # raises `RecursionError` on the member, the guard answers None — "no args", the fail-closed
+            # side — the call is not the exec-cell poll, and the run ends in a named refusal rather
+            # than a traceback.
+            arguments = "[" * 200000 + "]" * 200000
+
+            def rename_to_wait(record: dict) -> None:
+                record["payload"]["name"] = "wait"
+                record["payload"]["arguments"] = arguments
+
+            nested_wait = Path(scratch) / "nested-wait.jsonl"
+            nested_wait.write_text(
+                oracle_edit(session, oracle_item_is("function_call", "call_oracle_0001"),
+                            change=rename_to_wait),
+                encoding="utf-8")
+            wait_receipt = oracle_receipt("session-receipt.json")
+            oracle_receipt_edit(wait_receipt, oracle_entry_kind("tool_call"),
+                                lambda entry: (entry.__setitem__("name", "wait"),
+                                               entry.__setitem__("arguments", arguments)))
+            wait_plan = Path(scratch) / "nested-wait-plan.json"
+            wait_plan.write_text(json.dumps(wait_receipt, separators=(",", ":")), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(nested_wait),
+                                          "--receipt", str(wait_plan)])
+            printed = output.getvalue()
+            self.assertEqual(code, 1, f"exit {code} for a nested wait input: {printed}")
+            self.assertNotIn("Traceback", printed,
+                             f"the guarded parse ended in a traceback: {printed}")
+            self.assertIn("oracle: oracle.plan-accounted", printed,
+                          f"the nested wait input was not refused by name: {printed}")
+            self.assertIn("`wait`", printed, f"the refusal does not name the routed call: {printed}")
+            self.assertEqual(printed.strip().splitlines()[-1],
+                             "oracle: FAIL — 17 record(s), 7 occurrence(s), 1 violation(s)",
                              f"the verdict is not the run's last line: {printed}")
 
     def test_the_validate_mode_reports_a_verdict(self) -> None:
