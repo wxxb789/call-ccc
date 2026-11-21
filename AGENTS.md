@@ -38,11 +38,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   the carried reader's own code — never by restating its logic here. A few places still re-derive a foreign
   loader's judgment, each of them **declared debt rather than a licence**: kept only where nothing else pins
   that behaviour, forbidden to grow a new local judgment, and replaced the moment an authoritative read
-  answers its question. `docs/core-design/README.md` §2 carries the **single authoritative list** of those
-  places and their replacement conditions (today: the Pi-family source leaf check, the OpenCode source
-  oracle's expectations, and the Pi/OMP target-side replay prediction), and the decision entries behind them
-  are `docs/decisions/OPEN-QUESTIONS.md`'s `Q-0005-18`, `Q-0008-10` and `Q-0005-19`. Add a new exception to
-  that list, never here.
+  answers its question. `docs/core-design/README.md` §2 lists the places declared so far with each one's
+  replacement condition — **declared, not promised exhaustive** — and a new one is added there and to
+  `docs/decisions/OPEN-QUESTIONS.md`, never here. Checking the bytes **this build wrote** against the output
+  it intended is **not** this debt: that is structural verification of our own writer, not a foreign decoder,
+  and where the projection cannot establish a fact the check states what the writer intended instead of
+  guessing at the harness's. Whether the harness then accepts the artifact stays with the harness, always.
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it. A target format that is
