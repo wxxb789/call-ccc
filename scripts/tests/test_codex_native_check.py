@@ -2088,19 +2088,32 @@ def _append_notification_exchange(text: str, receipt: dict, notification: str) -
     call = {"timestamp": stamp, "type": "response_item",
             "payload": {"type": "function_call", "name": "wait_agent",
                         "arguments": arguments, "call_id": "call_oracle_0002"}}
-    message = {"timestamp": stamp, "type": "response_item",
-               "payload": {"type": "message", "role": "user",
-                           "content": [{"type": "input_text", "text": notification}]}}
-    event = {"timestamp": stamp, "type": "event_msg",
-             "payload": {"type": "user_message", "message": notification, "images": [],
-                         "local_images": [], "text_elements": []}}
     receipt["occurrences"].append(
         {"kind": "tool_call", "call_id": "call_oracle_0002", "name": "wait_agent",
          "arguments": arguments, "disposition": "emitted"})
+    with_call = "\n".join(lines + [oracle_quote(call)]) + "\n"
+    return _append_message_exchange(with_call, receipt, notification)
+
+
+def _append_message_exchange(text: str, receipt: dict, message: str) -> tuple[str, dict]:
+    """One fixture with a `user` message carrying `message` and its turn-view `user_message` event
+    appended, and the receipt's own entry for the message marked `emitted`.
+
+    Both records are stamped at the last record's instant so the clock stays legal, and the record and
+    its event are appended in the artifact's own order — the message entry last in the receipt — which
+    `oracle.plan-order` compares.
+    """
+    lines = text.splitlines()
+    stamp = json.loads(lines[-1])["timestamp"]
+    record = {"timestamp": stamp, "type": "response_item",
+              "payload": {"type": "message", "role": "user",
+                          "content": [{"type": "input_text", "text": message}]}}
+    event = {"timestamp": stamp, "type": "event_msg",
+             "payload": {"type": "user_message", "message": message, "images": [],
+                         "local_images": [], "text_elements": []}}
     receipt["occurrences"].append(
-        {"kind": "message", "role": "user", "text": notification, "disposition": "emitted"})
-    appended = [oracle_quote(record) for record in (call, message, event)]
-    return "\n".join(lines + appended) + "\n", receipt
+        {"kind": "message", "role": "user", "text": message, "disposition": "emitted"})
+    return "\n".join(lines + [oracle_quote(record), oracle_quote(event)]) + "\n", receipt
 
 
 def _mutation_plan_consumed_notification(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2118,6 +2131,71 @@ def _mutation_plan_consumed_notification(text: str, receipt: dict | None) -> tup
     assert receipt is not None
     return _append_notification_exchange(
         text, receipt, _subagent_notification(NOTIFICATION_CHILD, NOTIFICATION_SUMMARY))
+
+
+def _mutation_plan_dropped_notification(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A notification the carried read **does not** consume, its message and turn-view event marked
+    emitted.
+
+    The body after the `<subagent_notification>` prefix is not a consumed notification
+    (`parseCodexSubagentNotification`'s body gate fails, so `handleSubagentNotification` answers
+    false) — and the record's message is dropped all the same: the user-text preprocessing reads the
+    block's prefix as a composed system envelope (`isCodexSystemMessage`), so every block goes and the
+    read answers no message at all (`preprocessCodexUserTextBlocks`; `handleResponseItem` returns
+    before appending one). A receipt marking the message emitted therefore names dialogue no read of
+    the artifact holds — the shape the round-10 controls had certified
+    (`test_a_consumed_subagent_notification_is_refused_with_a_plan`).
+    """
+    assert receipt is not None
+    return _append_notification_exchange(
+        text, receipt, "<subagent_notification>not JSON</subagent_notification>")
+
+
+def _mutation_plan_rewritten_user_message(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A user message whose block carries a complete composed envelope before its own text, marked
+    emitted.
+
+    `stripCodexSystemPrefix` removes `<environment_context>` through its close tag from the block's
+    start, so the text the read records is the remainder — not the bytes the receipt's identity names —
+    while the record's own identity, count and order are unchanged (review round r10's finding).
+    """
+    assert receipt is not None
+    return _append_message_exchange(
+        text, receipt, "<environment_context>\nfixture\n</environment_context>\nAnd now?")
+
+
+def _mutation_plan_plugin_envelope(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """A user message whose first block carries the plugin-discovery envelope, marked emitted.
+
+    `stripCodexRecommendedPlugins` rewrites that envelope away on the session's first user record only
+    (`preprocessCodexUserTextBlocks`'s `initial`), which is state the oracle does not model, so the
+    read's answer cannot be established under either reading and the shape is refused where a plan is
+    compared (review round r10's finding).
+    """
+    assert receipt is not None
+    return _append_message_exchange(
+        text, receipt, "<recommended_plugins>\n- one\n</recommended_plugins>\nAnd now?")
+
+
+def _mutation_plan_padded_wait_agent_name(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The fixture's call renamed ` wait_agent ` in the artifact **and** the receipt.
+
+    Every identity the receipt states still matches — the written name is the occurrence identity — but
+    the carried read remembers the call under the Go-trimmed name (`rememberToolCall`;
+    `toolCallNameForOutput`) and answers the plain-text output through the `wait_agent` arm, which
+    appends **no** result for an output that carries no `status` object: a read of the artifact answers
+    no result where the receipt names one (review round r10's finding).
+    """
+    assert receipt is not None
+    padded = " wait_agent "
+
+    def rename(record: dict) -> None:
+        record["payload"]["name"] = padded
+
+    artifact = oracle_edit(text, oracle_item_is("function_call", "call_oracle_0001"), change=rename)
+    oracle_receipt_edit(receipt, oracle_entry_kind("tool_call"),
+                        lambda entry: entry.__setitem__("name", padded))
+    return artifact, receipt
 
 
 def _mutation_plan_omitted_agent_message(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2265,6 +2343,24 @@ def _mutation_call_without_a_usable_name(text: str, receipt: dict | None) -> tup
     """
     return oracle_edit(text, oracle_item_is("function_call", "call_oracle_0001"),
                        change=lambda record: record["payload"].pop("name")), receipt
+
+
+def _mutation_call_without_a_call_id(text: str, receipt: dict | None) -> tuple[str, dict | None]:
+    """The call's `call_id` written as the empty string, and **no** output left to fail pairing on its
+    own.
+
+    Review round r10's finding: the pairing mutations covered an unknown output owner, duplicate ids,
+    an early output and a missing name, and removing the rule's non-empty-`call_id` guard left every
+    one of them red for the same reasons — the guard itself had no fixture. The call keeps the
+    non-empty `name` the carried reader registers a call for and the recorded arguments, and its output
+    record is deleted with it (an output left naming the empty id would be that rule's finding too, so
+    the call's own empty id stays the one defect). `handleFunctionCallOutput` reads
+    `payload.Get("call_id").Str` and returns on an empty answer, so the record is no call the read
+    answers under either spelling.
+    """
+    text = oracle_edit(text, oracle_item_is("function_call", "call_oracle_0001"),
+                       change=lambda record: record["payload"].__setitem__("call_id", ""))
+    return _without_record(text, oracle_item_is("function_call_output", "call_oracle_0001")), receipt
 
 
 def _mutation_plan_emitted_shortfall(text: str, receipt: dict | None) -> tuple[str, dict | None]:
@@ -2514,6 +2610,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        _mutation_output_before_its_call),
         OracleMutation("a call without a usable name", "session.jsonl", None,
                        _mutation_call_without_a_usable_name),
+        OracleMutation("a named call whose call_id is empty", "session.jsonl", None,
+                       _mutation_call_without_a_call_id),
     ),
     "oracle.receipt": (
         OracleMutation("a disposition the vocabulary does not hold", "session.jsonl",
@@ -2560,6 +2658,14 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
                        "reduced-receipt.json", _mutation_plan_omitted_event_survives),
         OracleMutation("a consumed subagent notification the plan marks emitted", "session.jsonl",
                        "session-receipt.json", _mutation_plan_consumed_notification),
+        OracleMutation("a malformed notification the read's preprocessing drops", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_dropped_notification),
+        OracleMutation("a user message whose envelope prefix the read strips", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_rewritten_user_message),
+        OracleMutation("a user message carrying the first-turn plugin envelope", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_plugin_envelope),
+        OracleMutation("a call whose padded name the read trims before routing", "session.jsonl",
+                       "session-receipt.json", _mutation_plan_padded_wait_agent_name),
     ),
     "oracle.plan-order": (
         OracleMutation("a compaction boundary moved past the later turns", "session.jsonl",
@@ -3199,8 +3305,11 @@ class CodexArtifactOracle(unittest.TestCase):
         writer already obeys (`lossEmptyResults`/`lossWhitespaceResults`). The controls pin the read's
         own routing: the exec-cell `wait` poll, which `handleFunctionCall` routes as `code_mode_wait`
         (a non-blank string `cell_id`, no `ids`/`targets`), reads as an ordinary result and stays green;
-        a `wait` carrying a target does not reroute and is refused; and every one of these shapes is
-        structurally green, because a native rollout may carry it.
+        a `wait` carrying a target does not reroute and is refused; a name whose Go trim differs from
+        its written spelling is routed by the trimmed one (`rememberToolCall`),
+        so `" wait_agent "` is refused by the `wait_agent` arm while a padded ordinary name stays
+        green; and every one of these shapes is structurally green, because a native rollout may carry
+        it.
         """
         session = oracle_fixture("session.jsonl")
 
@@ -3225,13 +3334,18 @@ class CodexArtifactOracle(unittest.TestCase):
                 raise AssertionError("the plan no longer holds the tool call this case renames")
             return artifact, receipt
 
-        for label, name, arguments in (
-            ("the finding's own `wait_agent` rename", "wait_agent", None),
-            ("a `spawn_agent` output, which the read appends no result for", "spawn_agent", None),
+        for label, name, arguments, routed in (
+            ("the finding's own `wait_agent` rename", "wait_agent", None, "wait_agent"),
+            ("a `spawn_agent` output, which the read appends no result for", "spawn_agent", None,
+             "spawn_agent"),
             ("a `wait` carrying `ids`, which the read does not reroute", "wait",
-             '{"ids":["agent-0001"],"timeout_ms":600000}'),
+             '{"ids":["agent-0001"],"timeout_ms":600000}', "wait"),
             ("a `wait` naming both a cell and a target, which the read does not reroute either", "wait",
-             '{"cell_id":"cell-0001","ids":["agent-0001"]}'),
+             '{"cell_id":"cell-0001","ids":["agent-0001"]}', "wait"),
+            ("a name whose Go trim changes it, which the read routes as the trimmed spelling",
+             " wait_agent ", None, "wait_agent"),
+            ("a padded `wait` with a cell id, which the read does not reroute by the raw spelling",
+             " wait ", '{"cell_id":"cell-0001"}', "wait"),
         ):
             with self.subTest(arm=label):
                 artifact, receipt = renamed(name, arguments)
@@ -3240,8 +3354,8 @@ class CodexArtifactOracle(unittest.TestCase):
                 refused = NATIVE_CHECK.validate_artifact(artifact, receipt=receipt)
                 self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
                                  f"{label} certified the result its read does not return: {refused}")
-                self.assertIn(name, refused[0].detail,
-                              f"the refusal does not name the call's registered name: {refused[0]}")
+                self.assertIn(f"`{routed}`", refused[0].detail,
+                              f"the refusal does not name the call's routed name: {refused[0]}")
                 self.assertNotIn("# notes", refused[0].detail,
                                  f"the refusal echoed the recorded text: {refused[0]}")
 
@@ -3269,6 +3383,16 @@ class CodexArtifactOracle(unittest.TestCase):
                          "the exec-cell wait is not structurally green")
         self.assertEqual(NATIVE_CHECK.validate_artifact(artifact, receipt=receipt), [],
                          "the exec-cell wait reads as an ordinary result and was refused")
+
+        # The routing trim's other side: a padded name the read trims to an **ordinary** tool name is
+        # still the ordinary arm — `handleFunctionCallOutput`'s default branch answers the recorded
+        # text — so the receipt's own result stands and the artifact stays green. The written spelling
+        # is the occurrence identity on both sides.
+        artifact, receipt = renamed(" Read ")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact), [],
+                         "the padded ordinary name is not structurally green")
+        self.assertEqual(NATIVE_CHECK.validate_artifact(artifact, receipt=receipt), [],
+                         "a padded ordinary name was refused although the read answers its result")
 
         # A record no read appends a result from: no `output` member, and one every byte of which Go's
         # own trim calls blank. The identity is the written member (empty string, or the whitespace
@@ -3461,7 +3585,7 @@ class CodexArtifactOracle(unittest.TestCase):
                          "a second result the read answers was refused")
 
     def test_a_consumed_subagent_notification_is_refused_with_a_plan(self) -> None:
-        """A `user` message the carried read consumes as a subagent notification never travels as one.
+        """A `user` message the carried read's own text path removes never travels as the record.
 
         Review round r9's finding: the finding's own exchange — a `wait_agent` call naming the child,
         the notification message and its turn-view event, both marked `emitted` in the receipt, and no
@@ -3471,10 +3595,17 @@ class CodexArtifactOracle(unittest.TestCase):
         wait/notification case pins that attribution). No record of the artifact states that result and
         the receipt's identity has no spelling for it, so the shape is refused where a plan is compared
         — and silent without one, because a native rollout may carry it (measured: none of Codex
-        0.170.0's own 25 sessions carries a consumed notification, §0 of the evidence record). The
-        controls pin the gates on the read's own parse: a body with no agent, one whose terminal status
-        text is Go-blank, and one that is not JSON are not consumed, so their messages travel and stay
-        green with their plans.
+        0.170.0's own 25 sessions carries a consumed notification, §0 of the evidence record).
+
+        Review round r10's finding is the class's other half: a notification-prefixed message whose
+        body the read does **not** consume — no agent, no terminal status text, no JSON body — is
+        dropped all the same, by the user-text preprocessing (`isCodexSystemMessage` reads the block's
+        tag as a composed system envelope, whether or not its body parses as one), so it too is a
+        message no read answers while this round's controls marked the three malformed notifications
+        emitted and asserted they stayed green. Each is refused here now, with the rewrite side beside
+        them — a composed envelope prefix stripped from a block, and the first-turn plugin envelope the
+        oracle refuses because which record is the session's first user one is a state it does not
+        model — and the true controls are messages whose whole text the read answers as written.
         """
         session = oracle_fixture("session.jsonl")
         attack, plan = _mutation_plan_consumed_notification(
@@ -3505,12 +3636,68 @@ class CodexArtifactOracle(unittest.TestCase):
             ("a body that is not JSON",
              "<subagent_notification>not JSON</subagent_notification>"),
         ):
-            with self.subTest(control=label):
+            with self.subTest(refused=label):
                 control_text, control_plan = _append_notification_exchange(
                     session, oracle_receipt("session-receipt.json"), notification)
+                self.assertEqual(NATIVE_CHECK.validate_artifact(control_text), [],
+                                 f"{label!r} is not structurally green")
+                refused = NATIVE_CHECK.validate_artifact(control_text, receipt=control_plan)
+                self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                                 f"{label!r} was certified although the read answers no message: "
+                                 f"{refused}")
+                self.assertIn("no message at all", refused[0].detail,
+                              f"the refusal does not name the missing message: {refused[0]}")
+                self.assertNotIn(notification, refused[0].detail,
+                                 f"the refusal echoed the notification text: {refused[0]}")
+
+        # The rewrite side of the preprocessing: a complete composed envelope before the block's own
+        # text is stripped, so the read answers the remainder — not the bytes the receipt's identity
+        # names.
+        rewritten = "<environment_context>\nfixture\n</environment_context>\nAnd now?"
+        armed, armed_plan = _append_message_exchange(
+            session, oracle_receipt("session-receipt.json"), rewritten)
+        self.assertEqual(NATIVE_CHECK.validate_artifact(armed), [],
+                         "the envelope-prefixed message is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(armed, receipt=armed_plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the rewritten message certified the plan: {refused}")
+        self.assertIn("does not answer as recorded", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn(rewritten, refused[0].detail,
+                         f"the refusal echoed the message text: {refused[0]}")
+
+        # The first-turn plugin envelope: the read rewrites it on the session's first user record only,
+        # and which record that is is state this oracle does not model, so the shape is refused rather
+        # than read under either answer.
+        plugin = "<recommended_plugins>\n- one\n</recommended_plugins>\nAnd now?"
+        armed, armed_plan = _append_message_exchange(
+            session, oracle_receipt("session-receipt.json"), plugin)
+        self.assertEqual(NATIVE_CHECK.validate_artifact(armed), [],
+                         "the plugin-envelope message is not structurally green")
+        refused = NATIVE_CHECK.validate_artifact(armed, receipt=armed_plan)
+        self.assertEqual([violation.rule for violation in refused], ["oracle.plan-accounted"],
+                         f"the plugin-envelope message certified the plan: {refused}")
+        self.assertIn("plugin-discovery envelope", refused[0].detail, f"{refused[0]}")
+        self.assertNotIn(plugin, refused[0].detail,
+                         f"the refusal echoed the message text: {refused[0]}")
+
+        # The controls: messages whose whole text the read answers as written, so the plan that names
+        # them is a statement about a read of the artifact. The notification tag is a prefix gate and
+        # the composed envelopes are prefix gates too, so a quotation of either mid-text travels.
+        for label, message in (
+            ("a message quoting the notification tag mid-text",
+             "A prompt quoting <subagent_notification> and </subagent_notification> inline."),
+            ("a message whose first characters only resemble the tag",
+             "<subagent_notificationX> keeps its text"),
+            ("a message mentioning the AGENTS.md envelope after its first character",
+             "See # AGENTS.md and its </INSTRUCTIONS> close tag."),
+        ):
+            with self.subTest(control=label):
+                control_text, control_plan = _append_message_exchange(
+                    session, oracle_receipt("session-receipt.json"), message)
+                self.assertEqual(NATIVE_CHECK.validate_artifact(control_text), [],
+                                 f"the control {label!r} is not structurally green")
                 self.assertEqual(NATIVE_CHECK.validate_artifact(control_text, receipt=control_plan), [],
-                                 f"the control {label!r} is refused although the read does not consume "
-                                 f"the record")
+                                 f"the control {label!r} was refused although the read answers its text")
 
     def test_a_moved_turn_context_is_outside_the_receipts_vocabulary(self) -> None:
         """The receipt names no turns, so `oracle.plan-order` compares order, not turn membership.
@@ -3664,6 +3851,57 @@ class CodexArtifactOracle(unittest.TestCase):
                 NATIVE_CHECK.oracle_occurrences(NATIVE_CHECK.oracle_records(preserved)[0])]
         self.assertIn(("message", "user", "\x1c"), keys,
                       f"the preserved message is not an occurrence with its own text: {keys}")
+
+    def test_a_deeply_nested_object_is_scanned_without_aborting(self) -> None:
+        """A nested object the decoder accepts is walked to its leaves, not into this host's stack.
+
+        Review round r10's finding: the post-decode surrogate scan recursed a frame per container level
+        — twice, beside the generator the comprehension adds — so on a supported interpreter an object
+        `json.loads` answered could exhaust the stack inside the scan and end the run with a
+        `RecursionError` instead of a verdict, while the committed nesting mutation (a 200 000-deep
+        array) never reaches the scan because the decoder refuses the line first. The walk is iterative
+        now, and this case pins both halves at a depth of 700 nested objects: the decoder reads the
+        line (the recursive walk fails well before that on the supported interpreters — measured on
+        this host's CPython 3.15 at 500 levels; 3.11's decoder bound is ~1 frame per level against the
+        recursive walk's ~2, so 700 is inside one and past the other there too), the artifact validates
+        green, and the same object with a lone-surrogate escape written at its deepest leaf is refused
+        by `oracle.jsonl-objects` — so a scan that merely skipped deep values would not pass this pair.
+        """
+        depth = 700
+        session = oracle_fixture("session.jsonl")
+        needle = '"state":{}'
+        self.assertIn(needle, session, "the fixture no longer writes the member this case deepens")
+
+        def deepened(leaf: str) -> str:
+            """The fixture with its `world_state` state member replaced by `depth` nested objects whose
+            innermost holds `leaf` as written JSON."""
+            lines = session.splitlines()
+            for index, line in enumerate(lines):
+                if json.loads(line).get("type") != "world_state":
+                    continue
+                lines[index] = line.replace(needle, '"state":' + '{"a":' * depth + leaf
+                                            + "}" * depth, 1)
+                return "\n".join(lines) + "\n"
+            raise AssertionError("the fixture no longer holds its world_state record")
+
+        for label, leaf, expected in (
+            ("a plain deepest leaf", json.dumps("deep"), []),
+            ("a lone-surrogate escape at the deepest leaf", '"\\ud800"', ["oracle.jsonl-objects"]),
+        ):
+            with self.subTest(leaf=label):
+                armed = deepened(leaf)
+                self.assertNotEqual(armed, session, "the case's own edit changed nothing")
+                record = next(json.loads(line) for line in armed.splitlines()
+                              if json.loads(line).get("type") == "world_state")
+                self.assertIsInstance(record["payload"]["state"], dict,
+                                      "the nested object did not decode as one")
+                violations = NATIVE_CHECK.validate_artifact(armed)
+                self.assertEqual([violation.rule for violation in violations], expected,
+                                 f"{label}: {violations}")
+                if expected:
+                    self.assertIn("unpaired surrogate", violations[0].detail, f"{violations[0]}")
+                    self.assertEqual(violations[0].line, 2,
+                                     f"the refusal does not name the deepened record: {violations[0]}")
 
     def test_a_malformed_member_is_named_without_echoing_its_text(self) -> None:
         """Default diagnostics name a malformed value by its place and kind, never by its contents.

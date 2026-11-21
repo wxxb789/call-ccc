@@ -384,7 +384,12 @@ says so.
   `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside
   the writer's two carrying readable text, a `user` message a read consumes as a subagent notification
   (the record never travels as a message; the read attributes its text to a result the artifact states in
-  no record), and a `custom_tool_call_output` whose carried read answers
+  no record), a `user`/`assistant` `message` whose written text the read's own extraction does not
+  answer as recorded — a `user` block the user-text preprocessing drops as a composed system envelope
+  (the subagent-notification tag among them, its body parsing or not), a block whose envelope prefix it
+  strips, an empty string it drops from the join — and a `user` message whose first block carries the
+  plugin-discovery envelope the read strips only on the session's first user record, a state the oracle
+  does not model, and a `custom_tool_call_output` whose carried read answers
   the result's outcome the receipt's identity cannot state among them — refused there
   too, a shape whose own read or identity the oracle does not model — a call carrying both `arguments` and
   `input`, a call whose recorded input or result whose recorded text is written as a member that is not a
@@ -392,15 +397,21 @@ says so.
   carried read answers), an object-valued `content` a read iterates the member values of — refused there
   too, and so is a result the carried read does not establish — one whose call the read answers elsewhere
   (`spawn_agent` appends no result; `wait`/`wait_agent` answer per-agent results from the output's own
-  `status` object, the exec-cell poll excepted), one carrying no output a read appends a result from, or
+  `status` object, the exec-cell poll excepted, and the family is asked of the name the read registers
+  for the call — Go-trimmed by `rememberToolCall`, so a padded `wait_agent` is answered by the read as
+  one), one carrying no output a read appends a result from, or
   one whose recorded text is the text of the result written before it after the read's own trim
   (`hasEquivalentCallResultEvent` suppresses the duplicate: two raw texts that trim to one are one result
   to every read, and a receipt naming both certifies a multiplicity no read answers) —
-  a line whose object (or a receipt document whose object) writes a member name twice, or holds an
-  unpaired surrogate escape (`gjson` answers U+FFFD where this decoder answers the code point, so two
-  distinct spellings would be one string to a read — measured on the carried gjson v1.20.0) — refused
-  before comparison,
-  because this oracle's decoder and the carried reader's `gjson` answer such a line differently,
+  a line whose object writes a member name twice, or a receipt document whose object does, or an
+  artifact line holding an unpaired surrogate escape (`gjson` answers U+FFFD where this decoder answers
+  the code point, so two distinct spellings would be one string to a read — measured on the carried gjson
+  v1.20.0) — refused
+  before comparison: the repeated name is one document no reader answers a single way (this oracle's
+  decoder keeps the last value, the carried reader's `gjson` the first, and a plan whose members collide
+  is no more one plan than such a line is one record), and the surrogate escape makes an artifact line
+  one two JSON readers answer differently — while a receipt, read by this oracle's decoder alone, keeps
+  its own reading: a surrogate identity in one is compared and named by digest, not refused;
   every call required to carry the non-empty `name` the carried reader registers a call for and every
   call output to name a call written before it, and a receipt that declares no
   occurrences refused before any comparison). The identity the receipt is matched on is the member the

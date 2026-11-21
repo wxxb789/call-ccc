@@ -902,7 +902,14 @@ ORACLE_RULES: dict[str, str] = {
         "whose `user`/`assistant` role and readable text a read appends as a message, an "
         "`image_generation_call`, a `message` in a role outside the writer's two carrying readable text, "
         "a `user` message a read consumes as a subagent notification (the record never travels as a "
-        "message; the read attributes its text to a result the artifact states in no record), and a "
+        "message; the read attributes its text to a result the artifact states in no record), a "
+        "message a read's own text extraction does not answer as the record's written bytes — a `user` "
+        "message the user-text preprocessing drops as a composed system envelope, the "
+        "subagent-notification tag among them, its body parsing or not, a block whose envelope prefix "
+        "it strips, and an empty string the read drops from the join — and a `user` message whose "
+        "first block carries the plugin-discovery envelope the read strips only on the session's first "
+        "user record, a state this oracle does not model (each refused rather than read under either "
+        "answer), and a "
         "`custom_tool_call_output` whose carried read answers the result's outcome — and a shape "
         "whose own read or identity this oracle does not model — a call "
         "carrying both `arguments` and `input` (a read skips an empty or `{}`/`[]` `arguments` and "
@@ -913,7 +920,9 @@ ORACLE_RULES: dict[str, str] = {
         "(`ForEach`) — are equally refused, and so is a result the carried read does not establish: one "
         "whose call the read answers elsewhere (`spawn_agent`'s output links a subagent session and "
         "appends no result; `wait`/`wait_agent` answer per-agent results from the output's own `status` "
-        "object — the exec-cell poll reads as an ordinary result and is exempt) or one that carries no "
+        "object — the exec-cell poll reads as an ordinary result and is exempt, and the family is "
+        "decided by the name the read registers for the call, Go-trimmed, so a padded `wait_agent` is "
+        "answered by its trimmed spelling) or one that carries no "
         "output a read appends a result from, or one the carried read suppresses as equivalent — the "
         "same status and recorded text after its own trim — to the result the artifact writes before "
         "it; the plan is total, in both of the target's dialogue channels",
@@ -967,7 +976,10 @@ ORACLE_RESULT_ITEMS = ("function_call_output", "custom_tool_call_output")
 #: the receipt's `call_id`/recorded-text identity is not the result a read answers for them where a plan
 #: is compared (`oracle_result_read_violations`). One `wait` shape is exempt: the exec-cell poll, which
 #: `handleFunctionCall` routes as `code_mode_wait` and the output switch answers through the ordinary
-#: arm; `oracle_exec_cell_wait` mirrors that condition.
+#: arm; `oracle_exec_cell_wait` mirrors that condition. The set is asked of the name the read
+#: **remembers** the call under (`oracle_call_routing_name`: `rememberToolCall` Go-trims the emitted
+#: name, so `" wait_agent "` is routed as `wait_agent`), while the written name stays the occurrence
+#: identity.
 ORACLE_SPECIAL_RESULT_CALLS = ("spawn_agent", "wait", "wait_agent")
 
 #: The `event_msg` payload types that carry one message's text for the harness's own view.
@@ -1114,14 +1126,25 @@ def _oracle_lone_surrogate(value: object) -> bool:
     astral code point in both readers). So a line holding one is a line two JSON readers answer
     differently for, and its strings may not be compared by either answer (`oracle_records` drops it the
     way it drops a repeated-member line).
+
+    The walk is iterative rather than recursive (review round r10's finding): a recursive scan holds a
+    frame per container level — two beside the generator a comprehension adds — so an object
+    `json.loads` accepted could exhaust this interpreter's stack inside the scan and end the run with a
+    `RecursionError` instead of a verdict. A stack of the values still to visit reads any depth the
+    decoder answered.
     """
-    if isinstance(value, str):
-        return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
-    if isinstance(value, dict):
-        return any(_oracle_lone_surrogate(name) or _oracle_lone_surrogate(member)
-                   for name, member in value.items())
-    if isinstance(value, list):
-        return any(_oracle_lone_surrogate(member) for member in value)
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if any(0xD800 <= ord(character) <= 0xDFFF for character in item):
+                return True
+        elif isinstance(item, dict):
+            for name, member in item.items():
+                stack.append(name)
+                stack.append(member)
+        elif isinstance(item, list):
+            stack.extend(item)
     return False
 
 
@@ -1506,8 +1529,11 @@ def oracle_message_text(payload: dict) -> str:
     from the join and this oracle keeps every string it reads, so an artifact whose readable blocks are
     an empty string beside `hi` joins a leading newline where a read of it answers `hi`. This build's
     writer emits one message as one non-empty block, so the two rules agree on every artifact this route
-    produces; the difference is stated, not silently filtered, because this text is the occurrence
-    identity a receipt's counts are matched by. An object-valued `content` is not read here at all — the
+    produces; the **written** text stays the occurrence identity a receipt's counts are matched by, and
+    where a plan is compared the difference between it and the read's own answer is refused rather than
+    certified — `oracle_message_read_text` is that read's answer, and
+    `oracle_unaccounted_occurrence_violations` refuses a `message` whose read answer is not this text
+    (review round r10's finding). An object-valued `content` is not read here at all — the
     carried reader's `ForEach` iterates its member values — so that shape is refused where a plan is
     compared (`oracle_unmodelled_shape_violations`) instead of being read as empty.
     """
@@ -1599,6 +1625,177 @@ def oracle_read_consumes_subagent_notification(payload: dict) -> bool:
     return False
 
 
+#: The composed envelopes `stripCodexSystemPrefix` removes from the start of a user text block, and the
+#: close tag each is removed through (`internal/parser/codex.go`): `# AGENTS.md` and `<INSTRUCTIONS>`
+#: share `</INSTRUCTIONS>`, and `<environment_context>` closes with its own tag. Spelled out because
+#: the oracle mirrors that reader function, whose prefixes and close tags are exactly these.
+ORACLE_SYSTEM_PREFIXES = (
+    ("# AGENTS.md", "</INSTRUCTIONS>"),
+    ("<environment_context>", "</environment_context>"),
+    ("<INSTRUCTIONS>", "</INSTRUCTIONS>"),
+)
+
+#: The `source="goal"` attribute `isCodexGoalContext` looks for inside a `<codex_internal_context …>`
+#: open tag — Go's `(?:^|\s)source="goal"(?:\s|/|$)`, the attribute bordered by a space, `/` or the
+#: tag's own end — as this oracle's mirror searches it.
+ORACLE_GOAL_SOURCE = re.compile(r'(?:^|\s)' + re.escape('source="goal"') + r'(?:\s|/|$)')
+
+
+def oracle_strip_codex_system_prefix(text: str) -> str:
+    """What the carried reader's `stripCodexSystemPrefix` answers for one user text block: the block
+    without every complete composed envelope at its start — `# AGENTS.md` through `</INSTRUCTIONS>`,
+    `<environment_context>` through its own close tag, `<INSTRUCTIONS>` through `</INSTRUCTIONS>` — and
+    unchanged where the envelope's close tag does not follow.
+
+    The loop and the trimming are the reader's own: `strings.TrimLeft(content, "\r\n")` before each
+    comparison (carriage returns and line feeds only — not Python's wider whitespace), the first close
+    tag after the prefix (`strings.Cut`), and the remainder trimmed the same way before the next pass.
+    """
+    while True:
+        trimmed = text.lstrip("\r\n")
+        close_tag = ""
+        for prefix, tag in ORACLE_SYSTEM_PREFIXES:
+            if trimmed.startswith(prefix):
+                close_tag = tag
+                break
+        if close_tag == "":
+            return text
+        index = trimmed.find(close_tag)
+        if index < 0:
+            return text
+        text = trimmed[index + len(close_tag):].lstrip("\r\n")
+
+
+def oracle_is_goal_context(text: str) -> bool:
+    """What `isCodexGoalContext` answers for one user text block: a `/goal` continuation envelope —
+    `<goal_context>` at the start after Go's own trim, or a `<codex_internal_context …>` open tag
+    naming `source="goal"` — which the user-text preprocessing drops as system content."""
+    trimmed = oracle_go_trim(text)
+    if trimmed.startswith("<goal_context>"):
+        return True
+    if trimmed.startswith("<codex_internal_context"):
+        open_tag, separator, _ = trimmed.partition(">")
+        return separator != "" and ORACLE_GOAL_SOURCE.search(open_tag) is not None
+    return False
+
+
+def oracle_is_codex_system_message(text: str) -> bool:
+    """What `isCodexSystemMessage` answers for one stripped user text block: whether the user-text
+    preprocessing drops it.
+
+    The prefixes are the reader's own, spelling for spelling: `# AGENTS.md`, `<environment_context>`
+    and `<INSTRUCTIONS>` are compared against the **untrimmed** text, `<turn_aborted>`, `<skill>` and
+    the subagent-notification tag after Go's trim, and the goal envelopes through
+    `oracle_is_goal_context`. The notification tag is a prefix gate whether or not the body after it
+    parses as one — `parseCodexSubagentNotification` is the separate, consuming read
+    `oracle_read_consumes_subagent_notification` mirrors — which is what makes a malformed
+    notification's message, the record a receipt would otherwise name, a record no read answers (review
+    round r10's finding).
+    """
+    trimmed = oracle_go_trim(text)
+    return (text.startswith("# AGENTS.md")
+            or text.startswith("<environment_context>")
+            or text.startswith("<INSTRUCTIONS>")
+            or trimmed.startswith("<turn_aborted>")
+            or trimmed.startswith("<skill>")
+            or trimmed.startswith("<subagent_notification>")
+            or oracle_is_goal_context(text))
+
+
+def oracle_user_message_read_text(payload: dict) -> str | None:
+    """The text the carried read appends for one `user` `message` record, or None where it appends no
+    message at all.
+
+    Mirrors `handleResponseItem`'s user path over a record whose message shape `oracle.message` is
+    green for: the consumption gate first (`handleSubagentNotification` — the record never travels as a
+    message), then `preprocessCodexUserTextBlocks(extractCodexTextBlocks(payload), initial)`: every
+    non-empty readable text block with the composed envelope at its start stripped
+    (`oracle_strip_codex_system_prefix`), a block dropped where Go's own trim calls the stripped text
+    blank or `oracle_is_codex_system_message` answers true, and the kept blocks joined with a line feed
+    — None where the join is Go-blank. The `initial` flag that gates `stripCodexRecommendedPlugins` is
+    not modelled here; a record carrying the plugin-discovery envelope is refused by its own gate
+    (`oracle_user_message_plugin_envelope`) rather than read under either answer. Nor is the reader's
+    replay suppression modelled (`observeUserPrompt`'s state: a re-emitted **first** prompt dropped only
+    after a `turn_aborted` signal and before a later user turn): that is turn state a record alone
+    cannot establish, and an artifact whose duplicate first prompt the read would drop stays certifiable
+    here — the boundary the increment's evidence record states among what it does not claim.
+    """
+    if oracle_read_consumes_subagent_notification(payload):
+        return None
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return None
+    kept: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+            continue
+        text = block["text"]
+        if text == "":
+            continue
+        stripped = oracle_strip_codex_system_prefix(text)
+        if oracle_blank(stripped) or oracle_is_codex_system_message(stripped):
+            continue
+        kept.append(stripped)
+    joined = "\n".join(kept)
+    return None if oracle_blank(joined) else joined
+
+
+def oracle_user_message_plugin_envelope(payload: dict) -> bool:
+    """Whether one `user` message's first readable block carries the plugin-discovery envelope
+    `stripCodexRecommendedPlugins` removes: an open tag with a close tag after it.
+
+    That rewrite is gated on the reader's first-user flag (`preprocessCodexUserTextBlocks`'s `initial`):
+    on the session's first user record the envelope is rewritten away, on a later one the block travels
+    as written. Which record is that first one is state (`observeUserPrompt`, which inter-agent messages
+    and turn events also advance) this oracle does not model, so the shape is refused where a plan is
+    compared rather than read under either answer (review round r10's finding).
+    """
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return False
+    for block in blocks:
+        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+            continue
+        text = block["text"]
+        if text == "":
+            continue
+        start = text.find("<recommended_plugins>")
+        if start < 0:
+            return False
+        return text.find("</recommended_plugins>", start + len("<recommended_plugins>")) >= 0
+    return False
+
+
+def oracle_message_read_text(payload: dict, role: str) -> str | None:
+    """The text the carried read appends for one `message` record, or None where it appends none — the
+    answer `oracle_message_text` is the artifact's **written** identity, and this is the read's own.
+
+    A `user` record goes through `oracle_user_message_read_text` (the consumption gate and the
+    user-text preprocessing); an `assistant` record through `extractCodexContent` — the non-empty
+    readable texts joined with a line feed, no preprocessing — answered None only where Go's own trim
+    calls the join blank, which a message green under `oracle.message` never is (one of its texts is
+    non-blank). The difference from `oracle_message_text`, which keeps every readable string the record
+    writes, is one an empty string in a block makes: the read drops it from the join, so the text it
+    answers is not the record's written bytes (review round r10's finding — refused where a plan is
+    compared).
+    """
+    if role == "user":
+        return oracle_user_message_read_text(payload)
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return None
+    kept: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+            continue
+        text = block["text"]
+        if text == "":
+            continue
+        kept.append(text)
+    joined = "\n".join(kept)
+    return None if oracle_blank(joined) else joined
+
+
 def oracle_result_text(payload: dict) -> str:
     """One tool result's own text, as the occurrence identity counts it.
 
@@ -1632,6 +1829,23 @@ def oracle_call_name(payload: dict) -> str:
     """
     name = payload.get("name")
     return name if isinstance(name, str) else ""
+
+
+def oracle_call_routing_name(name: str) -> str:
+    """The name the carried read routes a call's output by: the name it remembers the call under.
+
+    `handleFunctionCall` registers the emitted name through `rememberToolCall`, which Go-trims it, and
+    `toolCallNameForOutput` answers from that remembered name before the raw `callNames` entry written
+    beside it — so a name written with surrounding whitespace is routed as its trimmed spelling, the
+    `wait_agent` branch for `" wait_agent "` (review round r10's finding: the padded name left the
+    oracle on the ordinary arm while the read answered the call's plain-text output with **no** result,
+    the wait branch's `status` gate returning before recording one). Where Go's trim leaves nothing
+    (`" "`), the registration stores no name and the read falls back to the raw spelling, which is what
+    this answers. The **written** name stays the occurrence identity (`oracle_call_name`), not this
+    routing spelling: the read answers the call itself with the name the record wrote.
+    """
+    registered = oracle_go_trim(name)
+    return registered if registered != "" else name
 
 
 def oracle_call_input_member(payload: dict) -> tuple[str, object] | None:
@@ -1830,7 +2044,18 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
       record never travels as a message — the read consumes it and attributes its delivered text to a
       result event on the wait call that named the agent, or, attributed to no call, to an orphan
       tool-result message — and no record of the artifact states that occurrence, so a receipt marking
-      the message emitted names dialogue no read of the artifact answers (review round r9's finding).
+      the message emitted names dialogue no read of the artifact answers (review round r9's finding);
+    - a `user`/`assistant` `message` whose written text the carried read does not answer as recorded:
+      the read's own text extraction drops an empty string from the join, and for a `user` record the
+      user-text preprocessing drops a block it reads as a composed system envelope — the
+      subagent-notification tag among them, **whether or not its body parses as one** — or strips an
+      envelope prefix from a block, so the text a read answers, or the absence of a message, is not the
+      record's own bytes the receipt's identity names (review round r10's finding: the malformed
+      notifications the round's controls marked emitted, which no read answers as messages);
+    - a `user` `message` whose first block carries the plugin-discovery envelope
+      `stripCodexRecommendedPlugins` rewrites only on the session's first user record: the read's
+      answer depends on which record that is, a state this oracle does not model, so the shape is
+      refused rather than read under either answer (review round r10's finding).
 
     Each is refused where a plan is compared and silent without one: a native rollout may legitimately
     carry these shapes, and the structural rules say nothing about them (measured: 19 inter-agent
@@ -1850,6 +2075,7 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
             continue
         payload = oracle_payload(record)
         item = payload.get("type")
+        detail = None  # the message-read-answer arms carry their whole sentence
         if item == "message":
             # The vocabulary's own message item, counted by the accounting rules where its role is one
             # of the two they name; a stated role outside them carrying readable text is refused here,
@@ -1864,7 +2090,36 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
                          "artifact answers no message for the record — the delivered text is "
                          "attributed to a result the artifact states in no record the receipt's "
                          "identity can name")
-            elif role in ORACLE_MESSAGE_ROLES or not isinstance(role, str) or oracle_blank(role):
+            elif role in ORACLE_MESSAGE_ROLES:
+                if oracle_message_violations([(line, record)]):
+                    continue  # the structural rule's own finding: one defect, one report
+                if role == "user" and oracle_user_message_plugin_envelope(payload):
+                    detail = ("the artifact holds a `user` `message` whose first block carries the "
+                              "plugin-discovery envelope the carried read strips only on the session's "
+                              "first user record (`stripCodexRecommendedPlugins`, gated on the flag "
+                              "`preprocessCodexUserTextBlocks` is called with): which record that is a "
+                              "state this oracle does not model, so the receipt cannot name the text a "
+                              "read answers it as under either answer")
+                else:
+                    read_text = oracle_message_read_text(payload, role)
+                    if read_text == oracle_message_text(payload):
+                        continue
+                    if read_text is None:
+                        detail = (f"the artifact holds a `{role}` `message` whose content the carried "
+                                  f"read answers as no message at all — every block is dropped as "
+                                  f"system content or blank by the user-text preprocessing (the "
+                                  f"subagent-notification tag among the gates, its body parsing or "
+                                  f"not) — so the message the receipt names is one no read of the "
+                                  f"artifact answers")
+                    else:
+                        detail = (f"the artifact holds a `{role}` `message` whose written text the "
+                                  f"carried read does not answer as recorded: its own text extraction "
+                                  f"drops or rewrites a block (`extractCodexContent`, and for a `user` "
+                                  f"record `preprocessCodexUserTextBlocks` — an empty string dropped "
+                                  f"from the join, a composed envelope prefix stripped), so the "
+                                  f"receipt's identity, the record's own bytes, names no text a read "
+                                  f"answers")
+            elif not isinstance(role, str) or oracle_blank(role):
                 continue
             else:
                 text = oracle_message_text(payload)
@@ -1908,6 +2163,7 @@ def oracle_unaccounted_occurrence_violations(records: list[tuple[int, dict]]) ->
         else:
             continue
         violations.append(Violation("oracle.plan-accounted", line,
+                                    detail if detail is not None else
                                     f"{found}; the receipt's vocabulary cannot name that occurrence, so "
                                     f"the plan cannot account for it — this route's writer writes no such "
                                     f"record"))
@@ -2095,7 +2351,11 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
       `wait`/`wait_agent` append one result per agent entry — for the fixture's plain-text output,
       none — so the receipt's `call_id`/recorded-text identity is not the result a read answers. One
       `wait` shape is exempt: the exec-cell poll the read routes as an ordinary result
-      (`oracle_exec_cell_wait` mirrors `handleFunctionCall`'s condition);
+      (`oracle_exec_cell_wait` mirrors `handleFunctionCall`'s condition). The family is decided by the
+      name the read remembers the call under, not the name as written: `rememberToolCall` Go-trims it,
+      so a padded `wait_agent` is routed by the read as one (review round r10's finding —
+      `oracle_call_routing_name` mirrors that answer, while the written name stays the occurrence
+      identity);
     - a duplicate the read suppresses rather than appends: `CodexCollectingSink.appendToolResultEvent`
       drops an event whose status and `strings.TrimSpace` content equal an event the call already
       answers (`hasEquivalentCallResultEvent`), so two result records under one call id whose recorded
@@ -2125,7 +2385,8 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
             name = oracle_call_name(payload)
             if not isinstance(call_id, str) or call_id == "" or name == "":
                 continue  # no call the read registers: the pairing rule's own finding
-            owners[call_id] = (name, name == "wait" and oracle_exec_cell_wait(payload))
+            owners[call_id] = (oracle_call_routing_name(name),
+                               name == "wait" and oracle_exec_cell_wait(payload))
             continue
         if item not in ORACLE_RESULT_ITEMS:
             continue
@@ -2133,7 +2394,7 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
         owner = owners.get(call_id) if isinstance(call_id, str) else None
         if owner is None:
             continue  # an output before its call, or with none: the pairing rule's own finding
-        name, exec_cell = owner
+        routed, exec_cell = owner
         output = payload.get("output")
         if "output" not in payload or (isinstance(output, str) and oracle_blank(output)):
             violations.append(Violation("oracle.plan-accounted", line,
@@ -2144,7 +2405,7 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
                                         "receipt's `call_id`/recorded-text identity names no result a "
                                         "read answers"))
             continue
-        if name not in ORACLE_SPECIAL_RESULT_CALLS or exec_cell:
+        if routed not in ORACLE_SPECIAL_RESULT_CALLS or exec_cell:
             # The ordinary arm's own event: its `Content` is the recorded text after Go's trim
             # (`parseCodexFunctionOutput` reads a string member trimmed, and `TrimSpace` is applied
             # again), and its `Status` is empty for the `function_call_output` family or the custom
@@ -2176,14 +2437,14 @@ def oracle_result_read_violations(records: list[tuple[int, dict]]) -> list[Viola
                 continue
             held.append((line, signature))
             continue
-        if name == "spawn_agent":
+        if routed == "spawn_agent":
             found = ("the output belongs to a `spawn_agent` call, and the carried read appends **no** "
                      "result for one — it links the call to the subagent session the output names "
                      "(`agent_id`) and reads nothing else")
         else:
-            found = (f"the output belongs to a `{name}` call, and the carried read answers its output "
-                     f"from the output's own `status` object — one result per agent entry, none for an "
-                     f"output that carries none")
+            found = (f"the output belongs to a `{routed}` call — the name the carried read routes it "
+                     f"by — and the read answers its output from the output's own `status` object: one "
+                     f"result per agent entry, none for an output that carries none")
         violations.append(Violation("oracle.plan-accounted", line,
                                     f"{found}; the receipt's `call_id`/recorded-text identity is not the "
                                     f"result a read answers"))

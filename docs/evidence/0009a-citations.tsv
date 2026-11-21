@@ -25,7 +25,7 @@
 #         receipt yet: the receipt's producer is goal 0009c/0009d (this goal's Non-scope), and the rules
 #         are stated over the synthetic receipts committed with the fixtures. Their re-derivation is the
 #         same `selftest` case's mutation table (four mutations for `oracle.receipt`, two for
-#         `oracle.plan-emitted`, fourteen for `oracle.plan-accounted`, two for `oracle.plan-order` and
+#         `oracle.plan-emitted`, eighteen for `oracle.plan-accounted`, two for `oracle.plan-order` and
 #         one for `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
 #         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
 #         refused before comparison, a metadata-only artifact included),
@@ -61,7 +61,7 @@
 #         `test_a_custom_tool_call_output_is_refused_with_a_plan` (a `message` in a role outside the
 #         writer's two carrying readable text, and a result in the family whose carried read answers an
 #         outcome this route's writer's own results have no member for — each refused where a plan is
-#         compared, green without one, and counted among the twelve `oracle.plan-accounted` mutations above)
+#         compared, green without one, and counted among the `oracle.plan-accounted` mutations above)
 #         and by `test_a_call_without_a_usable_name_is_no_call` (a call whose `name` is not the
 #         non-empty string the carried reader registers is refused with its orphaned output, and no
 #         receipt — the fixture's own or one edited to `name: ""` — certifies the pair: the new clause
@@ -106,6 +106,25 @@
 #         ids distinct to Python and one to the read` and `a block whose text is not a string beside a
 #         valid one` (the `oracle.message` string-type arm's own negative fixture, artifact-only) and the
 #         three executed reverts in docs/evidence/0009a-native-oracle.md §14.
+#         Review round r10's additions are pinned by the mutation table's four new
+#         `oracle.plan-accounted` fixtures (`a malformed notification the read's preprocessing drops`,
+#         `a user message whose envelope prefix the read strips`, `a user message carrying the
+#         first-turn plugin envelope`, `a call whose padded name the read trims before routing`) and the
+#         `oracle.call-pairing` fixture `a named call whose call_id is empty` (the non-empty-`call_id`
+#         guard the earlier pairing mutations left unpinned), by
+#         `test_a_consumed_subagent_notification_is_refused_with_a_plan`, whose malformed-notification
+#         controls now assert the refusal the read's own user-text preprocessing produces
+#         (`isCodexSystemMessage` drops the notification-prefixed block whether or not its body parses,
+#         so no read answers the message) and which pins the rewrite side (a composed envelope prefix
+#         stripped, the first-turn plugin envelope refused as state the oracle does not model) beside
+#         true controls for texts a read answers as written, by
+#         `test_a_result_the_receipt_cannot_establish_is_refused_with_a_plan`'s padded-name arms (a
+#         name the read's `rememberToolCall` Go-trims is routed as the trimmed spelling — a padded
+#         `wait_agent` is refused by the wait arm, and a padded ordinary name is the green control),
+#         and by `test_a_deeply_nested_object_is_scanned_without_aborting` (the post-decode surrogate
+#         walk is iterative: a 700-deep object the decoder reads validates green, and the same object
+#         with an unpaired-surrogate escape at its deepest leaf is still refused), with the five new
+#         mutations' executed reverts in docs/evidence/0009a-native-oracle.md §15.
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`, and
 #         `test_decoded_input_never_aborts_validation`: a decoded string strict UTF-8 cannot encode and a

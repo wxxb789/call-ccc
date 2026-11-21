@@ -133,7 +133,9 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   `lossWhitespaceResults`). One `wait` shape is exempt because the read routes it as an ordinary result:
   the exec-cell poll (`code_mode_wait`, mirrored by `oracle_exec_cell_wait`), and args this oracle cannot
   read exactly fall on the refusing side (review round r7's finding: the fixture's call renamed
-  `wait_agent` with its output left as plain text certified a result no read returns).
+  `wait_agent` with its output left as plain text certified a result no read returns). The family is
+  asked of the name the read **registers** (`rememberToolCall` Go-trims it), not the written spelling,
+  while the written name stays the occurrence identity (review round r10's second finding).
 - *A non-string identity member is refused where a plan is compared, not matched by its JSON spelling* —
   the identity serializes a non-string `arguments`/`input`/`output` member back to compact JSON, which
   can reconstruct the receipt's own string key (a space after a colon is lost) while the carried reader
@@ -166,10 +168,29 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   text to is stated by no record of the artifact, so the receipt's vocabulary cannot name it. Refused
   only where a plan is compared — the shape is the read's own (its attribution case is
   `internal/parser/codex_parser_test.go`'s) and none of the measured 25 native sessions carries one
-  (§0); the case's controls pin the read's own gates (no agent, a Go-blank terminal text, a body that is
-  not JSON — each travels as a message and stays green with its plan), and the mutation
+  (§0); the mutation
   `a consumed subagent notification the plan marks emitted` pins the refusal (review round r9's first
   finding).
+- *A message the read's own text path removes or rewrites is refused where a plan is compared* — the
+  class's other half, which review round r10's finding showed the r9 controls sitting on: a
+  notification-prefixed block the read does **not** consume is dropped by the user-text preprocessing
+  (`isCodexSystemMessage` reads the tag as a composed system envelope, whether or not its body parses as
+  one), a composed envelope prefix is stripped from a block (`stripCodexSystemPrefix`), and an empty
+  string is dropped from the join — so the message a receipt names is one no read answers, or one whose
+  text is not the record's written bytes. The refusal mirrors the per-record reads with the three new
+  mutations; the plugin-discovery envelope is refused rather than read under either answer, because
+  which record is the session's first user one is state the oracle does not model, and the reader's
+  replay suppression is turn state outside the claim (both boundaries in §16 of the evidence record).
+- *A call's routing name is the name the read remembers, not the written spelling* — `rememberToolCall`
+  Go-trims the emitted name and `toolCallNameForOutput` answers from it, so `" wait_agent "` is routed by
+  the read as `wait_agent` and its plain-text output appends no result while the receipt's written-name
+  identity still matches: the family question is asked of the trimmed name (`oracle_call_routing_name`),
+  which review round r10's second finding showed the oracle asking of the raw one.
+- *A call whose `call_id` is not a non-empty string is refused, with no output to fail pairing on its
+  own* — `handleFunctionCall` passes the raw `call_id` on and `handleFunctionCallOutput` returns on an
+  empty one, so the record is no call a read answers; the round-10 mutation writes the empty string,
+  deletes the call's output and keeps its non-empty `name` and recorded arguments, because removing the
+  guard left every earlier pairing mutation red for its own reasons (review round r10's fourth finding).
 - *A line holding an unpaired surrogate escape is refused before any identity is compared* — JSON's
   `\ud800`-style escape decodes to a lone surrogate to this oracle and to U+FFFD to the carried reader's
   `gjson` (measured on the carried v1.20.0, §0 of the evidence record), so two distinct spellings are
@@ -190,6 +211,10 @@ over the artifact alone; four are stated over the artifact **and** an explicit r
   **string-type** arm (`content[i].text` must be a string) as missing its fixture too: a mutation that
   puts a non-string `text` beside a valid non-blank block is invisible to every other arm and mutation,
   and the round's artifact-only mutation `a block whose text is not a string beside a valid one` pins it.
+  Review round r10's finding named the `oracle.call-pairing` non-empty-`call_id` guard the same way:
+  the earlier pairing mutations stayed red without it (an unknown output owner, duplicate ids, an early
+  output, a missing name), and the round's artifact-only mutation `a named call whose call_id is empty`
+  — the call's output deleted with it — pins that guard alone.
 - *Unknown payload types are accepted* (Codex's own event and item vocabulary is open and measured);
   unknown **envelope** types are refused, because this build writes five and reads a measured eight.
 - The oracle judges this route's occurrence vocabulary — a message (the writer's own two roles, user and
@@ -248,7 +273,10 @@ add and shows the scope case turning red), the r8 round (§13 — the collapse r
 role guard; §8's five r3 blocks were re-spelled to §9's executable `fresh` form in the same round, and
 §7's transcript redacted to `<repo>` and `~`) and the r9 round (§14 — the consumed-notification refusal,
 the lone-surrogate refusal and the message string-type mutation, beside §8's setup moved ahead of its
-first use and every study's edit chained to its `fresh` tree),
+first use and every study's edit chained to its `fresh` tree) and the r10 round (§15 — the message
+read-answer refusal the malformed-notification controls now assert, the trimmed routing name, the
+iterative surrogate walk and the non-empty-`call_id` fixture, with the harness-doc receipt/surrogate
+sentence aligned as the round's prose touch),
 each from the scratch tree its section spells out (the replay's own `mktemp -d` root, allocated once in
 the record's preamble since review round r7's finding 4).
 
