@@ -2943,9 +2943,13 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   red; (c) exempt the Pi route in writing (refused: that is the exact defect the rule names).
 - **Default taken:** (a). The guard is preserved because a conversion that ignored it could write a target
   whose loader walks a branch the source's own file had left; it **may not grow a new local judgment**; and it
-  moves to Pi's own loader (a load/`get_state`-shaped read of the source file) or an authoritative source-side
-  read the moment one answers the leaf question. Until then the contradiction is disclosed here rather than
-  silently resolved in either direction.
+  moves only to a read that preserves **all three** behaviours the guard carries — reconciling the deepest
+  carried record with the read's last message, refusing an uncarried active-path entry the harness would use
+  as context (a `branch_summary` or `custom_message`), and counting the source's own system records it omits
+  (`source_system_records`) — from Pi's own loader (a load/`get_state`-shaped read of the source file) or an
+  authoritative source-side read. A replacement that answered only the leaf question would weaken the guard
+  rather than retire it. Until then the contradiction is disclosed here rather than silently resolved in
+  either direction.
 - **Reversal:** delete the check and its tests in one increment; the branch-switch refusal it pins goes with
   them (the fixture covers three targets), so a continuation on an abandoned branch becomes possible again —
   the cost is a **weakened** refusal, not a larger one — and the ownership rule then reads without exception.

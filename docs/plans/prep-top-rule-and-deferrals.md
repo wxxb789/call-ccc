@@ -34,7 +34,7 @@ The two that this increment lands:
   disagree about a foreign format's shape, **the referee is the upstream reader or the real binary that owns
   the format, never a re-implementation inside `call/ccc`.** An obligation to know what a foreign tool accepts
   is discharged by running that tool against the artifact, or by citing the carried reader's own code. The rule
-  is the owner's, given as a top rule; the two debts that predate it are enumerated in
+  is the owner's, given as a top rule; the debts declared so far are enumerated in
   `docs/core-design/README.md` §2 rather than being hidden by it.
 - **The deferral.** **0015** (GitHub Copilot CLI), **0016** (VS Code Copilot) and **0017** (Visual Studio
   Copilot) leave the unattended chain: 0015 waits for the owner's other machine — he does not want Copilot
