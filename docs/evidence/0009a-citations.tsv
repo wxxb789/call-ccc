@@ -21,149 +21,40 @@
 # scripts/gate-targets.txt covers, so a rule whose gate re-derivation is a python case the required
 # `selftest` step runs, or a native harness run, cannot hold one):
 #   oracle.receipt, oracle.plan-emitted, oracle.plan-accounted, oracle.plan-order, oracle.plan-pairs —
-#         the manifest-receipt half. No Go test grounds it, because nothing in this tree produces a
-#         receipt yet: the receipt's producer is goal 0009c/0009d (this goal's Non-scope), and the rules
-#         are stated over the synthetic receipts committed with the fixtures. Their re-derivation is the
-#         same `selftest` case's mutation table (four mutations for `oracle.receipt`, two for
-#         `oracle.plan-emitted`, twenty-two for `oracle.plan-accounted`, two for `oracle.plan-order` and
-#         one for `oracle.plan-pairs`), plus `test_a_reduced_artifact_is_validated_from_the_artifact_alone` (D2),
+#         the manifest-receipt half (17 of the shipped corpus's 51 fixture pairs). No Go test grounds it,
+#         because nothing in this tree produces a receipt yet: the receipt's producer is goal
+#         0009c/0009d (this goal's Non-scope), and the rules are stated over the synthetic receipts
+#         committed with the fixtures. Their re-derivation is the same `selftest` case's mutation table
+#         — `--selftest-mutations` executes it, and the case's bijection asserts it from both ends
+#         (four mutations for `oracle.receipt`, two for `oracle.plan-emitted`, eight for
+#         `oracle.plan-accounted`, two for `oracle.plan-order` and one for `oracle.plan-pairs`) —
+#         beside the surviving corpus cases:
 #         `test_a_receipt_that_declares_nothing_cannot_pass` (the plan is total: an empty receipt is
 #         refused before comparison, a metadata-only artifact included),
-#         `test_a_result_substituted_under_one_call_id_is_refused` (a result's identity is its call and
-#         its recorded text), `test_a_call_substituted_under_one_call_id_is_refused` (a call's
-#         identity is its call id, name and recorded input),
-#         `test_a_custom_calls_recorded_input_is_part_of_its_identity` (a `custom_tool_call`'s recorded
-#         input lives in `input`, and the receipt's `arguments` member names it there) and
-#         `test_a_written_empty_object_input_is_part_of_the_identity` (the identity is the member the
-#         artifact writes — the writer's own `arguments: "{}"` is not the read's empty answer, and a
-#         receipt naming one does not certify the other) — the two
-#         substitution cases and the recorded input's own written form, beside the mutation table's own
-#         pinned refusals. `test_a_boundarys_replacement_history_is_refused_with_a_plan`,
-#         `test_receipt_validation_refuses_the_occurrences_it_cannot_name` (a `response_item` a read
-#         turns into an occurrence the receipt's vocabulary cannot name — the inter-agent `agent_message`
-#         addressed to the session's own agent path among them — is refused where a plan is compared)
-#         and
-#         `test_a_malformed_member_is_named_without_echoing_its_text` pin three more refusals the mutation
-#         table also holds (a boundary's `replacement_history` refused where a plan is compared; an
-#         unnameable occurrence refused; a
-#         string `call_id` named by digest and never echoed). Review round r5's refusals are pinned by
-#         `test_a_line_with_a_duplicate_member_is_refused` (a line whose object writes a member name
-#         twice — and a receipt whose object does — is refused before comparison; its rule is the
-#         `oracle.jsonl-objects` row above, and it carries its own mutation in the `selftest` table), by
-#         the object-valued-`content` arms of
-#         `test_receipt_validation_refuses_the_occurrences_it_cannot_name` and by
-#         `test_a_written_empty_object_input_is_part_of_the_identity`'s both-members arm (a shape whose
-#         read this oracle does not model is refused where a plan is compared); the latter two are
-#         refusals under `oracle.plan-accounted`, whose executed reverts stand in
-#         docs/evidence/0009a-native-oracle.md §10.
-#         Review round r6's refusals are pinned by
-#         `test_a_developer_role_message_is_refused_with_a_plan` and
-#         `test_a_custom_tool_call_output_is_refused_with_a_plan` (a `message` in a role outside the
-#         writer's two carrying readable text, and a result in the family whose carried read answers an
-#         outcome this route's writer's own results have no member for — each refused where a plan is
-#         compared, green without one, and counted among the `oracle.plan-accounted` mutations above)
-#         and by `test_a_call_without_a_usable_name_is_no_call` (a call whose `name` is not the
-#         non-empty string the carried reader registers is refused with its orphaned output, and no
-#         receipt — the fixture's own or one edited to `name: ""` — certifies the pair: the new clause
-#         of the `oracle.call-pairing` row above, whose cited Go test pins the rule's other clause),
-#         with the executed reverts of all four new mutations in
-#         docs/evidence/0009a-native-oracle.md §11.
-#         Review round r7's refusals are pinned by
-#         `test_a_result_the_receipt_cannot_establish_is_refused_with_a_plan` (a result whose call the
-#         read answers elsewhere — `spawn_agent` links a subagent session and appends no result,
-#         `wait`/`wait_agent` answer per-agent results from the output's own `status` object, the
-#         exec-cell poll excepted — or whose output no read appends a result from is refused where a
-#         plan is compared, green without one),
+#         `test_a_result_substituted_under_one_call_id_is_refused` and
+#         `test_a_call_substituted_under_one_call_id_is_refused` (a result's identity is its call and
+#         its recorded text, a call's its call id, name and recorded input — a same-id substitution of
+#         either is refused), `test_a_custom_calls_recorded_input_is_part_of_its_identity` (a
+#         `custom_tool_call`'s recorded input lives in `input`, and the receipt's `arguments` member
+#         names it there), `test_a_written_empty_object_input_is_part_of_the_identity` (the identity is
+#         the member the artifact writes — the writer's own `arguments: "{}"` is not the read's empty
+#         answer — its both-members arm among the refusals below),
 #         `test_a_non_string_identity_member_is_refused_with_a_plan` (a call's recorded input or a
-#         result's recorded text written as a non-string member is refused where a plan is compared,
-#         its JSON spelling — which reconstructs the receipt's own string key — pinned as the identity
-#         it would otherwise be matched on, and the explicit-`null` identity `null` distinguished from
-#         the absent member's empty string) and
+#         result's recorded text written as a non-string member is refused where a plan is compared),
+#         `test_a_boundarys_replacement_history_is_refused_with_a_plan` (a boundary carrying a native
+#         `replacement_history` is refused where a plan is compared),
+#         `test_a_forked_session_is_refused_with_a_plan` (a `session_meta` carrying `forked_from_id` is
+#         refused where a plan is compared; a blank member is the green control),
+#         `test_a_call_without_a_usable_name_is_no_call` (a call whose `name` is not the non-empty
+#         string the carried reader registers is refused with its orphaned output),
 #         `test_a_moved_turn_context_is_outside_the_receipts_vocabulary` (a record's turn placement is
-#         outside what the receipt states; the finding's own `turn_context` move validates green), with
-#         the four new mutations' executed reverts and the scope pin's inverted study in
-#         docs/evidence/0009a-native-oracle.md §12.
-#         Review round r8's additions are pinned by
-#         `test_a_result_the_read_collapses_is_refused_with_a_plan` (two result records under one call id
-#         whose recorded texts the carried read trims to one text are one result to every read —
-#         `hasEquivalentCallResultEvent` suppresses the duplicate — so a receipt naming both is refused
-#         where a plan is compared; the byte-identical duplicate is refused the same way and a second
-#         output whose text reads distinct is the green control) and by the mutation table's
-#         `a message with no role` (the structural `oracle.message` role arm's own negative fixture,
-#         artifact-only: removing the guard left every case green), with the two executed reverts in
-#         docs/evidence/0009a-native-oracle.md §13.
-#         Review round r9's additions are pinned by
-#         `test_a_consumed_subagent_notification_is_refused_with_a_plan` (a `user` message whose content
-#         the carried read consumes as a subagent notification never travels as one — the read
-#         attributes its text to a result event no record of the artifact states — so a receipt marking
-#         the message emitted is refused where a plan is compared, green without one; the read's own
-#         gates are the green controls) and by
-#         `test_a_lone_surrogate_escape_is_refused_before_any_identity_comparison` (a line holding an
-#         unpaired surrogate escape is refused and dropped before any identity is compared: `gjson`
-#         answers U+FFFD where this decoder answers the code point, so two call ids distinct to Python
-#         are one id to every read — the collision the structural rule sees and no comparison rule can),
-#         with the mutation table's `a consumed subagent notification the plan marks emitted`, `two call
-#         ids distinct to Python and one to the read` and `a block whose text is not a string beside a
-#         valid one` (the `oracle.message` string-type arm's own negative fixture, artifact-only) and the
-#         three executed reverts in docs/evidence/0009a-native-oracle.md §14.
-#         Review round r10's additions are pinned by the mutation table's four new
-#         `oracle.plan-accounted` fixtures (`a malformed notification the read's preprocessing drops`,
-#         `a user message whose envelope prefix the read strips`, `a user message carrying the
-#         first-turn plugin envelope`, `a call whose padded name the read trims before routing`) and the
-#         `oracle.call-pairing` fixture `a named call whose call_id is empty` (the non-empty-`call_id`
-#         guard the earlier pairing mutations left unpinned), by
-#         `test_a_consumed_subagent_notification_is_refused_with_a_plan`, whose malformed-notification
-#         controls now assert the refusal the read's own user-text preprocessing produces
-#         (`isCodexSystemMessage` drops the notification-prefixed block whether or not its body parses,
-#         so no read answers the message) and which pins the rewrite side (a composed envelope prefix
-#         stripped, the first-turn plugin envelope refused as state the oracle does not model) beside
-#         true controls for texts a read answers as written, by
-#         `test_a_result_the_receipt_cannot_establish_is_refused_with_a_plan`'s padded-name arms (a
-#         name the read's `rememberToolCall` Go-trims is routed as the trimmed spelling — a padded
-#         `wait_agent` is refused by the wait arm, and a padded ordinary name is the green control),
-#         and by `test_a_deeply_nested_object_is_scanned_without_aborting` (the post-decode surrogate
-#         walk is iterative: a 700-deep object the decoder reads validates green, and the same object
-#         with an unpaired-surrogate escape at its deepest leaf is still refused), with the five new
-#         mutations' executed reverts in docs/evidence/0009a-native-oracle.md §15.
-#         Review round r11's additions are pinned by the mutation table's two new
-#         `oracle.plan-accounted` fixtures (`a call id that trims to another call's, its output under
-#         the earlier spelling`, `a repeated output under a call the read expands into one per patched
-#         file`), by `test_a_trim_colliding_call_id_is_refused_with_a_plan` (an output under the
-#         Go-trimmed spelling of two calls' written ids is refused where a plan is compared — the read's
-#         pending memory is keyed by the trimmed id, which this oracle does not model — while the padded
-#         spelling is answered by the name written beside its own call and a single padded id with its
-#         receipt is the green control), by
-#         `test_an_apply_patch_repetition_is_refused_as_an_unmodelled_ownership` (a repeated output
-#         under a call whose written name is `apply_patch` is refused as a shape the read's per-file
-#         expansion leaves unmodelled rather than answered as the suppression an ordinary call's
-#         repetition is, the padded name — which the read does not expand — being refused by the
-#         ordinary suppression) and by
-#         `test_the_goal_envelope_mirror_reads_the_readers_own_whitespace` (the goal-envelope mirror
-#         reads Go's own ASCII whitespace set: a nonbreaking space before `source="goal"` is preserved
-#         text validated green with its receipt, and the ordinary space spelling is the reader's own
-#         goal envelope whose receipt entry is refused), with the two new mutations' executed reverts
-#         in docs/evidence/0009a-native-oracle.md §16.
-#         Review round r12's additions are pinned by the mutation table's two new
-#         `oracle.plan-accounted` fixtures (`a single output under a two-file `apply_patch` certified
-#         as one call`, `a session_meta carrying explicit fork lineage`), by
-#         `test_a_multi_file_apply_patch_is_refused_with_one_output` (the r11 mutation minus its added
-#         output: the read expands a two-file `apply_patch` into one call per file before any output
-#         is read, so the single recorded output cannot certify the call as one — refused at the call,
-#         with the one-file and no-file patches as green controls — which moves r11's per-output arm to
-#         the call it belongs to), by
-#         `test_a_padded_call_id_and_padded_name_are_answered_by_the_raw_name` (a padded call id and
-#         padded name together are routed by the raw spelling `callNames` holds — the ordinary arm,
-#         which is what a read answers — while the padded name under an unpadded id stays the trimmed
-#         `wait_agent` and a padded id under an ordinary name is the green control: the two paddings
-#         r10 and r11 asked apart, pinned together), by
-#         `test_the_pending_memory_is_consumed_by_the_output_it_answers` (the read's deferred
-#         `forgetToolCall` consumes the pending entry its first output was routed through, so a later
-#         output under a padded name is answered by the raw spelling — one finding, not two), and by
-#         `test_a_forked_session_is_refused_with_a_plan` (a `session_meta` carrying `forked_from_id`
-#         is refused where a plan is compared: the fork gate suppresses a resolved parent's replayed
-#         records, and a parent transcript is outside the oracle's input; a blank member is the green
-#         control), with the round's nine reverts' executed runs in
-#         docs/evidence/0009a-native-oracle.md §17.
+#         outside what the receipt states and the rule's sentence says so, the finding's own
+#         `turn_context` move validating green), `test_occurrence_identity_is_counted_not_deduplicated`
+#         (multiplicity is identity-counted), `test_a_compacted_record_without_a_summary_is_counted`
+#         (every `compacted` record is a boundary occurrence, a summary or none), and the structural
+#         refusals a plan comparison reaches — `test_a_line_with_a_duplicate_member_is_refused`,
+#         `test_a_lone_surrogate_escape_is_refused_before_any_identity_comparison` — beside their own
+#         rows and mutations above.
 #   the oracle's `--validate` mode — the CLI half of the same python subject
 #         (`test_the_validate_mode_reports_a_verdict`, and
 #         `test_decoded_input_never_aborts_validation`: a decoded string strict UTF-8 cannot encode and a

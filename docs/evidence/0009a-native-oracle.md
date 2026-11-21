@@ -39,6 +39,237 @@ projection the artifact's own bytes do not state. Both are replaced:
   to name the reader-visible projection the receipt must carry
   ([`docs/goals/0009a-native-oracle.md`](../goals/0009a-native-oracle.md)).
 
+## 0. What was measured before anything was written
+
+The rules are statements about the Codex rollout format, so they were measured first on the format's own
+artifacts — Codex `0.170.0`'s own sessions under `$HOME/.codex/sessions` (25 files) — and later (§1.2) on
+what this build's writer installs. The probes are throw-away: quoted so a replay reproduces the numbers,
+and re-run for this revision of the record against the same 25 files, reproducing their output; the
+surrogate scan asks the shipped checker's own `_oracle_lone_surrogate`, and the pre-repair revision's
+probes that mirrored the reader-modelling rules the mechanism repair removed are deleted with the rules
+they grounded (§5 routes those findings).
+
+```
+$ python3 - "$HOME/.codex/sessions" <<'PY'
+"""What the oracle's rules rest on: the host's own Codex sessions, read line by line (throw-away probe,
+quoted in the evidence record, then removed)."""
+import collections, datetime, glob, json, sys
+
+envelopes, items, events, roles, blocks, members = (collections.Counter() for _ in range(6))
+firsts, decreasing, unbalanced, malformed, blank_outputs, blank_events = (
+    collections.Counter(), 0, 0, 0, 0, 0)
+output_types = collections.Counter()
+before_turn, before_turn_roles = collections.Counter(), collections.Counter()
+paths = sorted(glob.glob(sys.argv[1] + '/**/*.jsonl', recursive=True))
+for path in paths:
+    calls, outputs, previous, first, inside_turn = {}, collections.Counter(), None, True, False
+    for line in open(path, errors='replace'):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            continue
+        if first:
+            firsts[record.get('type')] += 1
+            first = False
+        envelopes[record.get('type')] += 1
+        if record.get('type') == 'turn_context':
+            inside_turn = True
+        stamp = record.get('timestamp')
+        if isinstance(stamp, str):
+            try:
+                instant = datetime.datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+                if previous is not None and instant < previous:
+                    decreasing += 1
+                previous = instant
+            except ValueError:
+                pass
+        payload = record.get('payload') if isinstance(record.get('payload'), dict) else {}
+        if record.get('type') == 'session_meta':
+            members.update(payload.keys())
+        if record.get('type') == 'response_item':
+            items[payload.get('type')] += 1
+            if not inside_turn:
+                before_turn[payload.get('type')] += 1
+                if payload.get('type') == 'message':
+                    before_turn_roles[payload.get('role')] += 1
+            if payload.get('type') == 'message':
+                roles[payload.get('role')] += 1
+                for block in payload.get('content') or []:
+                    if isinstance(block, dict):
+                        blocks[block.get('type')] += 1
+            if payload.get('type') in ('function_call', 'custom_tool_call'):
+                calls[payload.get('call_id')] = calls.get(payload.get('call_id'), 0) + 1
+            if payload.get('type') in ('function_call_output', 'custom_tool_call_output'):
+                outputs[payload.get('call_id')] += 1
+                output_types[type(payload.get('output')).__name__] += 1
+                if not str(payload.get('output') or '').strip():
+                    blank_outputs += 1
+        if record.get('type') == 'event_msg':
+            events[payload.get('type')] += 1
+            if payload.get('type') in ('user_message', 'agent_message') and (
+                    not isinstance(payload.get('message'), str) or not payload['message'].strip()):
+                blank_events += 1
+    if set(calls) != set(outputs) or any(count > 1 for count in calls.values()):
+        unbalanced += 1
+
+print("sessions:", len(paths))
+print("first record of each session:", dict(firsts))
+print("envelope types:", dict(envelopes))
+print("session_meta members:", dict(members))
+print("response_item payload types:", dict(items))
+print("event_msg payload types:", dict(events))
+print("message roles:", dict(roles), "| content block types:", dict(blocks))
+print("call output member types (both families):", dict(output_types), "| blank:", blank_outputs)
+print("blank or non-string user_message/agent_message events:", blank_events)
+print("records whose instant precedes the record before them:", decreasing)
+print("sessions with a call id not answered / repeated / an output without its call:", unbalanced)
+print("lines that are not JSON:", malformed)
+print("response_item records before the first turn_context:", dict(before_turn),
+      "| messages among them by role:", dict(before_turn_roles))
+PY
+sessions: 25
+first record of each session: {'session_meta': 25}
+envelope types: {'session_meta': 25, 'response_item': 1613, 'event_msg': 1920, 'turn_context': 307, 'compacted': 1, 'world_state': 25, 'token_usage_record': 165, 'inter_agent_communication_metadata': 19}
+session_meta members: {'id': 25, 'timestamp': 25, 'cwd': 25, 'originator': 25, 'cli_version': 25, 'source': 25, 'model_provider': 24, 'base_instructions': 24, 'git': 13, 'thread_source': 21, 'session_id': 21, 'runtime_workspace_roots': 21, 'history_mode': 21, 'context_window': 21, 'parent_thread_id': 5, 'agent_nickname': 4, 'agent_path': 4, 'multi_agent_version': 5, 'creator_user_id': 15, 'creator_account_id': 15}
+response_item payload types: {'message': 233, 'reasoning': 408, 'function_call': 290, 'function_call_output': 290, 'custom_tool_call': 174, 'custom_tool_call_output': 174, 'web_search_call': 21, 'agent_message': 19, 'additional_tools': 3, 'configuration_update': 1}
+event_msg payload types: {'task_started': 47, 'user_message': 24, 'token_count': 961, 'agent_reasoning': 314, 'agent_message': 55, 'item_completed': 450, 'task_complete': 44, 'turn_aborted': 3, 'thread_settings_applied': 21, 'thread_goal_updated': 1}
+message roles: {'developer': 57, 'user': 72, 'assistant': 104} | content block types: {'input_text': 200, 'output_text': 104}
+call output member types (both families): {'str': 342, 'list': 122} | blank: 12
+blank or non-string user_message/agent_message events: 0
+records whose instant precedes the record before them: 0
+sessions with a call id not answered / repeated / an output without its call: 0
+lines that are not JSON: 0
+response_item records before the first turn_context: {'message': 73, 'additional_tools': 3} | messages among them by role: {'developer': 45, 'user': 27, 'assistant': 1}
+```
+
+The carried `gjson`'s own answers, on the version this tree pins (`go.mod`: `github.com/tidwall/gjson
+v1.20.0`):
+
+```
+$ ( set -e
+    scratch=$(mktemp -d)
+    cd "$scratch"
+    cat > go.mod <<'EOF'
+module gjson-probe
+
+go 1.21
+
+require github.com/tidwall/gjson v1.20.0
+EOF
+    cat > main.go <<'EOF'
+package main
+
+import (
+	"fmt"
+
+	"github.com/tidwall/gjson"
+)
+
+func main() {
+	lone := gjson.Get(`{"call_id":"\ud800"}`, "call_id").Str
+	replacement := gjson.Get(`{"call_id":"\ufffd"}`, "call_id").Str
+	fmt.Printf("lone surrogate == U+FFFD: %v\n", lone == "\uFFFD")
+	fmt.Printf("lone surrogate == the written U+FFFD id: %v\n", lone == replacement)
+	pair := gjson.Get(`{"t":"\ud83d\ude00"}`, "t").Str
+	fmt.Printf("valid pair == the astral code point: %v\n", pair == "\U0001F600")
+	fmt.Printf("gjson.Valid(\"NaN\"): %v\n", gjson.Valid("NaN"))
+	fmt.Printf("repeated member reads the first value: %v\n", gjson.Get(`{"a":1,"a":2}`, "a").Raw == "1")
+}
+EOF
+    GOFLAGS=-mod=mod GOPROXY=off go mod tidy    # resolves from the module cache; prints nothing
+    GOFLAGS=-mod=mod GOPROXY=off go run .
+  )
+lone surrogate == U+FFFD: true
+lone surrogate == the written U+FFFD id: true
+valid pair == the astral code point: true
+gjson.Valid("NaN"): false
+repeated member reads the first value: true
+```
+
+The structural surrogate refusal's own scope, asked of the shipped checker:
+
+```
+$ python3 - "$HOME/.codex/sessions" <<'PY'
+"""What the structural surrogate refusal rests on: how many of the host's own session lines hold an
+unpaired surrogate escape — the shape the shipped `_oracle_lone_surrogate` refuses."""
+import glob, importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("shipped", "scripts/codex-native-check.py")
+check = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(check)
+sessions, surrogates = 0, 0
+for path in sorted(glob.glob(sys.argv[1] + '/**/*.jsonl', recursive=True)):
+    sessions += 1
+    for line in open(path, errors='replace'):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if check._oracle_lone_surrogate(record):
+            surrogates += 1
+print("sessions:", sessions)
+print("lines holding an unpaired surrogate escape:", surrogates)
+PY
+sessions: 25
+lines holding an unpaired surrogate escape: 0
+```
+
+The call-pairing order arm's scope — an output that names a call its file did not carry before it, which
+the shipped `oracle.call-pairing` refuses:
+
+```
+$ python3 - "$HOME/.codex/sessions" <<'PY'
+"""What the call-pairing order arm rests on: how many of the host's own call outputs name a call the
+same file did not carry before them (checked per file, in record order)."""
+import glob, json, sys
+
+sessions, early = 0, 0
+for path in sorted(glob.glob(sys.argv[1] + '/**/*.jsonl', recursive=True)):
+    sessions += 1
+    seen = set()
+    for line in open(path, errors='replace'):
+        line = line.strip()
+        if not line:
+            continue
+        record = json.loads(line)
+        if record.get('type') != 'response_item':
+            continue
+        payload = record.get('payload') or {}
+        item = payload.get('type')
+        if item in ('function_call', 'custom_tool_call'):
+            seen.add(payload.get('call_id'))
+        if item in ('function_call_output', 'custom_tool_call_output'):
+            if payload.get('call_id') not in seen:
+                early += 1
+print("sessions:", sessions)
+print("outputs naming a call not carried before them:", early)
+PY
+sessions: 25
+outputs naming a call not carried before them: 0
+```
+
+What each answer fixed, and why the rule is the one that got stated:
+
+| measured | the rule it grounds, or the rule it stops |
+| --- | --- |
+| 25/25 sessions open with `session_meta`, and every one of the 25 files holds exactly one | `oracle.session-meta` (first and only) |
+| `id`, `originator` and `cli_version` on 25/25 (`source` too — but it is an *object* on the five subagent sessions, so it is not required to be a string) | `oracle.session-meta-members` names these three and not `source` |
+| envelope types are exactly these eight | `oracle.record-type`'s closed set; payload types are open and measured (the two counters above), and the oracle enumerates none of them but the ones it reads |
+| every message's content blocks are `input_text`/`output_text`, the two types the carried reader reads text from (`internal/parser/codex.go`'s `extractCodexTextBlocks`) | `oracle.message` |
+| no `user_message`/`agent_message` event holds a blank or non-string `message` | `oracle.event-message` |
+| no record's instant precedes the record before it (over 4 075 records) | `oracle.clock` |
+| every call id is answered exactly once, none repeats, no output names an absent call, and no output stands before its call | `oracle.call-pairing` |
+| **12 blank outputs exist** on Codex's own files, and a `custom_tool_call_output`'s `output` is a list 122 times | the rules that were **not** stated: no rule requires an output to be non-blank or a string — a rule written from this build's writer's habits instead of from the format's own files would have refused the format's own files (the citation the checker's `oracle_unnameable_shape_violations` docstring makes to this section) |
+| 73 `response_item` messages stand *before* the first `turn_context` across the 25 files (45 developer, 27 user, 1 assistant; plus 3 `additional_tools`) | no rule requires a record to stand inside a turn — measured, so not stated |
+| 0 lines across the 25 files hold an unpaired surrogate escape; `gjson` (v1.20.0) answers U+FFFD for `\ud800` — one string for the two spellings, and a valid pair decodes to its astral code point in both readers | the `oracle.jsonl-objects` surrogate refusal: a line two readers answer differently for, refused and dropped before any comparison; no measured native file carries one, so the structural refusal does not refuse one of the format's own files |
+
 ## 1. The oracle, its rule registry, and the writer's own bytes (D1)
 
 The registry is `ORACLE_RULES` — fourteen ids, one sentence each in the checker:
@@ -243,12 +474,17 @@ satisfies the oracle" at once — and names the registry plus `--selftest-mutati
 executed end. `docs/harness.md` and `AGENTS.md` carry the freeze for the lanes that read them, and
 the conductor's oracle-lock signal is the enforcement, not a command in this tree.
 
-**One disclosure.** `docs/harness.md`'s oracle paragraphs still describe the pre-repair refusal
-surface — the reader-modelling rules this repair removed. That file is outside this repair's bounds
-(the repair may change the checker, its tests, its fixtures, this record and the goal file), so the
-stale description stands, named here rather than left silent; the checker's own section header is the
-current statement of the oracle's surface, and the harness document needs the operator's own pass to
-match it.
+**The pre-repair surfaces — brought to the shipped statement.** Three files this repair's own bounds
+left alone still carried the pre-repair refusal surface into the increment: `docs/harness.md`'s oracle
+paragraphs, the citations manifest's header (`docs/evidence/0009a-citations.tsv`) and this increment's
+plan (`docs/plans/0009a-native-oracle.md`). The increment's own fix pass brings all three to the
+shipped statement — the harness paragraph now names the five receipt-mode refusals and the
+reader-visible projection as the manifest receipt's own statement, the manifest's "deliberately not
+covered" paragraph is rewritten from the shipped corpus (14 rules, 51 fixture pairs), and the plan
+marks its design as the pre-repair revision with its Evidence section pointing at the record's shipped
+sections. No shipped surface still states the removed reader-modelling refusals as the design; the plan's
+pre-repair sections are marked as such and point here. The checker's own
+section header remains the current statement of the oracle's surface.
 
 ## 5. The class-1 findings, each with one home
 
@@ -344,8 +580,10 @@ truncates (parity, secrets) are quoted as the gate printed them.
   suppresses or expands — is **not** certified by this oracle; it is the manifest receipt's own
   statement, whose producer is 0009c/0009d (the goal's Non-scope), and §5's residuals name every
   class-1 finding that waits on it.
-- The freeze's enforcement is the conductor's oracle-lock signal, not a command in this tree;
-  `docs/harness.md`'s oracle paragraphs still describe the pre-repair surface (§4's disclosure).
+- The freeze's enforcement is the conductor's oracle-lock signal, not a command in this tree; the
+  pre-repair surfaces §4 named (`docs/harness.md`, the citations manifest's header, this increment's
+  plan) were brought to the shipped statement in this increment's own fix pass, so no shipped surface
+  still states the removed reader-modelling refusals.
 - The oracle's rules say nothing about whether an artifact's dialogue is a faithful conversion of any
   source — they are well-formedness and receipt-accounting rules over the artifact's own bytes, and
   the round-trip and reader-count evidence for conversions lives in the other increments' records.

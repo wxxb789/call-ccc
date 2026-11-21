@@ -382,37 +382,20 @@ says so.
   a `response_item` a read turns into an occurrence the receipt's vocabulary cannot name — the inter-agent
   `agent_message` addressed to the session's own agent path, another payload type carrying a
   `user`/`assistant` role and readable text, an `image_generation_call`, a `message` in a role outside
-  the writer's two carrying readable text, a `user` message a read consumes as a subagent notification
-  (the record never travels as a message; the read attributes its text to a result the artifact states in
-  no record), a `user`/`assistant` `message` whose written text the read's own extraction does not
-  answer as recorded — a `user` block the user-text preprocessing drops as a composed system envelope
-  (the subagent-notification tag among them, its body parsing or not), a block whose envelope prefix it
-  strips, an empty string it drops from the join — and a `user` message whose first block carries the
-  plugin-discovery envelope the read strips only on the session's first user record, a state the oracle
-  does not model, and a `custom_tool_call_output` whose carried read answers
-  the result's outcome the receipt's identity cannot state among them — refused there
-  too, a shape whose own read or identity the oracle does not model — a call carrying both `arguments` and
-  `input`, a call whose recorded input or result whose recorded text is written as a member that is not a
-  string (the receipt's identity members are strings, and a non-string member's own bytes are what the
-  carried read answers), an object-valued `content` a read iterates the member values of — refused there
-  too, and so is a result the carried read does not establish — one whose call the read answers elsewhere
-  (`spawn_agent` appends no result; `wait`/`wait_agent` answer per-agent results from the output's own
-  `status` object, the exec-cell poll excepted, and the family is asked of the name the read answers for
-  one output — the pending memory's Go-trimmed spelling first, then the raw name written beside the call,
-  so a padded `wait_agent` the memory holds is answered as one while a padded output id, which the memory
-  cannot hold, is answered by that raw name), one carrying no output a read appends a result from, or
-  one whose recorded text is the text of the result written before it after the read's own trim
-  (`hasEquivalentCallResultEvent` suppresses the duplicate: two raw texts that trim to one are one result
-  to every read, and a receipt naming both certifies a multiplicity no read answers), or one whose
-  written `call_id` is already the Go-trimmed spelling of two distinct calls the artifact carries (the
-  read's pending memory is keyed by the trimmed id and replaced by `rememberToolCall`, so which call, or
-  which arm, a read answers the output by is not established; a padded output id is answered by the name
-  written beside its own call and is not in this class), and a call whose written name is `apply_patch`
-  whose patch names more than one file is refused as a shape the oracle does not model — the read expands
-  it into one call per file the patch names before any output is read, so the receipt's single call
-  occurrence cannot count the calls a read answers, and a `session_meta` carrying `forked_from_id` is
-  refused beside them, because the read's fork gate suppresses the replayed records of a resolved
-  parent's turns and a parent transcript is outside the oracle's input —
+  the writer's two — is not an occurrence this oracle reads, and the shapes a read answers differently
+  than the artifact's own bytes state — a `user` message a read consumes as a subagent notification, a
+  notification-prefixed block the read's user-text preprocessing drops or rewrites, a
+  `custom_tool_call_output` whose read answers an outcome, a result the read answers elsewhere or
+  collapses, a call id colliding after the read's trim, a multi-file `apply_patch` — are **not** refused
+  for that reading: the records a read drops, rewrites, dedupes, suppresses or expands are the
+  **reader-visible projection**, the manifest receipt's own statement, whose producer is 0009c/0009d
+  (the goal's Non-scope), and this oracle infers nothing about it from the artifact's bytes — refused
+  there too, instead, are the shapes whose receipt-facing identity the artifact's own bytes cannot
+  state: a call carrying both `arguments` and `input`, a call whose recorded input or a result whose
+  recorded text is written as a member that is not a string (the receipt's identity members are strings,
+  and a decoded value cannot recover the member's own bytes), and a `session_meta` carrying a non-blank
+  `forked_from_id`, because the read's fork gate suppresses the replayed records of a resolved parent's
+  turns and a parent transcript is outside the oracle's input —
   a line whose object writes a member name twice, or a receipt document whose object does, or an
   artifact line holding an unpaired surrogate escape (`gjson` answers U+FFFD where this decoder answers
   the code point, so two distinct spellings would be one string to a read — measured on the carried gjson
