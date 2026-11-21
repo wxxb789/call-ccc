@@ -14,6 +14,7 @@ Format -- header lines ``key value``, then tab-separated records, sorted by path
     upstream-files   <tracked files at the pin>
     carried          <files carried byte for byte>
     deviations       <paths deliberately not carried or not byte-identical>
+    layout           <carry root> <this repository's own module directory>
 
     file   <mode> <blob-sha1> <size> <path>
     skip   <mode> <blob-sha1> <size> <path> <reason> [<stored-blob-sha1> <stored-size>]
@@ -22,6 +23,21 @@ Format -- header lines ``key value``, then tab-separated records, sorted by path
 ``mode`` is git's: ``100644``, ``100755`` or ``120000`` (symlink; the blob holds the target text).
 ``owned`` records list the path prefixes this repository owns -- anything else tracked in the tree
 must be a ``file`` record, which is what makes an unexplained addition fail the check.
+
+Every record's ``path`` is an **upstream** path, and the ``layout`` line is what turns one into the
+path this tree holds it at (see :class:`Layout`). A tree that carries the AgentsView tree as its root
+spells the layout ``. .`` (or leaves the line out: that is this repository's earlier shape, and the
+default) and its records' paths are the tree's own; a tree whose carry has a directory of its own
+spells it ``agentsview/ ccc`` and a record's path lives under ``agentsview/``. The line is what the
+importer saw when it wrote the ledger, and the checker refuses a line that disagrees with the tree it
+is checking: the shape is asked of the tree's own ``go.mod`` files (:func:`detect_layout`), so a
+half-migrated tree cannot be checked at the wrong prefix, and no other file has to repeat the
+spelling.
+
+In the directory layout, ``owned`` records stop being the boundary: everything outside the carry
+directory is this repository's own by construction (:meth:`Layout.owns`), which is why a ledger of
+that shape needs none. ``owned`` records stay readable (and are still honoured) so a ledger of the
+earlier root shape keeps working.
 
 A ``skip`` record names an upstream path this repository does not carry as upstream's own blob: a
 project-owned path, or one carried with a declared byte normalisation (upstream's ``.gitattributes``
@@ -44,12 +60,115 @@ import os
 import re
 from pathlib import Path
 
-HEADER_KEYS = ("pin", "remote", "describe", "commit-date", "upstream-files", "carried", "deviations")
+HEADER_KEYS = ("pin", "remote", "describe", "commit-date", "upstream-files", "carried", "deviations",
+               "layout")
 RECORD_KINDS = ("file", "skip", "input", "owned")
+
+#: The carried module path, which is upstream's own and never changes, and this repository's module
+#: path, which is the subpath a copy of the ``ccc/`` directory keeps wherever it is placed. The two
+#: are what :func:`detect_layout` reads a tree's shape from.
+CARRY_MODULE = "go.kenn.io/agentsview"
+OUR_MODULE = "go.kenn.io/agentsview/ccc"
+MODULE_LINE = re.compile(r"^\s*module\s+(\S+)\s*$", re.MULTILINE)
 
 
 class ManifestError(ValueError):
     """The manifest file is malformed or internally inconsistent."""
+
+
+class Layout:
+    """Where this tree keeps the two halves: the carried tree and this repository's own module.
+
+    ``carry`` is the prefix the carried tree lives under, spelled ``""`` when the carry *is* the
+    repository root or ``"agentsview/"`` when it has a directory of its own (with the carried tree's
+    own ``go.mod`` inside it). ``module`` is the repository-relative directory of this repository's
+    own Go module, ``"."`` when that module is the root.
+
+    The two facts travel together -- a tree whose carry has its own directory has its own module in
+    ``ccc/`` -- and both are read off the tree (:func:`detect_layout`) rather than configured, so the
+    importer, the checker and the gate cannot disagree about the shape they are looking at.
+    """
+
+    __slots__ = ("carry", "module")
+
+    def __init__(self, carry: str, module: str):
+        self.carry = carry
+        self.module = module
+
+    def __eq__(self, other: object) -> bool:
+        return (isinstance(other, Layout) and (self.carry, self.module) == (other.carry, other.module))
+
+    def __hash__(self) -> int:
+        return hash((self.carry, self.module))
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"Layout({self.carry!r}, {self.module!r})"
+
+    @property
+    def spelling(self) -> str:
+        """The header value this layout is written as, ``<carry root> <module directory>``."""
+        return f"{self.carry or '.'} {self.module}"
+
+    def tree_path(self, path: str) -> str:
+        """The path of one manifest record (an upstream path) as this tree holds it."""
+        return f"{self.carry}{path}"
+
+    def owns(self, path: str) -> bool:
+        """Whether the carry directory's own boundary says ``path`` is this repository's own.
+
+        True for everything outside the carry when the carry has a directory of its own (the whole
+        point of that layout: inside the directory is upstream's, outside it is ours), and False in
+        the root layout, where what this repository owns is spelled out by ``owned`` records.
+        """
+        return bool(self.carry) and not path.startswith(self.carry)
+
+
+def parse_layout(value: str) -> Layout:
+    """Parse the ``layout`` header value, or answer the root layout for an empty one."""
+    tokens = value.split()
+    if not tokens:
+        return Layout("", ".")
+    if len(tokens) != 2:
+        raise ManifestError(
+            f"layout takes two tokens -- the carry root and this repository's own module directory "
+            f"-- got {value!r}")
+    carry, module = tokens
+    if carry in (".", ""):
+        carry = ""
+    else:
+        if carry.startswith("/") or ".." in carry.split("/"):
+            raise ManifestError(f"layout carry root {carry!r} is not a relative path")
+        carry = carry.rstrip("/") + "/"
+    module = module.rstrip("/") or "."
+    if module != "." and (module.startswith("/") or ".." in module.split("/")):
+        raise ManifestError(f"layout module directory {module!r} is not a relative path")
+    return Layout(carry, module)
+
+
+def module_path(go_mod: Path) -> str:
+    """The module path a ``go.mod`` declares, or ``""`` when there is none to read."""
+    try:
+        text = go_mod.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = MODULE_LINE.search(text)
+    return match.group(1) if match else ""
+
+
+def detect_layout(root: Path) -> Layout:
+    """The layout the tree at ``root`` has, read from its own ``go.mod`` files.
+
+    The tree's shape is asked of the tree rather than of a flag, because the importer, the checker and
+    the gate all have to answer the same question about the same tree, and a shape that disagrees with
+    the files on disk is exactly the half-migrated state the two layouts must not be mistaken in: a
+    carry whose directory holds upstream's ``go.mod`` beside a ``ccc/`` module that is the subpath
+    copy is the directory layout, and every other tree -- including the shape this repository had
+    before, and a throw-away copy -- is the root layout.
+    """
+    if (module_path(root / "agentsview" / "go.mod") == CARRY_MODULE
+            and module_path(root / "ccc" / "go.mod") == OUR_MODULE):
+        return Layout("agentsview/", "ccc")
+    return Layout("", ".")
 
 
 class Record:
@@ -94,6 +213,9 @@ class Manifest:
     def __init__(self, header: dict[str, str], records: list[Record]):
         self.header = header
         self.records = records
+        # Parsed once, here: every consumer asks the same question of every record's path, and a
+        # malformed layout line is a malformed manifest (the error is raised while parsing it).
+        self.layout = parse_layout(header.get("layout", ""))
 
     @property
     def files(self) -> list[Record]:
@@ -116,8 +238,19 @@ class Manifest:
         """Declared deviations this tree carries anyway, with the bytes each record pins."""
         return [r for r in self.skips if r.stored_digest]
 
+    def tree_path(self, path: str) -> str:
+        """One manifest record's path (an upstream path) as this tree holds it."""
+        return self.layout.tree_path(path)
+
     def is_owned(self, path: str) -> bool:
-        """True when ``path`` is inside a self-owned prefix (which may be a directory)."""
+        """True when ``path`` (a tree path) is this repository's own.
+
+        Two answers, and both apply: the carry directory's boundary -- everything outside a carry
+        with a directory of its own is ours -- and the ``owned`` prefixes a ledger of the earlier root
+        shape spells out, which a ledger of the directory shape may still name.
+        """
+        if self.layout.owns(path):
+            return True
         for prefix in self.owned:
             if prefix.endswith("/"):
                 if path.startswith(prefix):
@@ -140,6 +273,8 @@ class Manifest:
                      "the bytes this tree stores for it)")
         lines.append("# input\tshape\tsha256\tsize\tpath\treason  (generated build inputs, not tracked upstream)")
         lines.append("# owned\tpath-prefix  (this repository owns the path; a trailing / means a directory)")
+        lines.append("# layout\t<carry root> <this repository's own module directory>  (where the two "
+                     "halves of this tree sit; '.' means the repository root)")
         for record in self.records:
             lines.append(record.line)
         return "\n".join(lines) + "\n"

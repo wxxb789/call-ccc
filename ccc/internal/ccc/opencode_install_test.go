@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"go.kenn.io/agentsview/internal/ccc/opencodefixture"
+	"go.kenn.io/agentsview/ccc/internal/ccc/opencodefixture"
 )
 
 // writeOpenCodeTestStore materialises one written document as the rows the harness's own importer would

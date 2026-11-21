@@ -1,7 +1,7 @@
 // Command ccc inspects an existing agent session through the AgentsView source-side implementation
 // this repository carries unmodified.
 //
-// It is a thin shell over go.kenn.io/agentsview/internal/ccc: argument handling and presentation
+// It is a thin shell over go.kenn.io/agentsview/ccc/internal/ccc: argument handling and presentation
 // only, so the same capability is available to a caller that embeds the core (and to the parity
 // oracle, which calls it directly).
 //
@@ -21,7 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go.kenn.io/agentsview/internal/ccc"
+	"go.kenn.io/agentsview/ccc/internal/ccc"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/stringutil"
 )

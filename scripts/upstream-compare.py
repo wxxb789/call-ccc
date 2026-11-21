@@ -2,9 +2,10 @@
 """Compare this tree's inherited AgentsView behaviour with a pristine checkout at the pinned revision.
 
 `scripts/upstream-parity.py` proves the carried files are byte-identical to the pin; this script
-proves the bytes *behave* the same, by running one program — internal/ccc/parity/oracle, copied
-verbatim into the pristine tree — over the same fixture bytes on both sides and diffing the two
-canonical dumps: parse → sync into an isolated SQLite archive → archive read.
+proves the bytes *behave* the same, by running one program — the module's own
+`ccc/internal/ccc/parity/oracle`, copied verbatim into the pristine tree (at the same subpath, so its
+`go.kenn.io/agentsview/ccc/...` imports resolve there too) — over the same fixture bytes on both sides
+and diffing the two canonical dumps: parse → sync into an isolated SQLite archive → archive read.
 
 Both sides do the same work with the same flags, over separately copied fixture files and separately
 created, throw-away archives; the only difference between them is which tree the inherited packages
@@ -37,16 +38,21 @@ from upstream_manifest import load_manifest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "scripts" / "upstream-manifest.txt"
-ORACLE_PACKAGE = Path("internal", "ccc")
-FIXTURE_ROOT = Path("internal", "ccc", "testdata", "fixtures")
-ORACLE_DIR = Path("internal", "ccc", "parity", "oracle")
-ORACLE_RECORD_DIR = Path("internal", "ccc", "parity", "testdata", "oracle")
+#: This repository's own module, its fixtures and the oracle, all relative to this tree's root. The
+#: carried tree has a directory of its own (``agentsview/``), so nothing below starts at the root any
+#: more; ``ORACLE_PACKAGE``'s subpath is also what keeps the oracle's import paths resolvable inside
+#: the pristine checkout, where the copy lands under upstream's own module.
+ORACLE_MODULE_DIR = Path("ccc")
+ORACLE_PACKAGE = Path("ccc", "internal", "ccc")
+FIXTURE_ROOT = Path("ccc", "internal", "ccc", "testdata", "fixtures")
+ORACLE_DIR = Path("ccc", "internal", "ccc", "parity", "oracle")
+ORACLE_RECORD_DIR = Path("ccc", "internal", "ccc", "parity", "testdata", "oracle")
 PRICING_SNAPSHOT = Path("internal", "pricing", "snapshot", "litellm_snapshot.json.gz")
 PRICING_TOOL_PACKAGE = "./internal/pricing/cmd/litellm-snapshot"
 
 #: The cases both sides run: the provider directory under the fixture root, and the session file the
 #: case reads, relative to that directory. A provider may hold more than one fixture (a second
-#: transcript shape), so every case names its file; this table mirrors internal/ccc/parity's Cases,
+#: transcript shape), so every case names its file; this table mirrors ccc/internal/ccc/parity's Cases,
 #: which is what decides what a case reads.
 CASES = (
     ("claude", "-home-user-code-example-api/9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10.jsonl"),
@@ -143,8 +149,10 @@ def stage_pristine_tree(clone: Path) -> list[str]:
     )
     notes.append(
         f"copied {ORACLE_PACKAGE} ({go_source_digest(ROOT, ORACLE_PACKAGE)[1]} Go source file(s)) "
-        f"from this tree into the pristine checkout: the oracle and its call/ccc wrapper are identical "
-        f"on both sides, so the only variable is which tree the inherited packages come from")
+        f"from this tree into the pristine checkout, where the same subpath keeps the oracle's own "
+        f"import paths (go.kenn.io/agentsview/ccc/...) resolvable: the oracle and its call/ccc wrapper "
+        f"are identical on both sides, so the only variable is which tree the inherited packages come "
+        f"from")
     return notes
 
 
@@ -173,14 +181,29 @@ def unstage_pristine_tree(clone: Path, digest_before: str) -> str:
     return f"removed {target} from the checkout again"
 
 
-def run_oracle(tree: Path, fixtures: Path, work_dir: Path, case: tuple[str, str], out: Path) -> None:
+def oracle_invocation(tree: Path, ours: bool) -> tuple[Path, str]:
+    """``(working directory, package pattern)`` for one side's oracle.
+
+    This tree's module is ``ccc/``, so the oracle is ``./internal/ccc/parity/oracle`` from there. A
+    pristine checkout has no ``ccc/`` *module* -- the copy this script makes lands inside upstream's
+    own module, at the same subpath ``ccc/internal/ccc/parity/oracle`` -- so there the pattern is
+    spelled from the checkout's own root. Both spellings name the same copied package.
+    """
+    if ours:
+        return tree / ORACLE_MODULE_DIR, "./" + ORACLE_DIR.relative_to(ORACLE_MODULE_DIR).as_posix()
+    return tree, "./" + ORACLE_DIR.as_posix()
+
+
+def run_oracle(tree: Path, fixtures: Path, work_dir: Path, case: tuple[str, str], out: Path,
+               ours: bool) -> None:
     provider, fixture = case
     work_dir.mkdir(parents=True, exist_ok=True)
+    cwd, pattern = oracle_invocation(tree, ours)
     proc = run(
-        ["go", "run", f"-tags={GO_TAGS}", "./" + ORACLE_DIR.as_posix(),
+        ["go", "run", f"-tags={GO_TAGS}", pattern,
          "-fixtures", str(fixtures), "-work-dir", str(work_dir),
          "-provider", provider, "-fixture", fixture, "-out", str(out)],
-        cwd=tree,
+        cwd=cwd,
     )
     if proc.returncode != 0:
         raise SystemExit(
@@ -193,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream", type=Path, help="existing clean checkout of the pin to compare against")
     parser.add_argument("--record", action="store_true",
                         help="write the compared dumps as the committed oracle under "
-                             "internal/ccc/parity/testdata/oracle")
+                             "ccc/internal/ccc/parity/testdata/oracle")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     parser.add_argument("--scratch", type=Path, help="scratch directory to use (implies --keep)")
     args = parser.parse_args(argv)
@@ -237,8 +260,9 @@ def main(argv: list[str] | None = None) -> int:
             their_fixtures = isolated_fixtures(scratch / provider / "their-fixtures")
             our_dump = scratch / provider / "our.json"
             their_dump = scratch / provider / "their.json"
-            run_oracle(ROOT, our_fixtures, scratch / provider / "our-work", case, our_dump)
-            run_oracle(clone, their_fixtures, scratch / provider / "their-work", case, their_dump)
+            run_oracle(ROOT, our_fixtures, scratch / provider / "our-work", case, our_dump, ours=True)
+            run_oracle(clone, their_fixtures, scratch / provider / "their-work", case, their_dump,
+                       ours=False)
 
             ours, theirs = our_dump.read_bytes(), their_dump.read_bytes()
             same = ours == theirs

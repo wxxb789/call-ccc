@@ -3,11 +3,14 @@
 
 The carried content comes from the upstream *git objects*, not from a working tree, so a checkout
 with an unusual ``core.autocrlf`` cannot smuggle a rewritten file into the tree. Everything upstream
-tracks is carried byte for byte except the paths listed in ``SKIP_REASONS`` (this repository owns
-them) and ``.github/**`` (Actions would run upstream's workflows here) -- plus the paths in
-``NORMALISED``, which are carried with the bytes git stores for them after upstream's own attribute
-file rewrites their line endings, and whose record pins both digests. Each generated build input is
-recorded with its hash instead of being copied from upstream's checkout.
+tracks is carried byte for byte, except the paths this tree's own layout declares as deviations: in
+the root layout that is ``SKIP_REASONS`` (this repository owns those paths) and ``.github/**``
+(Actions would run upstream's workflows here), and in the layout where the carry has a directory of
+its own it is only ``NORMALISED`` -- the paths carried with the bytes git stores for them after
+upstream's own attribute file rewrites their line endings, whose record pins both digests. Which
+layout this tree has is read from its own ``go.mod`` files (:func:`upstream_manifest.detect_layout`),
+never from a flag, so a tree that has been moved is imported at the shape it now has. Each generated
+build input is recorded with its hash instead of being copied from upstream's checkout.
 
     python3 scripts/upstream-import.py --upstream /path/to/agentsview [--pin <rev>]
                                        [--restore-snapshot] [--prune] [--dry-run]
@@ -34,6 +37,7 @@ from upstream_manifest import (  # noqa: E402  (path set up above)
     Manifest,
     Record,
     blob_sha1,
+    detect_layout,
     hashed_path,
     load_manifest,
     pinned_snapshot_sha256,
@@ -50,7 +54,11 @@ PRICING_TOOL = "internal/pricing/cmd/litellm-snapshot/main.go"
 GENERATED_INPUTS = ("internal/pricing/snapshot/litellm_snapshot.json.gz",)
 
 #: Upstream paths this repository owns instead of carrying. Each entry is a reason the checker
-#: prints verbatim, so the deviation is identified rather than folded into a count.
+#: prints verbatim, so the deviation is identified rather than folded into a count. These records
+#: exist only in the root layout: once the carry has a directory of its own, upstream's `.gitignore`,
+#: `AGENTS.md`, `README.md` and `docs/README.md` are carried inside it while this repository keeps its
+#: own files at the root -- each side with one home, and the boundary (not a list) is what says which
+#: is which.
 SKIP_REASONS = {
     ".gitignore": "project-owned: call/ccc keeps its own ignore rules at this path",
     "AGENTS.md": "project-owned: call/ccc's control file lives at this path",
@@ -65,9 +73,10 @@ SKIP_REASONS = {
         "repository's carried .gitattributes turns into LF, so git stores the file one byte shorter",
 }
 
-#: Upstream CI definitions are not carried: Actions reads `.github/workflows/` at the repository
-#: root, so carrying them would run upstream's CI (its runners, secrets and desktop builds) on every
-#: call/ccc pull request.
+#: Upstream CI definitions are not carried in the root layout: Actions reads `.github/workflows/` at
+#: the repository root, so carrying them would run upstream's CI (its runners, secrets and desktop
+#: builds) on every call/ccc pull request. Inside a carry directory of their own they are carried
+#: verbatim and inert: GitHub reads the repository root's `.github/` and nothing below a subdirectory.
 SKIP_PREFIXES = {
     ".github/": "upstream CI definitions: Actions would run upstream's workflows on call/ccc pull requests",
 }
@@ -81,8 +90,10 @@ NORMALISED = (
     "frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json",
 )
 
-#: Paths this repository owns. A tracked file outside the manifest must match one of these; a
-#: trailing slash means "everything below".
+#: Paths this repository owns in the root layout. A tracked file outside the manifest must match one
+#: of these; a trailing slash means "everything below". The directory layout declares none: there the
+#: carry's own directory is the boundary -- everything outside it is this repository's own -- so a
+#: list would be a second spelling of a rule the layout already states.
 OWNED = (
     ".github/",
     ".gitignore",
@@ -99,6 +110,8 @@ OWNED = (
     "docs/plans/",
     "docs/upstream.md",
     "internal/ccc/",
+    "scripts/claude-native-check.py",
+    "scripts/codex-native-check.py",
     "scripts/gate-goflags.txt",
     "scripts/gate-required.txt",
     "scripts/gate-targets.txt",
@@ -107,16 +120,38 @@ OWNED = (
     "scripts/obligation-citations.py",
     "scripts/omp-native-check.py",
     "scripts/opencode-native-check.py",
-    "scripts/tests/",
-    "scripts/claude-native-check.py",
-    "scripts/codex-native-check.py",
     "scripts/pi-native-check.py",
+    "scripts/portability.py",
+    "scripts/tests/",
     "scripts/upstream-compare.py",
     "scripts/upstream-import.py",
-    "scripts/upstream_manifest.py",
     "scripts/upstream-manifest.txt",
     "scripts/upstream-parity.py",
+    "scripts/upstream_manifest.py",
 )
+
+
+def skip_reasons(layout) -> dict[str, str]:
+    """The declared deviations of one layout, keyed by upstream path.
+
+    The directory layout declares one: the path upstream's own attribute file rewrites. Everything
+    else in the root layout's list is a path conflict between two files that want one home, and the
+    directory layout gives each side one.
+    """
+    if layout.carry:
+        return {path: reason for path, reason in SKIP_REASONS.items() if path in NORMALISED}
+    return dict(SKIP_REASONS)
+
+
+def skip_prefixes(layout) -> dict[str, str]:
+    """The declared deviation *prefixes* of one layout: upstream's CI definitions, in the root layout
+    only (inside a carry directory they are inert, see :data:`SKIP_PREFIXES`)."""
+    return {} if layout.carry else dict(SKIP_PREFIXES)
+
+
+def owned_prefixes(layout) -> tuple[str, ...]:
+    """The project-owned prefixes of one layout: the root layout's list, or none."""
+    return () if layout.carry else OWNED
 
 
 def git(upstream: Path, *args: str, text: bool = True) -> subprocess.CompletedProcess:
@@ -180,16 +215,25 @@ def blob_contents(upstream: Path, shas: list[str]) -> dict[str, bytes]:
     return contents
 
 
-def skip_reason(path: str) -> str:
-    if path in SKIP_REASONS:
-        return SKIP_REASONS[path]
-    for prefix, reason in SKIP_PREFIXES.items():
+def skip_reason(path: str, layout=None) -> str:
+    """Why this upstream path is declared a deviation in this layout, or "" when it is carried.
+
+    ``path`` is an upstream path; ``layout`` is the tree's own shape (:func:`detect_layout`) and
+    defaults to the shape of the tree this module lives in, which is what a one-argument call from a
+    test or a REPL is asking about.
+    """
+    if layout is None:
+        layout = detect_layout(ROOT)
+    reasons = skip_reasons(layout)
+    if path in reasons:
+        return reasons[path]
+    for prefix, reason in skip_prefixes(layout).items():
         if path.startswith(prefix):
             return reason
     return ""
 
 
-def deviation_record(mode: str, sha: str, data: bytes, path: str) -> Record:
+def deviation_record(mode: str, sha: str, data: bytes, path: str, layout) -> Record:
     """One declared deviation, pinning the bytes this tree stores for it when it carries the path.
 
     A project-owned path or an upstream CI definition is not carried at all, so upstream's digest alone
@@ -199,9 +243,9 @@ def deviation_record(mode: str, sha: str, data: bytes, path: str) -> Record:
     """
     if path in NORMALISED:
         stored = stored_bytes(path, data)
-        return Record("skip", mode, sha, len(data), path, skip_reason(path),
+        return Record("skip", mode, sha, len(data), path, skip_reason(path, layout),
                       blob_sha1(stored), len(stored))
-    return Record("skip", mode, sha, len(data), path, skip_reason(path))
+    return Record("skip", mode, sha, len(data), path, skip_reason(path, layout))
 
 
 def write_entry(target: Path, mode: str, data: bytes, dry_run: bool) -> None:
@@ -313,6 +357,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="report what would change; write nothing")
     args = parser.parse_args(argv)
 
+    # The shape of *this* tree decides where the carried files are written, which paths are declared
+    # deviations and what the ledger's layout line says. It is read from the tree's own go.mod files,
+    # so a tree that has been moved but whose ledger has not is imported at the shape it now has.
+    layout = detect_layout(ROOT)
+    carry_root = ROOT / layout.carry if layout.carry else ROOT
+
     upstream: Path = args.upstream.resolve()
     if not (upstream / ".git").exists():
         raise SystemExit(f"{upstream} is not a git checkout")
@@ -338,10 +388,11 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"snapshot restore failed with rc={proc.returncode}")
 
     entries = upstream_entries(upstream, pin)
-    carried = [(mode, sha, path) for mode, sha, path in entries if not skip_reason(path)]
-    skipped = [(mode, sha, path) for mode, sha, path in entries if skip_reason(path)]
+    carried = [(mode, sha, path) for mode, sha, path in entries if not skip_reason(path, layout)]
+    skipped = [(mode, sha, path) for mode, sha, path in entries if skip_reason(path, layout)]
+    owned = owned_prefixes(layout)
     overlap = [path for _, _, path in carried if any(
-        path == owned or path.startswith(owned) for owned in OWNED
+        path == owned_path or path.startswith(owned_path) for owned_path in owned
     )]
     if overlap:
         raise SystemExit(f"carried path is declared project-owned too: {overlap[0]}")
@@ -353,12 +404,12 @@ def main(argv: list[str] | None = None) -> int:
     # A declared normalisation is carried, so its path is written as well -- with the bytes git will
     # store for it, not upstream's blob, so the working tree equals what a clone checks out.
     written = carried + [entry for entry in skipped if entry[2] in NORMALISED]
-    carry_entries(ROOT, written, contents, previous, args.prune, args.dry_run)
+    carry_entries(carry_root, written, contents, previous, args.prune, args.dry_run)
 
     input_records: list[Record] = []
     for path in GENERATED_INPUTS:
         source = upstream / path
-        target = ROOT / path
+        target = carry_root / path
         if not source.exists():
             raise SystemExit(
                 f"{path} does not exist in {upstream}: re-run with --restore-snapshot "
@@ -369,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
-        pinned = pinned_snapshot_sha256(ROOT / PRICING_TOOL)
+        pinned = pinned_snapshot_sha256(carry_root / PRICING_TOOL)
         if pinned and pinned != digest:
             raise SystemExit(f"{path} hashes to {digest}, but the carried tool pins {pinned}")
         input_records.append(Record(
@@ -378,12 +429,14 @@ def main(argv: list[str] | None = None) -> int:
             f"artifact before every Go build (sha256 pinned in {PRICING_TOOL})",
         ))
 
-    records: list[Record] = [Record("owned", "", "", 0, prefix) for prefix in OWNED]
+    # Sorted, like every other record list here: the ledger is a diffable file, and an owned
+    # prefix's position in the tuple above is not a fact about the tree.
+    records: list[Record] = [Record("owned", "", "", 0, prefix) for prefix in sorted(owned)]
     records += [Record("file", mode, sha, len(contents[sha]), path) for mode, sha, path in sorted(
         carried, key=lambda entry: entry[2]
     )]
     records += [
-        deviation_record(mode, sha, contents[sha], path)
+        deviation_record(mode, sha, contents[sha], path, layout)
         for mode, sha, path in sorted(skipped, key=lambda entry: entry[2])
     ]
     records += input_records
@@ -399,6 +452,7 @@ def main(argv: list[str] | None = None) -> int:
             "upstream-files": str(len(entries)),
             "carried": str(len(carried)),
             "deviations": str(len(skipped) + len(input_records)),
+            "layout": layout.spelling,
         },
         records,
     )
@@ -407,13 +461,14 @@ def main(argv: list[str] | None = None) -> int:
 
     normalised = [path for _, _, path in skipped if path in NORMALISED]
     print(f"pin {pin} ({describe}, {commit_date})")
+    print(f"layout: carry root {layout.carry or '.'}, this repository's module {layout.module}")
     print(f"upstream tracked files: {len(entries)}")
     print(f"carried byte for byte:  {len(carried)}")
     print(f"declared deviations:    {len(skipped) + len(input_records)}"
           f" ({len(skipped) - len(normalised)} upstream paths not carried, "
           f"{len(normalised)} carried with a declared normalisation, "
           f"{len(input_records)} generated input)")
-    print(f"project-owned prefixes: {len(OWNED)}")
+    print(f"project-owned prefixes: {len(owned)}")
     if args.dry_run:
         print("dry run: nothing written")
     return 0

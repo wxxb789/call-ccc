@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.kenn.io/agentsview/internal/ccc"
+	"go.kenn.io/agentsview/ccc/internal/ccc"
 )
 
 // ompFixtureRef is the committed Oh My Pi session, as the reference the CLI takes: the provider is the
