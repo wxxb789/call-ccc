@@ -1,6 +1,9 @@
 # Layout migration A — the carry in its own directory, two modules
 
-**Status:** implemented in the increment tracked by [`docs/evidence/layout-migration-A.md`](../evidence/layout-migration-A.md).
+**Status:** implemented in the increment tracked by [`docs/evidence/layout-migration-A.md`](../evidence/layout-migration-A.md);
+**rebased onto `8989d2c`** after PR #20 merged and completed with this increment's own `AGENTS.md`
+update (`fe68e35`). The rebase's one conflict and its resolution, and what `AGENTS.md` now carries, are
+the evidence record's §10.
 **Owner decision:** the layout question was put to the owner on 2026-11-21 as one fork, and the answer
 was *A — carry in its own folder, two modules* (the answered sweep is recorded in the task's decision
 log; this file restates the decision in-repo so the repository carries its own provenance, and the
@@ -63,7 +66,8 @@ subpath module, the root layout with the same, and an unrelated module path refu
 ## 3. Non-goals (explicitly not this increment)
 
 - **S0's Top Rule** ("each half has one owner: theirs reads, ours writes") and the 0015–0017 deferral
-  land in their own increment, held for owner approval.
+  landed in their own increment — **PR #20**, squash-merged as `8989d2c`; this increment was rebased onto
+  it and resolves the one paragraph both increments touch (evidence §10).
 - **S2's 0009a re-scope**, and the 0010–0013 refinements, come after this one; this increment authors no
   citations manifest for 0009a and touches no goal file.
 - **No goal's `Done when` changes**, no goal moves to `docs/goals/archive/`, and the conductor's
@@ -100,7 +104,8 @@ subpath module, the root layout with the same, and an unrelated module path refu
 ## 5. How it lands
 
 One branch (`prep/layout-migration-A`, cut from `origin/main` = `21d43fe1a`) → one PR → squash merge onto
-a linear `main`; the worktree leaves the edits uncommitted for the operator. The gate is green on the
+a linear `main`. `AGENTS.md` is part of this increment (`fe68e35`) — the migration's paths, the new
+`portability` step and the owner's comment rule — and the operator owns the merge. The gate is green on the
 final state (`python3 scripts/gate.py` → `GATE: PASS`), CI runs the same file on `ubuntu-latest` and
 `windows-latest` (the workflow's Go toolchain now comes from `ccc/go.mod`, which declares the same `go`
 directive as the carry), and the increment's evidence record

@@ -3,7 +3,8 @@
 **Increment:** the carried AgentsView tree moved into `agentsview/`, this repository's own module into
 `ccc/` (owner decision: layout **A**, 2026-11-21). **Plan:**
 [`docs/plans/layout-migration-A.md`](../plans/layout-migration-A.md). **Branch:**
-`prep/layout-migration-A`, cut from `origin/main` = `21d43fe1a3c81bb59504bfaae23c8c618edf7ae2`.
+`prep/layout-migration-A`, cut from `origin/main` = `21d43fe1a3c81bb59504bfaae23c8c618edf7ae2` and later
+**rebased onto `8989d2c`** (PR #20 merged) — the rebase, its one conflict and its resolution are §10.
 Every command below ran in this worktree; the toolchain is the one on this host's `PATH` (Go 1.27.4
 via its shim, Python 3.15.2 for the harness).
 
@@ -546,9 +547,11 @@ case, the two fallback-list cases, the gate's failing-test listing case, and the
   `scripts/tests/test_upstream_parity.py` holds that file's `go` directive to the carried tree's — but
   no runner has executed this commit, and the Windows leg in particular is where the layout's path
   lengths and case behaviour would show.
-- **The `AGENTS.md` update is not in this tree.** It is held for owner approval as an intended patch
-  (`S1-agents-md-intended.patch`: the path statements the migration invalidates, the gate's new step,
-  and the carry's location). This increment's `AGENTS.md` is byte-identical to `main`'s.
+- **The `AGENTS.md` update is in this tree now** (`fe68e35`, owner-authorised 2026-11-22 after two
+  unattended prompts timed out): the intended patch's nine hunks — the path statements the migration
+  invalidates, the gate's new `portability` step, the carry's location — plus the owner's comment rule
+  as one `## How to work here` bullet; §10 records how the bytes were verified. What this bullet used to
+  say (held for approval, byte-identical to `main`'s) no longer holds.
 - **`docs/decisions/OPEN-QUESTIONS.md` and the earlier evidence records are not rewritten.** Their
   dated entries keep the paths of the day they were written; `docs/upstream.md` gained the old → new
   mapping, and both are deliberate (historical records are not restated, they are translated).
@@ -564,3 +567,35 @@ case, the two fallback-list cases, the gate's failing-test listing case, and the
   *here* is the gate on the repaired tree (§9.5), the suite (482 tests), and each emulation's
   reproduction of the failing set it stands for. The next `windows-latest` run is the verification —
   and the `selftest` step now names its failures, so that run enumerates itself.
+
+## 10. After the base moved: the rebase, the contract's own update, and the heads this record covers
+
+PR #20 (`prep/top-rule-and-deferrals`, S0) merged to `main` as **`8989d2c`** while this increment waited, so
+the branch was **rebased** onto it — `0671bda`, `4e45995`, then the `AGENTS.md` commit below — rather than
+redone. The increment's own content is unchanged by the rebase except where the two increments edited the
+same paragraph.
+
+- **One conflict, one resolution — `docs/core-design/README.md`.** PR #20 added §2 (the ownership rule and the
+  declared-debt list) at the paragraph this increment rewrites (the Go `internal/` import restriction), and
+  #20's new text names our half's packages by their pre-migration paths. The resolution keeps **every
+  sentence** of §2 whole and translates only the spellings the migration moved (`ccc/internal/ccc/…`,
+  `agentsview/internal/parser/…`); the import-restriction paragraph is this increment's. Everything else
+  #20 changed is taken as it stands — its §2 debt list, the 0015–0017 deferral, the `docs/goals/` rows, and
+  its own evidence record.
+- **`AGENTS.md` is in this tree as `fe68e35`.** The intended patch's nine hunks plus the owner's comment rule
+  of the same day, as one new `## How to work here` bullet. The write went through Hermes's protected-file
+  gate as the owner's own click, after two prompts had timed out unattended; the bytes were verified *before*
+  the click and after it — the same patch text was applied to a byte-identical scratch copy first and the
+  result compared against the deterministic reference (`AGENTS.pre.md` + `patch -p1 <` the intended patch +
+  the bullet): **identical, 40 292 bytes, `adaabe9f7a1fe1cc…`**, and the committed file hashes the same. One
+  judgement is worth naming: the comment rule is an *owner instruction* riding a layout increment because it
+  governs every later increment's code and this is the increment in flight; it is stated as its own bullet,
+  not woven into the migration's statements.
+- **The gate on the rebased tree** prints the unqualified `GATE: PASS` — nine steps, `portability` included,
+  against the pristine pin checkout at `~/.cache/ccc-upstream/83195c8a…` (log
+  `artifacts/s1/gate-rebased-20261122T1245.log` in the task tree): parity reads **5 579** carried files
+  identical to the pin, deviations 1 + 1 generated input, `files seen by git` 5 769; the suite is 482 cases.
+- **What the rebase did not do.** It rewrote no history anyone else holds — the branch is this increment's own
+  and is re-pushed with `--force-with-lease`; it touched no carried byte (`parity` is the proof); it changed
+  no plan statement beyond the scope line that now names `AGENTS.md` and the comment rule; and it left the
+  earlier increments' dated records exactly as §"What this record does not claim" says.
