@@ -2924,3 +2924,152 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   `docs/plans/0009-selective-context.md` replaces the parenthesis with the chosen enumeration; nothing
   downstream changes.
 - **Settled by:** an owner sentence naming the four routes/increments.
+
+## Q-0005-18 — A local re-derivation that the ownership rule now forbids is declared debt
+
+- **Status:** open (default taken: the guard stays as **declared debt** — not removed, not extended, and
+  replaced as soon as an authoritative read answers the same question).
+- **Question:** the binding ownership rule ("each half has one owner … never a re-implementation of a foreign
+  format's shape": `AGENTS.md` §What is binding, `docs/core-design/README.md` §2) forbids this repository from
+  deciding what a foreign loader accepts or skips — yet the same contract still **requires** one such decision:
+  the Pi-family source leaf check (`internal/ccc/pi_source_leaf.go`, invoked before a conversion by
+  `internal/ccc/continue.go`) walks the source file's own entry path and classifies the entries the carried Pi
+  reader did not return, because that reader skips the tree entries Pi's own loader builds context from. May a
+  mandated check be kept where the newer rule forbids the judgment it makes, and if so, under what condition
+  does it move?
+- **Options:** (a) keep it as declared debt with a named replacement condition and a bar on extending it;
+  (b) remove the guard now and let a leaf be established only where the read establishes it — conversions that
+  resume a branch the conversation left become possible again, and the refusal cases 0005's rounds added go
+  red; (c) exempt the Pi route in writing (refused: that is the exact defect the rule names).
+- **Default taken:** (a). The guard is preserved because a conversion that ignored it could write a target
+  whose loader walks a branch the source's own file had left; it **may not grow a new local judgment**; and it
+  moves only to a read that preserves **all three** behaviours the guard carries — reconciling the deepest
+  carried record with the read's last message, refusing an uncarried active-path entry the harness would use
+  as context (a `branch_summary` or `custom_message`), and counting the source's own system records it omits
+  (`source_system_records`) — from Pi's own loader (a load/`get_state`-shaped read of the source file) or an
+  authoritative source-side read. A replacement that answered only the leaf question would weaken the guard
+  rather than retire it. Until then the contradiction is disclosed here rather than silently resolved in
+  either direction.
+- **Reversal:** delete the check and its tests in one increment; the branch-switch refusal it pins goes with
+  them (the fixture covers three targets), so a continuation on an abandoned branch becomes possible again —
+  the cost is a **weakened** refusal, not a larger one — and the ownership rule then reads without exception.
+- **Settled by:** an owner sentence, or a Pi-side read that answers the leaf question natively **and** preserves
+  the guard's other tested outcomes — the refusal of an uncarried active-path entry, the
+  `source_system_records` count, and the warning-with-no-leaf result where no source file stands behind the
+  read — in which case the debt is discharged by **replacing** the walk, not by dropping it.
+
+## Q-0008-10 — The OpenCode source oracle's expectations are a Python reconstruction of the carried reader
+
+- **Status:** open (default taken: the check is **declared debt** — kept, not extended, and its expectations
+  move to the carried reader's own output).
+- **Question:** `scripts/opencode-native-check.py` computes the dialogue and tool results it expects from a
+  Python reconstruction of the carried OpenCode reader, and it already answers differently from the reader it
+  models: the check refuses a `shell` record before the import, while the carried reader
+  (`internal/parser/opencode_v2.go`) reads that record as tool-bearing history. The native Codex load check
+  does not resolve that source-side disagreement. May a native check keep its own model of a carried reader
+  where the binding ownership rule gives that judgment to the reader itself?
+- **Options:** (a) keep it as declared debt with a replacement condition — the expectations read from the
+  carried reader's own answer; (b) replace the expectations now with the reader's output — not in this
+  increment, which changes no script, and a change to a native check belongs to its own increment with its own
+  two-stage review; (c) leave the divergence undisclosed — refused.
+- **Default taken:** (a). Recorded here rather than silently, so the divergence between the check's refusal
+  (`Q-0008-06`'s default taken) and the reader's own reading of the same record is visible to the next lane
+  that touches the OpenCode source direction.
+- **Reversal:** an increment that takes those expectations from an **independent AgentsView read of the
+  OpenCode source** — not from the conversion's own read-back, which opens the *installed* artifact
+  (`internal/ccc/route_shared.go`) and therefore cannot show what the source supplied — and keeps that
+  read-back on the **observed** side of the comparison, re-pinning the three refusal cases; the debt then
+  becomes a rule of the owned side.
+- **Settled by:** the increment that next touches `scripts/opencode-native-check.py`, or an owner sentence.
+
+## Q-0005-19 — The Pi/OMP target-side replay prediction is a local model of the target's own loader
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced the moment the loader answers
+  the same question itself).
+- **Question:** `internal/ccc/pi_verify.go` walks the converted file's `parentId` chain, chooses the active
+  compaction boundary and **predicts** the roles the native loader should return; the Pi and OMP verifiers then
+  accept or reject a native load by that prediction (`pi_verify.go`'s load verdict, `omp_verify.go`'s), and the
+  two Python native checks mirror it (`scripts/pi-native-check.py`, `scripts/omp-native-check.py`). That is a
+  local model of the target harness's own replay — the judgment the binding ownership rule gives to the
+  harness. May a verifier keep predicting what the loader will return?
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace the prediction now with
+  the loader's own answer — not in this increment, which changes no verifier and no script, and a change to a
+  verifier belongs to its own increment with its own two-stage review; (c) keep predicting without disclosing
+  it — refused.
+- **Default taken:** (a). The prediction is what lets the check **refuse** a load that looks natively
+  loadable: the loader's own answer is already read by both verifiers (`get_messages`/`get_state` against a
+  throw-away copy) and compared against an **independent expected sequence**, and that comparison is the only
+  thing that can reject a wrong replay — the same-count role swap that `pi_verify_test.go` pins is rejected
+  solely because an expectation exists beside the observed answer. So the debt is **where the expectation
+  comes from**, not whether to have one: replacement means the sequence is derived from the harness's own
+  documented replay semantics or an authoritative read *instead of* a local walk, **with the mismatch
+  regression preserved** — a replacement that deletes the walk and keeps only the loader's answer would
+  weaken the check, not retire the debt.
+- **Reversal:** replace the walk in one increment with an expectation derived from the harness's own
+  documented replay semantics or an authoritative read, keep a case that fails when the expectation is
+  removed (the role-swap regression, or an equivalent), and only then delete `pi_source_leaf`-style local
+  reasoning from the verifiers; the refusal surface narrows to what the retained expectation covers — a
+  **weakened** refusal, not a larger one.
+- **Settled by:** the increment that next touches `internal/ccc/pi_verify.go` / `omp_verify.go`, or an owner
+  sentence.
+
+## Q-0007-13 — The Claude → OpenCode oracle's expectations are a Python reconstruction of the carried Claude reader
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced by an independent AgentsView
+  read of the Claude source).
+- **Question:** `scripts/opencode-native-check.py`'s `--direction claude-to-opencode` arm re-derives the carried
+  Claude reader's tool-result decoding and pairing in Python and uses that reconstruction as the **expected**
+  result, while OpenCode's own export supplies only the observed side. The two already disagree on a faithfully
+  carried result: the Python oracle drops a result that consists of a lone U+001C — `.strip()` treats it as
+  whitespace — while the writer's `strings.TrimSpace` does not, so a **correct** carry can fail the oracle. May
+  a native check hold its own model of a carried reader where the binding ownership rule gives that judgment to
+  the reader itself?
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace the expectations now —
+  not in this increment, which changes no script, and a change to a native check belongs to its own increment
+  with its own two-stage review; (c) leave the divergence undisclosed — refused.
+- **Default taken:** (a). The whitespace divergence is named here so it is not rediscovered as a mystery
+  failure: it is a **false negative of the check**, not a defect in the writer.
+- **Reversal:** take those expectations from an independent AgentsView read of the Claude source (the observed
+  side stays OpenCode's export), re-pin the arm's cases, and add a case whose recorded result is a lone
+  U+001C, so the divergence cannot return silently.
+- **Settled by:** the increment that next touches `scripts/opencode-native-check.py`'s Claude arm, or an owner
+  sentence.
+
+## Q-0005-20 — The Claude → Pi oracle expects the first raw user record, which the carried reader skips
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced by an independent AgentsView
+  read of the Claude source).
+- **Question:** `scripts/pi-native-check.py` takes the **first raw user record** of a Claude transcript as the
+  prompt it expects in the converted Pi session, while the carried reader skips a record carrying `isMeta` and
+  selects the next one — a regression the carried suite pins
+  (`internal/parser/claude_parser_test.go`). The check's expectation and the reader's answer therefore disagree
+  by inspection: on a transcript whose first user record is metadata, the check expects a prompt the read never
+  produced. May a native check compute its expected prompt from the raw file instead of from the read?
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace the expectation now — not
+  in this increment, which changes no script, and a change to a native check belongs to its own increment with
+  its own two-stage review; (c) leave the disagreement undisclosed — refused.
+- **Default taken:** (a). **Not yet reproduced natively** — it is recorded as an *inspection* finding of the
+  machine review, so a later increment that touches this arm should reproduce it before repairing, and either
+  way the expectation should come from the read.
+- **Reversal:** take the expected prompt from an independent AgentsView read of the Claude source, add a
+  fixture whose first user record carries `isMeta`, and re-pin the arm's cases.
+- **Settled by:** the increment that next touches `scripts/pi-native-check.py`'s Claude arm, or an owner
+  sentence.
+
+## Q-0003-12 — The Codex read-back pairing attributes carried text to written records by a local heuristic
+
+- **Status:** open (default taken: declared debt — kept, not extended, replaced by the carried reader's own
+  answer or an authoritative read).
+- **Question:** `internal/ccc/route_shared.go`'s `pairReadBackMessage` matches the Codex read-back's text to the
+  records this build wrote by a **same-role subsequence** heuristic. That is a local rule about how the carried
+  reader renders a record — the judgment the ownership rule gives to the reader — used where a projection cannot
+  establish the pairing (both prompts projected away). It is what the swapped-prompt regression depends on.
+- **Options:** (a) keep it as declared debt with a replacement condition; (b) replace it now — not in this
+  increment, which changes no Go file; (c) treat it as exempt because the compared bytes are ours — refused: the
+  *comparison* is ours, the *attribution* is a claim about the reader.
+- **Default taken:** (a). Named separately so the emitted-byte exemption above stays narrow, and so the pairing
+  heuristic is visible to whoever next touches the installed-dialogue verification.
+- **Reversal:** take the pairing from an authoritative read (the read's own per-record answers) instead of a
+  subsequence match, keep a case that fails when the attribution is wrong (the swapped-prompt regression or an
+  equivalent), and only then delete the heuristic.
+- **Settled by:** the increment that next touches `pairReadBackMessage`, or an owner sentence.

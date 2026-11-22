@@ -25,6 +25,25 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   deviations and the update procedure are in [`docs/upstream.md`](docs/upstream.md); the machine
   record is `scripts/upstream-manifest.txt`, and `scripts/upstream-parity.py` — a **required** gate
   step — proves the carried files are still the pin's. Change a carried file only upstream.
+- **Each half has one owner: theirs reads, ours writes.** The session-reading half is AgentsView's —
+  **n → 1**, n input formats into one intermediate conversation document, carried verbatim at the pin.
+  This repository's half is **1 → n** — that document into each target harness's own native session
+  format. Where the two can disagree about a foreign format's shape (a record's wire shape, a field's
+  type, whether a loader accepts or skips a line), the referee is **the upstream reader or the real
+  binary that owns the format**, never a private re-implementation. Hand-writing a foreign format's
+  decoder, schema or replay state machine in this repository is the defect this arrangement exists to
+  prevent, and it has been paid for twice: goal 0009 deleted a Python shadow of the carried reader, and
+  goal 0009a spent sixteen review rounds growing a Python shadow of Codex's own loader. An obligation to
+  know what a foreign tool accepts is discharged by running that tool against the artifact, or by citing
+  the carried reader's own code — never by restating its logic here. A few places still re-derive a foreign
+  loader's judgment, each of them **declared debt rather than a licence**: kept only where nothing else pins
+  that behaviour, forbidden to grow a new local judgment, and replaced the moment an authoritative read
+  answers its question. `docs/core-design/README.md` §2 lists the places declared so far with each one's
+  replacement condition — **declared, not promised exhaustive** — and a new one is added there and to
+  `docs/decisions/OPEN-QUESTIONS.md`, never here. Checking the bytes **this build wrote** against the output
+  it intended is **not** this debt: that is structural verification of our own writer, not a foreign decoder,
+  and where the projection cannot establish a fact the check states what the writer intended instead of
+  guessing at the harness's. Whether the harness then accepts the artifact stays with the harness, always.
 - **Precision over apparent completeness.** An explicitly partial translation beats a
   plausible-looking one. Never fabricate tool results, reasoning, roles, resume identities or a
   success result; a valid file is not evidence that anything can resume it. A target format that is
