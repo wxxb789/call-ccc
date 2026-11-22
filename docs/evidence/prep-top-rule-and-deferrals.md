@@ -80,3 +80,48 @@ finding is a defect in what this increment wrote, and each was fixed rather than
   importer runs against a checkout of the pin.
 - It does not run any native check: this increment changes no writer, verifier or native check, and the
   native tier needs the target harnesses installed.
+
+## Closeout — the one-time merge exception, and the residual this increment carries
+
+**The owner authorised this merge with the residual disclosed** (2026-11-22, task thread; decision recorded
+in the task ledger's `DECISIONS.md`). It is a **one-time exception** to the standing rule that a PR merges
+only once the machine review comes back clean: this merge runs through
+`pr-merge-check.py --allow-no-machine-review`, so its own record reads `marker: none` where a clean round
+would have left a `machine-review-state:v1` marker. An exception taken once, on the record, with the cost
+named — **not** a relaxation: S1, S2 and every later increment still run both machine stages and merge on a
+clean marker.
+
+**Why the loop was stopped instead of run once more.** Eight rounds ran on this increment, one per head,
+each a fresh read-only session from a different family than the author (`gpt-6.2-sol` via `ghc-proxy`,
+Responses route; receipts under `artifacts/pr20/review-*/receipt.json` in the task tree). Findings per
+round: **1, 4, 3, 4, 3, 3, 3, 3** — none decayed to zero, and the reviewed diff grew from **9,819 bytes**
+(round 1) to **47,002 bytes** (round 8) *because* each round's fixes added text. Every finding was a real
+defect in what this increment had written, and every one was fixed rather than argued. What does not
+converge is the **circuit**: the reviewed object is the whole increment diff, so a rule-plus-inventory
+document can always be asked once more "what else is missing, and which sentence says too much". That
+reading — and the cost of continuing, which the eight rounds above make predictable — was put to the owner,
+who chose to take the residual on the record rather than leave the branch unmergeable.
+
+**The residual, named in full.** Round 8's three findings were fixed in `e369b8a` and **those fixes were not
+reviewed**: no round 9 was run, by the decision above.
+
+| round-8 finding | what `e369b8a` does |
+|---|---|
+| P2 — the Pi guard's replacement condition omitted its tested **warning-with-no-leaf** outcome (an archive row, a transcript whose size changed during the read) | §2's Pi entry and `Q-0005-18` now name the four behaviours a replacement must preserve, the warning among them |
+| P2 — the emitted-byte exemption was too wide: `pairReadBackMessage`'s same-role subsequence is a claim about the carried reader, not about our bytes | the exemption is narrowed to the byte comparison itself, and the pairing heuristic is declared as its own debt (`Q-0003-12`) |
+| P3 — round 7 rendered outside the review table, because a blank line ended it | the blank line is gone; rounds 1–8 are one contiguous table |
+
+Nothing else is outstanding: no finding from rounds 1–8 was left unfixed, and none was disputed away.
+The residual is about **wording and inventory completeness** only. This increment changes no Go file, no
+script, no gate step and no CI workflow; the debt sites it declares keep their implementations exactly as
+they were; the carried tree, the acceptance surface and the behaviour are not in question — which is what
+made the residual takeable.
+
+**This merge's own evidence.** `python3 scripts/gate.py` on the merged head, the unqualified `GATE: PASS`
+below; CI `gate.yml` green on both matrix legs on that same head; then
+`pr-merge-check.py 20 --allow-no-machine-review --gates-rc 0 --verified-head <head>` → `MERGE-OK`:
+
+| head | local gate | CI ubuntu | CI windows | merge-check |
+|---|---|---|---|---|
+| `e369b8a` | see the round-8 row below | pass | pass | `MERGE-OK` (`marker: none`, owner-authorised) |
+
