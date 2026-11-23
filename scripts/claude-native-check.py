@@ -91,7 +91,7 @@ from native_check_common import (  # noqa: E402  (path set up above)
 SOURCE_PROVIDER = "codex"
 SOURCE_SESSION = "0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812"
 TARGET_PROVIDER = "claude"
-FIXTURE_ROOT = Path("internal", "ccc", "testdata", "fixtures")
+FIXTURE_ROOT = Path("ccc", "internal", "ccc", "testdata", "fixtures")
 GO_TAGS = "fts5"
 
 #: The binary this harness builds and drives. It is a name of its own, not the Codex route's
@@ -363,7 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     existing_ids = [path.stem for path in home.rglob("*.jsonl")]
     existing_sessions = {path: sha256(path) for path in home.rglob("*.jsonl") if path != unrelated}
     try:
-        build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+        build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"],
+                    cwd=repo / "ccc")
         if build.returncode != 0:
             record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
             return 2

@@ -1130,7 +1130,7 @@ class ToolEvidenceComparison(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        candidates = sorted((SCRIPTS.parent / "internal/ccc/testdata/fixtures" / NATIVE_CHECK.SOURCE_PROVIDER)
+        candidates = sorted((SCRIPTS.parent / NATIVE_CHECK.FIXTURE_ROOT / NATIVE_CHECK.SOURCE_PROVIDER)
                             .rglob(f"*{NATIVE_CHECK.SOURCE_SESSION}.jsonl"))
         cls.source = candidates[0]
         cls.expected = NATIVE_CHECK.source_tool_evidence(cls.source)

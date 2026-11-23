@@ -3073,3 +3073,47 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   subsequence match, keep a case that fails when the attribution is wrong (the swapped-prompt regression or an
   equivalent), and only then delete the heuristic.
 - **Settled by:** the increment that next touches `pairReadBackMessage`, or an owner sentence.
+
+## Q-S1-01 — The repository root carries no licence of its own
+
+- **Status:** **settled (owner, 2026-11-23, option a)** — the root `LICENSE` is in this increment;
+  `docs/evidence/layout-migration-A.md` §11 has the file, its hash and the gate on that state.
+- **Question:** the layout migration left upstream's `LICENSE` inside the carry (`agentsview/LICENSE`; the font
+  licences live beside the fonts), and this repository's own half (`ccc/**`, `scripts/**`) has no licence file
+  at the root — so a reader at the root, GitHub's licence view included, sees no licence for it. Does this
+  repository want a project-owned root `LICENSE` (the same MIT text), or is the faithful ledger the intended
+  state (`README.md` and `docs/upstream.md` point at `agentsview/LICENSE`)? Raised by the S1 simplify report
+  (D3); the operator's round is open in the task thread (Q2, `OWNER-ANSWERS-2026-11-23.md`).
+- **Options:** (a) add a project-owned root `LICENSE` with the same MIT text; (b) leave the tree as it is and
+  keep the disclosure; (c) take it out of this increment into a repository-level task.
+- **Default taken:** (b) — no licence file added, moved or copied, and no claim made about licensing in this
+  increment.
+- **Reversal:** add the root `LICENSE` (one new, project-owned file; nothing else moves) — or, if the answer is
+  (c), open the task and leave the file where it is until then.
+- **Settled by:** the owner's answers of 2026-11-23 in the task thread — **`A`** (add a project-owned
+  root `LICENSE`, which is what landed: same MIT terms) and then **`B`** on the follow-up (whose name the
+  root file carries: `Copyright (c) 2026 wxxb789`, with `agentsview/LICENSE` left as the pin's). See
+  `docs/evidence/layout-migration-A.md` §11.
+
+## Q-S1-02 — The Windows leg cannot run `portability`: state the boundary, or teach the runner long paths?
+
+- **Status:** open (default taken: the per-runner verdict is stated as measured — `docs/harness.md` §CI —
+  and the workflow is not changed).
+- **Question:** at head `5331725` (CI run 44987938577) the Windows leg is
+  `GATE: PASS (partial: portability did not run — see reasons above)`: `git checkout --detach 83195c8a…`
+  refuses one of the pin's fixture paths (`Filename too long`), so the step that builds and tests this
+  module against a *pristine* pin is the one check with no answer on that runner (the review's R2,
+  2026-11-23, and §12 of `docs/evidence/layout-migration-A.md`). Should the leg be made able to
+  establish it too — a `core.longpaths` setting before the gate step, or a short checkout root — so that
+  a green Windows run means every step ran?
+- **Options:** (a) state the measured per-runner verdict (taken here); (b) add the setting (or a short
+  cache root) to the workflow and re-measure on a runner before keeping any stronger sentence; (c) leave
+  the leg's partial verdict unstated — refused: the verdict line is in the log either way.
+- **Default taken:** (a) — an unverified workflow change would put a claim in the docs no runner has
+  measured, and the step's own disclosure is the honest form the gate's rules ask for.
+- **Reversal:** (b): add the setting, watch one `windows-latest` run print all nine steps and the
+  unqualified `GATE: PASS`, then tighten §CI back to the stronger sentence; the pin
+  (`scripts/tests/test_ci_matrix_claim.py`) reads §CI's runner names and moves with neither.
+- **Settled by:** the owner's word on whether the Windows claim should be widened (it costs runner
+  minutes and changes what a green Windows run proves), or an increment that lands (b) with its own
+  measured run.

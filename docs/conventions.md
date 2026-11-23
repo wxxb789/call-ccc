@@ -3,15 +3,22 @@
 Binding for every increment. When this file and a goal file disagree about acceptance, the goal file
 wins; when they disagree about structure or method, this file wins unless the increment records why.
 
+**How paths are written here.** The carried AgentsView tree lives in `agentsview/` and this
+repository's own module in `ccc/` (`docs/upstream.md` states the layout and the old → new mapping). A
+path written with an `agentsview/` prefix is a carried file; a path written as `internal/ccc/…`,
+`cmd/ccc/…` or `scripts/gate.py` is this repository's own — the first two are relative to the module
+(`ccc/`), the rest to the repository root.
+
 ## Stack
 
 - **Go**, first and only shipping language for the CLI, the continuation engine and the inherited
   AgentsView code.
-- The module path and ancestry are inherited from AgentsView (`go.kenn.io/agentsview`) so that
-  upstream-owned packages stay importable and diffable. `cmd/ccc` and the isolated continuation
-  packages are added **inside the permitted import tree**; upstream imports are never bulk-renamed to
-  invent a new module path, and Go's internal-package rule is a boundary to design around, not to
-  work around.
+- The module path and ancestry are inherited from AgentsView (`go.kenn.io/agentsview`) for the carried
+  half; this repository's own half is the subpath module `go.kenn.io/agentsview/ccc`, whose path
+  prefix keeps the carried packages importable (Go's internal-package rule is decided on import paths,
+  so `go.kenn.io/agentsview/ccc/...` may import `go.kenn.io/agentsview/internal/...`). Upstream
+  imports are never bulk-renamed to invent an unrelated module path, and the two modules are wired by
+  exactly one `replace` (`ccc/go.mod` → `../agentsview`) with no `go.work`.
 - SQLite access goes through the inherited AgentsView path, including the `fts5` build tag and CGO
   where the inherited driver needs them. `call/ccc` never opens the archive with its own driver,
   schema migration, watcher or writer.
@@ -19,6 +26,9 @@ wins; when they disagree about structure or method, this file wins unless the in
   existing shell-free entry points under `scripts/`.
 
 ## Layout
+
+Two directories, one sentence: inside `agentsview/` is upstream's (the carried tree, at its pin, in
+`docs/upstream.md`), everything else is ours. This repository's own module is `ccc/`, and inside it:
 
 ```
 cmd/ccc/            the standalone CLI; no continuation-core types leak into it
@@ -68,11 +78,13 @@ gate runs as a required step.
   generated build input; `docs/upstream.md` lists them.
 - A new revision arrives as a pin bump: `scripts/upstream-import.py --pin <rev>` rewrites the carried
   files and the manifest, one increment says why the revision was taken, and `parity` must pass.
-- Carried code is edited under upstream's own guides (`docs/agents/*`), which are carried with it;
+- Carried code is edited under upstream's own guides (`agentsview/docs/agents/*`), which are carried
+  with it;
   this repository's rules (this file, `AGENTS.md`) govern everything else.
-- The generated input `internal/pricing/snapshot/litellm_snapshot.json.gz` is committed although
-  upstream does not track it (upstream's Makefile restores it before every Go build), is ignored by
-  the carried `snapshot/.gitignore`, and therefore needs `git add -f` when it is first added.
+- The generated input `agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz` is committed
+  although upstream does not track it (upstream's Makefile restores it before every Go build), is
+  ignored by the carried `snapshot/.gitignore`, and therefore needs `git add -f` when it is first
+  added.
 
 ## Obligation citations
 
@@ -89,7 +101,7 @@ ignored, one row per rule id:
 | --- | --- |
 | `rule_id` | the obligation's id in the increment's matrix (`A1`, `B3`, `E2`, …) |
 | `test` | the Go test that pins it — a top-level test function's name (`TestXxx`) |
-| `package` | the package `go test` is handed, in the tree's own `./` spelling (`./internal/ccc`) |
+| `package` | the package `go test` is handed, in this repository's module's own `./` spelling (`./internal/ccc` — the checker runs `go test` in the module, `ccc/`) |
 | `artifact` | free text that reaches the prose, e.g. the matrix section the pair comes from |
 
 **Which obligations get a row:** only those a gate-runnable Go test discharges. An obligation whose
@@ -291,8 +303,9 @@ obligation ships no citations file, rather than an empty one.
   in `scripts/tests/` alike:
   - **A path the CLI reports is asserted through the rule the CLI resolves it by.** The configuration
     resolves every configured session source before discovery reads it
-    (`internal/parser.ResolveProviderRoot`'s `pathutil.ResolveAbsolute`: absolute, symlinks resolved), so
-    a case builds its expectation with that same rule rather than with the spelling it happened to pass:
+    (`agentsview/internal/parser.ResolveProviderRoot`'s
+    `agentsview/internal/pathutil.ResolveAbsolute`: absolute, symlinks resolved), so a case builds its
+    expectation with that same rule rather than with the spelling it happened to pass:
     `cmd/ccc/opencode_source_route_test.go`'s `openCodeSourceStore` resolves the throw-away root before
     any expectation is spelled from it. Measured: `t.TempDir()` on that runner spells the short name
     (`…\RUNNER~1\…`) and the read answers the long one (`…\runneradmin\…`), so both of that file's

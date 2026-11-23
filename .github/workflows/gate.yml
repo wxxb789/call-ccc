@@ -23,14 +23,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The module's own go directive: the workflow and the carried tree cannot
-      # disagree about the Go version the gate builds with. CGO is required by
-      # the inherited SQLite driver, so the jobs keep a C compiler installed;
-      # the Windows runner is the one disclosed boundary (docs/harness.md).
+      # The module's own go directive: the workflow and the tree cannot disagree
+      # about the Go version the gate builds with. It names ccc/go.mod -- this
+      # repository's own module, which the gate's Go steps build and test -- and
+      # that module declares the same directive as the carried tree's, so both
+      # halves are built with one toolchain. CGO is required by the inherited
+      # SQLite driver, so the jobs keep a C compiler installed; the Windows
+      # runner is the one disclosed boundary (docs/harness.md).
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          go-version-file: ccc/go.mod
+          cache-dependency-path: ccc/go.sum
 
       - uses: actions/setup-python@v5
         with:

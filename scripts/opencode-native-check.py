@@ -168,7 +168,7 @@ from native_check_common import (  # noqa: E402
 )
 
 #: Where this repository keeps its committed native-shaped fixtures.
-FIXTURE_ROOT = Path("internal/ccc/testdata/fixtures")
+FIXTURE_ROOT = Path("ccc/internal/ccc/testdata/fixtures")
 SOURCE_PROVIDER = "claude"
 SOURCE_SESSION = "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"
 TARGET_PROVIDER = "opencode"
@@ -1272,7 +1272,8 @@ def _build_ccc(go: str, repo: Path) -> bool:
     cleanup when it did not (``stop``), so that decision stays with the caller."""
     build_parent = (repo / BINARY).parent
     build_parent.mkdir(parents=True, exist_ok=True)
-    build = deadline_run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+    build = deadline_run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY),
+                          "./cmd/ccc"], cwd=repo / "ccc")
     if build.returncode != 0:
         record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
         return False

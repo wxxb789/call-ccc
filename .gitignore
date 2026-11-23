@@ -21,6 +21,15 @@ __pycache__/
 /scratch/
 *.log
 
+# Scratch trees a killed test or check run can leave behind in the repository root: the parity
+# suite's throw-away trees, its comparison base, and scripts/portability.py's scratch (whose checker
+# refuses a temp root inside this tree -- these patterns are the second line of defence, so a stray
+# directory can never be something `git status` offers to commit). See docs/harness.md.
+/parity-root-*/
+/import-root-*/
+/compare-checkout-*/
+/portability-root-*/
+
 # Secrets: never commit credentials, tokens or real session transcripts
 .env
 .env.*

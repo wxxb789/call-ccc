@@ -108,14 +108,14 @@ from native_check_common import (  # noqa: E402  (path set up above)
 SOURCE_PROVIDER = "claude"
 SOURCE_SESSION = "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"
 TOOLING_SESSION = "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"
-FIXTURE_ROOT = Path("internal", "ccc", "testdata", "fixtures")
+FIXTURE_ROOT = Path("ccc", "internal", "ccc", "testdata", "fixtures")
 GO_TAGS = "fts5"
 BINARY = Path("bin", "ccc-native-check")
 
 #: The committed growth fragment: the bytes this harness appends to its *copy* of the fixture between the
 #: two conversions, so the source session gains a turn without the committed fixture tree (which this run
 #: hashes) moving. It is generated and pinned by `internal/ccc/fixturegen`, the same way the fixtures are.
-GROWTH_ROOT = Path("internal", "ccc", "testdata", "growth")
+GROWTH_ROOT = Path("ccc", "internal", "ccc", "testdata", "growth")
 GROWTH_TURN = "claude-complete-turn.jsonl"
 
 #: The provider root the copy is written under: a Claude Code transcript is resolved through the directory
@@ -852,7 +852,8 @@ def main(argv: list[str] | None = None) -> int:
     existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in home.rglob("rollout-*.jsonl")]
     existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl") if path != unrelated}
     try:
-        build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"], cwd=repo)
+        build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"],
+                    cwd=repo / "ccc")
         if build.returncode != 0:
             record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
             return 2

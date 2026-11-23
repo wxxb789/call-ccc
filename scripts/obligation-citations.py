@@ -6,7 +6,8 @@ a reader does not converge: a claim stronger than the evidence it cites lands in
 repair's own wording. So every obligation a gate-runnable Go test discharges also gets a row in
 ``docs/evidence/<goal>-citations.tsv`` — the rule id, the test that pins it, the package ``go test`` is
 handed, and the matrix section the pair comes from — and this script is the arbiter: it parses every
-discovered manifest and runs the tests the rows cite.
+discovered manifest and runs the tests the rows cite, from this tree's own Go module (whose directory
+the gate's module answers: ``./internal/ccc`` means that package in the module, in either layout).
 
 Rules (``docs/conventions.md`` states the schema, ``docs/harness.md`` the gate step):
 
@@ -109,8 +110,21 @@ class Citation(NamedTuple):
     artifact: str
 
 
+def module_dir() -> Path:
+    """The directory of this tree's own Go module — the gate's own answer (``gate.module_dir()``).
+
+    The package column is the package spelling ``go test`` is handed *inside that module*
+    (``./internal/ccc``), and every ``go test`` this checker runs is run there, so the same spelling
+    means the same package in either layout this repository has had (the module at the root beside the
+    carry, or the carry in ``agentsview/`` beside the module in ``ccc/``). The answer is read through
+    the gate's module rather than restated, because a second spelling of *which directory the module
+    is* would be a second answer to one question.
+    """
+    return gate_module().module_dir()
+
+
 def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = GO_TIMEOUT):
-    """Run one command in the tree under test.
+    """Run one command in this tree's own module.
 
     The launch-failure answers are the gate's own ``run()``'s (``rc=127`` for a missing binary, ``126``
     for any other launch failure, the command named in the detail because Windows' own message does not
@@ -123,7 +137,7 @@ def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = GO_TIM
     merged.update(env or {})
     try:
         return subprocess.run(
-            cmd, cwd=str(ROOT), env=merged, capture_output=True, text=True, timeout=timeout
+            cmd, cwd=str(module_dir()), env=merged, capture_output=True, text=True, timeout=timeout
         )
     except OSError as exc:
         return subprocess.CompletedProcess(
@@ -278,10 +292,11 @@ def package_problem(package: str, patterns: list[str]) -> str | None:
 def declared_in(package: str, name: str) -> bool:
     """Whether a ``_test.go`` under that package declares ``func <name>(``.
 
-    The package's own directory, never a subdirectory: ``go test`` on one package compiles that
-    directory's files only, so a declaration somewhere below is a different package's test.
+    The package's own directory inside this tree's module, never a subdirectory: ``go test`` on one
+    package compiles that directory's files only, so a declaration somewhere below is a different
+    package's test.
     """
-    directory = ROOT / package[len("./"):]
+    directory = module_dir() / package[len("./"):]
     if not directory.is_dir():
         return False
     needle = f"func {name}("

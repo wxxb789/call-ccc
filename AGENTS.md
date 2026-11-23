@@ -21,9 +21,11 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   stop instead of improvising.
 - **AgentsView is the source-side authority.** Its reader, parser, sync, SQLite and migration code
   and their tests are carried at a traceable upstream revision and are never rewritten, simplified
-  or forked. A locally maintained parser fork is a defect, not a shortcut. The pin, the declared
-  deviations and the update procedure are in [`docs/upstream.md`](docs/upstream.md); the machine
-  record is `scripts/upstream-manifest.txt`, and `scripts/upstream-parity.py` — a **required** gate
+  or forked. The carried tree lives in `agentsview/` and this repository's own code in `ccc/` (its own
+  module, one `replace` between them); a locally maintained parser fork is a defect, not a shortcut. The
+  pin, the declared deviations, the layout and the update procedure are in
+  [`docs/upstream.md`](docs/upstream.md); the machine record is `scripts/upstream-manifest.txt` (whose
+  `layout` line states the shape), and `scripts/upstream-parity.py` — a **required** gate
   step — proves the carried files are still the pin's. Change a carried file only upstream.
 - **Each half has one owner: theirs reads, ours writes.** The session-reading half is AgentsView's —
   **n → 1**, n input formats into one intermediate conversation document, carried verbatim at the pin.
@@ -76,12 +78,12 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   own `get_state`/`get_messages` answers beside an unknown-id control arm; the OMP check's scratch data
   directory carries this run's own provider definition for the load (its `apiKey` value a placeholder this
   run writes) so a load needs no credential of the caller's. The Codex check also runs the repeat scenario goal 0004 added: it converts a *copy* of the
-  fixture, loads it, appends the committed `internal/ccc/testdata/growth/` fragment to the copy,
+  fixture, loads it, appends the committed `ccc/internal/ccc/testdata/growth/` fragment to the copy,
   converts again, and shows Codex's own loader opening the second session with its own view holding the
   appended turn while the first session's bytes did not move (`--repeat-resume-prompt` adds one real
   turn in the second session; each prompt flag runs one turn).
 - **A record's dialogue is the source's own answer or the record's own bytes, never a reading of them.** Every
-  target writer reads its message text through one shared rule (`internal/ccc/dialogue_provenance.go`'s
+  target writer reads its message text through one shared rule (`ccc/internal/ccc/dialogue_provenance.go`'s
   `dialogueOf`). The source's own answer is the projection (`parser.ParsedMessage.DialogueText`, carried
   as `Message.DialogueProjected`), and where the read made one it is the whole answer — an explicitly
   empty projection included, which is the source's own statement that the record has no dialogue, and an
@@ -95,7 +97,7 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   own text verbatim between their markers, so two different native part orders — the trace's text before
   the record's, and a text part that quotes the block a thinking part renders — produce the same `Content`,
   the same trace and the same reader label, and no inverse can say which occurrence was the model's.
-  `internal/parser/zcode.go` renders a thinking part's text verbatim, so a closer written inside that text
+  `agentsview/internal/parser/zcode.go` renders a thinking part's text verbatim, so a closer written inside that text
   is not escaped and the first closer after an opener need not be the reader's own. The readings machinery
   that inferred a removal from those bytes (rounds 11–15 each found a shape it deleted, or a rendering it
   published, wrongly) is therefore **removed, not patched**: nothing is removed from a record's `Content`
@@ -173,7 +175,7 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   order is the read's own — and each such written instant is counted (`substituted_record_instants`),
   because every tool part inside that message takes the substituted instant as its `created` and a recorded
   call→result span is shortened by it. The Codex, Claude, Pi and OMP writers share that clock rule
-  (`internal/ccc/route_shared.go`'s `entryClock`) and report its substitution under the same category:
+  (`ccc/internal/ccc/route_shared.go`'s `entryClock`) and report its substitution under the same category:
   each written timestamp the clock stamped with the previous written record's instant is counted there,
   and the instant written in a record's place is always another instant the read recorded — never one this
   build invented — so a recorded instant is not silently replaced on any route.
@@ -222,10 +224,10 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   `installation.source_check_state` is `not-verified`, and "the source is unchanged" is measured on the
   harness's own *records* (`session export` before and after), never on the database file's bytes, which
   move with the harness's WAL handling. Its committed fixture is therefore a **document**, not a store
-  (`internal/ccc/testdata/fixtures/opencode/<session>.json`, written by `internal/ccc/fixturegen` from the
+  (`ccc/internal/ccc/testdata/fixtures/opencode/<session>.json`, written by `ccc/internal/ccc/fixturegen` from the
   shape a real `session export` writes, one canonical encoding, compact so the tool input's JSON value is
   the one the store holds) — a store can only be written by the harness, so tests materialise one through
-  `internal/ccc/opencodefixture` and the native check plants the same document through the harness's own
+  `ccc/internal/ccc/opencodefixture` and the native check plants the same document through the harness's own
   importer. `scripts/opencode-native-check.py --direction opencode-to-codex` is that direction: it plants
   the fixture, converts through the CLI at the **load** level, reads the installed Codex rollout's own
   records against the fixture's own bytes (prompts, call name, recorded input value, recorded result text —
@@ -298,21 +300,34 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
 
 ## How to work here
 
-- The continuation core and its per-harness target writers live in `internal/ccc` — the route table
+**Comments: zero by default, and never an excuse** (owner-directed, 2026-11-22). Code, tests and
+infra say *what* through names, types and small functions, and pin an invariant with an assertion rather
+than a sentence; an increment strips the unconsumed doc-comment boilerplate, the `Arrange/Act/Assert`
+banners, step labels, commented-out code and drifted comments in the hunks it touches. Never leave the
+*reason* for a shortcut in a comment — later agents copy excused hacks: reshape the code, or omit the
+excuse and record the debt in the increment's report. What stays is *why*, one or two lines beside the
+line: a blast-radius hazard (concurrency, lifecycle, lock ordering, idempotency, a live-service test
+trap), a magic code, number or wire value with its external source, an external platform, vendor or
+protocol quirk on a live path, a published contract with its spec or issue link, and a machine-,
+build- or checksum-consumed directive. Module intent, performance budgets and architecture choices live
+in `docs/` or a design doc, not in a source header; and never add filler comments to appease a linter —
+relax that rule where the increment can, and flag it where it cannot.
+
+- The continuation core and its per-harness target writers live in `ccc/internal/ccc` — the route table
   `targets.go`, the install/verify/probe machinery the routes share (`route_shared.go`), and the
   writers/installers/verifiers `codex_target.go`, `codex_install.go`,
   `codex_verify.go`, `claude_target.go`, `claude_install.go`, `claude_verify.go`, `pi_target.go`,
   `pi_install.go`, `pi_verify.go`, `omp_target.go`, `omp_install.go`,
   `omp_verify.go` (the last three are the Pi family's second format, whose shared writer is Pi's own
   parameterized by `piFamilyShape`), and the OpenCode target's `opencode_target.go`, `opencode_install.go`
-  and `opencode_verify.go` (whose store a test builds through `internal/ccc/opencodefixture` — a fixture
+  and `opencode_verify.go` (whose store a test builds through `ccc/internal/ccc/opencodefixture` — a fixture
   package, because a real OpenCode session exists only inside the harness's own store); its committed
-  native-shaped fixtures are `internal/ccc/testdata/fixtures/` — one provider directory per source, except
+  native-shaped fixtures are `ccc/internal/ccc/testdata/fixtures/` — one provider directory per source, except
   `fixtures/opencode/`, which holds the harness's own **export document** for one session rather than a
   source root, because that provider's session is a row in a store only the harness writes — and the growth
   fragments a run appends to
-  a *copy* of one (`internal/ccc/testdata/growth/`, written by the same `internal/ccc/fixturegen` and
-  pinned against it) are what makes one source session grow; `cmd/ccc` adds
+  a *copy* of one (`ccc/internal/ccc/testdata/growth/`, written by the same `ccc/internal/ccc/fixturegen`
+  and pinned against it) are what makes one source session grow; `ccc/cmd/ccc` adds
   argument handling and presentation only, and a target-side native harness
   (`scripts/codex-native-check.py`, `scripts/claude-native-check.py`, `scripts/pi-native-check.py`,
   `scripts/omp-native-check.py`, `scripts/opencode-native-check.py`, whose two directions are
@@ -341,7 +356,7 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   for a Pi-family source the *source-side* half of that rule is checked too: the carried Pi reader skips the
   tree entries the harness's own loader builds context from (`branch_summary`, `custom_message`), so the
   read's last record is not by itself the entry the source's file selects as its leaf — the file's own last
-  entry is. `internal/ccc/pi_source_leaf.go` walks that file's own path (the same entry reader the load
+  entry is. `ccc/internal/ccc/pi_source_leaf.go` walks that file's own path (the same entry reader the load
   check reads a converted file with) and refuses a conversion whose read cannot be reconciled with it: the
   deepest record the read holds on that path must be the record the read's last message stands for, and
   every entry on the path the read does not carry must be a kind the harness's own loader keeps out of the
@@ -353,10 +368,14 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   installation agree even when the caller's shell, or the home's own `settings.json`, names another tree.
 - Gate: `python3 scripts/gate.py`, which must print `GATE: PASS`; it runs `parity`, `citations` and
   `selftest` as required steps (`citations` verifies every `docs/evidence/*-citations.tsv` row: the
-  cited Go test must exist in the package the row names and run and pass), and its Go steps are
-  narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured reasons in
+  cited Go test must exist in the package the row names and run and pass), and its Go steps run in this
+  repository's own module (`ccc/`) narrowed to `./cmd/ccc/... ./internal/ccc/...` with the measured
+  reasons in
   [`docs/harness.md`](docs/harness.md#why-the-go-steps-target-a-subset) — that narrowing is
-  a disclosure, not a shortcut; a run in which a step was skipped,
+  a disclosure, not a shortcut. The `portability` step (`scripts/portability.py`, not required: it
+  fetches the pin and builds this module against it) proves the two-module shape's one property — this
+  module builds and tests against a *pristine* checkout, not only against the carry in the tree — and a
+  run in which a step was skipped,
   bounded or absent prints `GATE: PASS (partial: …)` naming it, so a partial run can never be quoted
   as a full one. It is the same file CI runs (the runners name the interpreter `python`); never narrow
   or skip a step to get green — a step that cannot run is disclosed, not silenced, and a required step
@@ -383,7 +402,7 @@ in that increment's `<goal>-citations.tsv`, which the required `citations` gate 
   before discovery reads it (`pathutil.ResolveAbsolute`: absolute, symlinks resolved), which spells a
   short-named Windows temp path by its long name — and a case that asserts a rendered resume line
   spells it the way the renderer does, with a home a POSIX shell would act on so the quoted arm holds
-  on every host ([`cmd/ccc/main_test.go`](cmd/ccc/main_test.go)'s `shellUnsafeHome`).
+  on every host ([`ccc/cmd/ccc/main_test.go`](ccc/cmd/ccc/main_test.go)'s `shellUnsafeHome`).
 - Stage order for an increment: implement → verify (gate) → simplify (report only) → apply (accepted
   findings only) → review (report only) → fix → gate → PR. Report stages must not edit the tree.
 - One goal ≈ one branch ≈ one pull request, squash-merged onto a linear `main`. Do not commit, push

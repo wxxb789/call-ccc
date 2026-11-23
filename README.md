@@ -4,8 +4,9 @@
 
 A focused CLI for continuing coding-agent conversations across native session formats.
 
-Today the repository carries the **actual AgentsView source tree** at a pinned revision
-([`docs/upstream.md`](docs/upstream.md)) and ships three working capabilities on top of it: inspecting
+Today the repository carries the **actual AgentsView source tree** at a pinned revision — inside
+`agentsview/`, with this repository's own module in `ccc/` beside it
+([`docs/upstream.md`](docs/upstream.md)) — and ships three working capabilities on top of it: inspecting
 an existing agent session through AgentsView's own discovery, parsers and archive read path, and
 continuing a session between harnesses — a Claude Code session as a new, natively resumable **Codex**,
 **Claude Code**, **Pi**, **Oh My Pi** or **OpenCode** session, a Codex session as a Claude Code one, a
@@ -14,7 +15,9 @@ inside that harness's own SQLite store, read through the inherited reader — as
 one.
 
 ```bash
-go build -tags fts5 -o bin/ccc ./cmd/ccc   # CGO_ENABLED=1; -tags fts5 is what upstream ships
+# this repository's own module is ccc/ (the carried tree beside it is agentsview/):
+(cd ccc && CGO_ENABLED=1 go build -tags fts5 -o ../bin/ccc ./cmd/ccc)
+# -tags fts5 is what upstream ships
 
 bin/ccc inspect claude:9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10
 bin/ccc inspect codex:/path/to/rollout-2026-05-04T09-15-00-0c8e5f21-3d6a-4b7c-9f10-2ab4cd6ef812.jsonl --json
@@ -130,8 +133,8 @@ no line feed is reported as what it is — a record the source had not terminate
 the read carried it is left to the read's own answer rather than claimed either way; converting again once
 the file is written reads it again.
 
-The continuation engine itself lives in [`internal/ccc`](internal/ccc) and is callable without the
-CLI: `SourceReader` reads a native session — an OpenCode one included — into a typed, transient
+The continuation engine itself lives in [`ccc/internal/ccc`](ccc/internal/ccc) and is callable
+without the CLI: `SourceReader` reads a native session — an OpenCode one included — into a typed, transient
 Conversation document,
 `Archive`/`Ingestor` cover the inherited read and write paths, `targets.go` routes `Continue` to the
 target writer, `ConvertToCodexRollout`/`ConvertToClaudeTranscript`/`ConvertToPiSession`/`ConvertToOMPSession`/
@@ -146,6 +149,7 @@ Pi session and an Oh My Pi session, and OpenCode's own import document), and `In
 - What is carried, and how it is proven unchanged: [`docs/upstream.md`](docs/upstream.md)
 - Gate, knobs and evidence rules: [`docs/harness.md`](docs/harness.md), [`docs/conventions.md`](docs/conventions.md)
 
-Inherited AgentsView code stays under upstream's MIT licence (see [`LICENSE`](LICENSE), carried with
-it); the code this project adds is under the same licence, with the upstream copyright notice
-preserved.
+Inherited AgentsView code stays under upstream's MIT licence (see
+[`agentsview/LICENSE`](agentsview/LICENSE), carried with it, upstream copyright notice preserved); the
+code this project adds is under the same MIT terms, stated by [`LICENSE`](LICENSE) at the root
+(`Copyright (c) 2026 wxxb789`).
