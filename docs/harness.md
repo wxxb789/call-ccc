@@ -916,7 +916,8 @@ not the one the rule is about:
   `shellQuote` applies and drives both flavours (`PATH_FLAVOURS`), which exercises that arm on every
   host, and the Go CLI cases spelled their expectation from the raw throw-away root they passed while the
   read had resolved it — for a *configured source root* the configuration resolves it before discovery
-  reads it (`internal/parser.ResolveProviderRoot`'s `pathutil.ResolveAbsolute`), so that runner's
+  reads it (`agentsview/internal/parser.ResolveProviderRoot`'s
+  `agentsview/internal/pathutil.ResolveAbsolute`), so that runner's
   `t.TempDir()` spelled `…\RUNNER~1\…` while the report answered `…\runneradmin\…` — and they now take
   the store through that same rule (`cmd/ccc/opencode_source_route_test.go`'s `openCodeSourceStore`).
 - a path is absolute by the **platform's** own answer, not by its spelling: on Windows `filepath.IsAbs`

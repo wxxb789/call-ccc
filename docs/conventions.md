@@ -303,8 +303,9 @@ obligation ships no citations file, rather than an empty one.
   in `scripts/tests/` alike:
   - **A path the CLI reports is asserted through the rule the CLI resolves it by.** The configuration
     resolves every configured session source before discovery reads it
-    (`internal/parser.ResolveProviderRoot`'s `pathutil.ResolveAbsolute`: absolute, symlinks resolved), so
-    a case builds its expectation with that same rule rather than with the spelling it happened to pass:
+    (`agentsview/internal/parser.ResolveProviderRoot`'s
+    `agentsview/internal/pathutil.ResolveAbsolute`: absolute, symlinks resolved), so a case builds its
+    expectation with that same rule rather than with the spelling it happened to pass:
     `cmd/ccc/opencode_source_route_test.go`'s `openCodeSourceStore` resolves the throw-away root before
     any expectation is spelled from it. Measured: `t.TempDir()` on that runner spells the short name
     (`…\RUNNER~1\…`) and the read answers the long one (`…\runneradmin\…`), so both of that file's

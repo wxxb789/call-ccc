@@ -248,13 +248,15 @@ throw-away tree is created relative to the process's current directory, which is
 when the gate runs the suite, and a run that dies before its cleanup leaves the directory behind. Three
 defences now exist, and each has a case:
 
-- `scripts/tests/test_upstream_parity.py`'s `scratch_tree()` (used by every one of the suite's
-  throw-away trees, including the comparison base) resolves the base to an absolute path, refuses one
+- `scripts/tests/test_upstream_parity.py`'s `scratch_tree()` (the helper behind every `parity-root-*`
+  and `import-root-*` tree and the comparison base) resolves the base to an absolute path, refuses one
   inside the repository, and falls back to the platform's own scratch root; a killed run can no longer
   leave anything in the tree, and `ScratchTreeCase` pins the rule for an inside-the-repository `TMPDIR`
   and for a relative one.
 - `scripts/portability.py`'s `scratch_directory()` applies the same rule to the shipped checker (its
-  scratch holds the alternate `go.mod`), with its own cases in `scripts/tests/test_portability.py`.
+  scratch holds the alternate `go.mod`), with its own cases in `scripts/tests/test_portability.py` —
+  and that suite's own trees now go through the shipped helper, with cases pinning the
+  inside-the-repository and relative `TMPDIR` answers for the usage.
 - `.gitignore` names the four patterns (`/parity-root-*/`, `/import-root-*/`, `/compare-checkout-*/`,
   `/portability-root-*/`), so a directory that appears anyway is never something `git status` offers to
   commit. Measured:
@@ -266,6 +268,10 @@ $ mkdir -p parity-root-verify portability-root-verify && git check-ignore -v par
 $ git status --short | grep -c "root-verify"      # ignored directories are not offered to commit
 0
 ```
+
+The check above has its case now (`ScratchTreeCase.test_a_scratch_tree_left_in_the_root_is_ignored`):
+with git it makes the four directories and requires `git check-ignore` to name the matching pattern;
+on a host or a tree without git it asserts the file's own four lines instead.
 
 `upstream-parity.py` itself never created a scratch root: it is offline and hashes the tree in place,
 which is why the leak's carrier was the *suite's* trees and the fix belongs to their helper. The
@@ -469,7 +475,7 @@ tree's own copy after the refusal paths had been reached (4 refusal cases assert
 the shipped checker is right — the digest is over bytes). *Evidence:* emulating the write side alone
 (`Path.write_text` translating `\n` to `\r\n`, reads untouched, as on Windows) reproduced exactly that
 set before the fix — `ran 479 failures 4 errors 7`, every one in `test_portability` — and the same
-emulation over the repaired suite reports `Ran 482 tests … OK`; the acceptance cases are their own
+emulation over the repaired suite reports `Ran 488 tests … OK`; the acceptance cases are their own
 witness (they fail when the input's digest is not the pinned one).
 
 **9.3.4 The nested-run cases (2 failures), and the harness defect the repair exposed.** Both
@@ -479,14 +485,14 @@ the harness itself — the first when the count assertion met the second same-na
 adds (the two modules' platform-fallback cases), the second when the record-line case below was
 written: `nested_statuses()` keyed the child's cases by
 their **bare name**, so the second case to join a name read as a
-count that does not add up — `AssertionError: 481 != 482` — instead of as two cases (keys are the
+count that does not add up — `AssertionError: 485 != 488` — instead of as two cases (keys are the
 runner's own `<module>.<class>.<case>` qualifier now, read back by name through `status_of()`, which
 refuses a lookup that matches no case or more than one); and `nested_summary()`'s "broken:" list
 scanned for the `FAIL:`/`ERROR:` prefix alone, so a case's *printed records* — the shipped checks
 record `FAIL: <name> — <detail>` lines, and the opencode cases print those — were named as broken
 cases in the one message whose job is naming the case that broke (only the runner's own case-line
 shape is read now). Both are held the same way: reverting the qualifier keys fails
-`test_suite_holds_in_a_child_whose_path_holds_no_tools` (`481 != 482`), and reverting the filter fails
+`test_suite_holds_in_a_child_whose_path_holds_no_tools` (`485 != 488`), and reverting the filter fails
 `test_a_record_line_in_the_child_s_output_is_not_a_broken_case`.
 
 ### 9.4 The step now enumerates its failures
@@ -509,18 +515,20 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go module=ccc 
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 482 tests in 10.837s (rc=0)
-  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5767 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     selftest    Ran 488 tests in 12.791s (rc=0)
+  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5769 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified
-  PASS     secrets     no leaks found in 188 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets     no leaks found in 190 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 rc=0
 ```
 
-The run was taken on the state this section leaves except for this section's own text (the record is a
+The run was taken on the state this record leaves except for this record's own text (the record is a
 tracked file already counted by the `parity` and `secrets` steps, so their numbers do not move), and
-the suite's own count is 482 — the migration's 477 plus the five cases this repair adds (the spelling
-case, the two fallback-list cases, the gate's failing-test listing case, and the record-line case).
+the suite's own count is 488 — the migration's 477, the five cases this repair adds (the spelling
+case, the two fallback-list cases, the gate's failing-test listing case, and the record-line case), and
+the six the simplify apply pass adds (the two portability exit-code cases, the root `.gitattributes`
+case, the `.gitignore` scratch-pattern case, and the two `test_portability.py` scratch-tree cases).
 
 ### 9.6 What this repair does not claim
 
@@ -564,7 +572,7 @@ case, the two fallback-list cases, the gate's failing-test listing case, and the
   does not exist yet; the file says how the operator appends it.
 - **The repair of §9 is not verified on Windows.** No runner executed the repaired head, and every
   Windows answer §9 rests on is a simulation of one host axis on this Linux machine; what is verified
-  *here* is the gate on the repaired tree (§9.5), the suite (482 tests), and each emulation's
+  *here* is the gate on the repaired tree (§9.5), the suite (488 tests), and each emulation's
   reproduction of the failing set it stands for. The next `windows-latest` run is the verification —
   and the `selftest` step now names its failures, so that run enumerates itself.
 
@@ -594,7 +602,8 @@ same paragraph.
 - **The gate on the rebased tree** prints the unqualified `GATE: PASS` — nine steps, `portability` included,
   against the pristine pin checkout at `~/.cache/ccc-upstream/83195c8a…` (log
   `artifacts/s1/gate-rebased-20261122T1245.log` in the task tree): parity reads **5 579** carried files
-  identical to the pin, deviations 1 + 1 generated input, `files seen by git` 5 769; the suite is 482 cases.
+  identical to the pin, deviations 1 + 1 generated input, `files seen by git` 5 769; the suite is 482 cases
+  at that head, and the simplify apply pass's six cases take it to 488 (§9.5).
 - **What the rebase did not do.** It rewrote no history anyone else holds — the branch is this increment's own
   and is re-pushed with `--force-with-lease`; it touched no carried byte (`parity` is the proof); it changed
   no plan statement beyond the scope line that now names `AGENTS.md` and the comment rule; and it left the

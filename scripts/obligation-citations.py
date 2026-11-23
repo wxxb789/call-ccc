@@ -120,7 +120,7 @@ def module_dir() -> Path:
     the gate's module rather than restated, because a second spelling of *which directory the module
     is* would be a second answer to one question.
     """
-    return Path(gate_module().module_dir())
+    return gate_module().module_dir()
 
 
 def run(cmd: list[str], env: dict[str, str] | None = None, timeout: int = GO_TIMEOUT):

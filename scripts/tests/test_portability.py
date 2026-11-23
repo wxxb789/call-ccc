@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+REPO_ROOT = SCRIPTS.parent
 SCRIPT_DIRS = (str(SCRIPTS),)
 
 #: A revision-shaped pin; the digits do not matter to any rule here.
@@ -73,11 +74,8 @@ def load_script(name: str):
 
 
 def scratch_tree() -> Path:
-    """A throw-away tree, always absolute (a relative ``TMPDIR`` must not put it under the cwd)."""
-    base = Path(tempfile.gettempdir())
-    if not base.is_absolute():
-        base = Path(os.path.abspath(base))
-    return Path(tempfile.mkdtemp(prefix="portability-root-", dir=str(base))).resolve()
+    """A throw-away tree, absolute and outside the repository: the shipped checker's own rule."""
+    return load_script("portability.py").scratch_directory("portability-root-")
 
 
 class GateStub:
@@ -575,6 +573,35 @@ class ScratchDirectoryCase(unittest.TestCase):
                                  [windows_temp, windows_temp / "alt"])
             with mock.patch.object(module, "platform_name", lambda: "posix"):
                 self.assertEqual(module.platform_scratch_bases(), [Path("/tmp"), Path("/var/tmp")])
+
+
+class ScratchTreeCase(unittest.TestCase):
+    """The suite's own throw-away trees stay outside the repository: the same rule, as it is used."""
+
+    def setUp(self) -> None:
+        self.addCleanup(setattr, tempfile, "tempdir", tempfile.tempdir)
+
+    def test_a_temp_root_inside_the_repository_is_refused(self) -> None:
+        inside = REPO_ROOT / "scratch-tmp-for-portability-cases"
+        inside.mkdir(exist_ok=True)
+        try:
+            tempfile.tempdir = str(inside)
+            root = scratch_tree()
+        finally:
+            shutil.rmtree(inside, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.assertTrue(root.is_absolute(), root)
+        self.assertNotEqual(root, REPO_ROOT)
+        self.assertNotIn(REPO_ROOT, root.parents)
+        self.assertNotEqual(root.parent, inside)
+
+    def test_a_relative_temp_root_does_not_land_under_the_current_directory(self) -> None:
+        """``TMPDIR=scratch`` is what put 81 ``parity-root-*`` directories in the repository root."""
+        tempfile.tempdir = "relative-portability-scratch"
+        root = scratch_tree()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.assertTrue(root.is_absolute(), root)
+        self.assertNotIn(REPO_ROOT, root.parents)
 
 
 class ManifestLayoutCase(unittest.TestCase):

@@ -108,9 +108,6 @@ from native_check_common import (  # noqa: E402  (path set up above)
 SOURCE_PROVIDER = "claude"
 SOURCE_SESSION = "9f2c1d47-9c3a-4f8f-9a4a-7b1e5c2d6f10"
 TOOLING_SESSION = "b6d93f07-2f5c-4a11-8e0d-3c7a91d4b2ef"
-#: Where this repository's module keeps the fixtures: the carried tree has a directory of its own
-#: (``agentsview/``) and this repository's module is ``ccc/``, so every path this check reads
-#: inside the module starts there.
 FIXTURE_ROOT = Path("ccc", "internal", "ccc", "testdata", "fixtures")
 GO_TAGS = "fts5"
 BINARY = Path("bin", "ccc-native-check")
@@ -855,8 +852,6 @@ def main(argv: list[str] | None = None) -> int:
     existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in home.rglob("rollout-*.jsonl")]
     existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl") if path != unrelated}
     try:
-        # The module is a directory of its own inside the repository, so the package pattern is the
-        # module's own (``./cmd/ccc``) and the command runs *in* it.
         build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"],
                     cwd=repo / "ccc")
         if build.returncode != 0:

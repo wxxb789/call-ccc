@@ -3073,3 +3073,20 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   subsequence match, keep a case that fails when the attribution is wrong (the swapped-prompt regression or an
   equivalent), and only then delete the heuristic.
 - **Settled by:** the increment that next touches `pairReadBackMessage`, or an owner sentence.
+
+## Q-S1-01 — The repository root carries no licence of its own
+
+- **Status:** open (default taken: no file change; the question is with the owner).
+- **Question:** the layout migration left upstream's `LICENSE` inside the carry (`agentsview/LICENSE`; the font
+  licences live beside the fonts), and this repository's own half (`ccc/**`, `scripts/**`) has no licence file
+  at the root — so a reader at the root, GitHub's licence view included, sees no licence for it. Does this
+  repository want a project-owned root `LICENSE` (the same MIT text), or is the faithful ledger the intended
+  state (`README.md` and `docs/upstream.md` point at `agentsview/LICENSE`)? Raised by the S1 simplify report
+  (D3); the operator's round is open in the task thread (Q2, `OWNER-ANSWERS-2026-11-23.md`).
+- **Options:** (a) add a project-owned root `LICENSE` with the same MIT text; (b) leave the tree as it is and
+  keep the disclosure; (c) take it out of this increment into a repository-level task.
+- **Default taken:** (b) — no licence file added, moved or copied, and no claim made about licensing in this
+  increment.
+- **Reversal:** add the root `LICENSE` (one new, project-owned file; nothing else moves) — or, if the answer is
+  (c), open the task and leave the file where it is until then.
+- **Settled by:** the owner's one-line answer to Q2 (`A` / `B` / `C`).

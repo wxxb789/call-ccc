@@ -28,7 +28,7 @@ explicit about which one it is.
 
 ## Where the files are (and where they were)
 
-The carried tree moved into a directory of its own on 2026-11-21 (owner decision 72): every path
+The carried tree moved into a directory of its own on 2026-11-21 (owner decision 2026-11-21): every path
 below `agentsview/` is an upstream path, and everything else in this repository is ours. Paths are
 recorded as they were read -- the evidence records under `docs/evidence/`, the decision log and the
 plans keep the spellings of the day they were written, and are not rewritten -- so a reader following
@@ -114,7 +114,7 @@ that path, "still differs from upstream" proves nothing about it: the stored dig
 checked, and the importer writes those stored bytes so the working tree equals what a clone checks
 out.
 
-Nothing else differs, and **ten paths that used to be declared deviations are not any more** — the
+Nothing else differs, and **twenty-six paths that used to be declared deviations are not any more** — the
 layout answered them. `.gitignore`, `AGENTS.md`, `README.md` and `docs/README.md` were paths where
 this repository's file and upstream's both wanted one home; each side now has one (`agentsview/…` for
 upstream's, the repository root for ours), so upstream's copies are carried verbatim. The 22

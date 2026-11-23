@@ -1566,6 +1566,30 @@ class ScratchTreeCase(unittest.TestCase):
             self.assertEqual(platform_scratch_bases("nt"), [windows_temp, windows_temp / "alt"])
             self.assertEqual(platform_scratch_bases("posix"), [Path("/tmp"), Path("/var/tmp")])
 
+    def test_a_scratch_tree_left_in_the_root_is_ignored(self) -> None:
+        """The patterns are the leak's third defence: a stray tree is never offered to ``git status``.
+
+        The directory is made and ``git check-ignore`` names the pattern that matched it -- the shape
+        measured for the record; a host or a tree without git reads the same rule off the file's own
+        four lines instead.
+        """
+        prefixes = ["parity-root-", "import-root-", "compare-checkout-", "portability-root-"]
+        git = shutil.which("git") if (REPO_ROOT / ".git").exists() else None
+        if git is None:
+            lines = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+            for prefix in prefixes:
+                self.assertIn(f"/{prefix}*/", lines)
+            return
+        for prefix in prefixes:
+            stray = REPO_ROOT / f"{prefix}case"
+            stray.mkdir(exist_ok=True)
+            self.addCleanup(shutil.rmtree, stray, ignore_errors=True)
+            proc = subprocess.run([git, "-C", str(REPO_ROOT), "check-ignore", "-v", stray.name],
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn(f"/{prefix}*/", proc.stdout)
+            self.assertIn(stray.name, proc.stdout)
+
 
 class ManifestCase(unittest.TestCase):
     """Cases for the shared manifest format."""
@@ -1657,6 +1681,17 @@ class RepositoryCase(unittest.TestCase):
         self.assertIn("module go.kenn.io/agentsview/ccc", ours)
         self.assertIn("replace go.kenn.io/agentsview => ../agentsview", ours)
         self.assertNotIn("go.work", {p.name for p in REPO_ROOT.iterdir()})
+
+    def test_the_root_attributes_keep_our_half_lf(self) -> None:
+        """The Windows leg's repair: our half keeps LF under ``core.autocrlf``, the carry keeps its own file.
+
+        Without the root file that checkout wrote every path this repository owns with CRLF, and the
+        ``gofmt``, ``test`` and ``citations`` steps failed on the bytes; the carried tree keeps its own
+        ``agentsview/.gitattributes``, which governs the paths below it.
+        """
+        lines = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertIn("* text=auto eol=lf", lines)
+        self.assertTrue((REPO_ROOT / "agentsview" / ".gitattributes").is_file())
 
     def test_the_declared_normalisation_records_the_bytes_this_tree_stores(self) -> None:
         """The one path upstream's attribute file rewrites must pin the bytes this tree stores.

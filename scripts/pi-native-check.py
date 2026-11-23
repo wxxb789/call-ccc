@@ -74,9 +74,6 @@ from native_check_common import (  # noqa: E402
 
 #: Where this repository keeps its committed native-shaped fixtures, and the provider directories under
 #: it. A Pi fixture is one session file named by its own header id.
-#: Where this repository's module keeps the fixtures: the carried tree has a directory of its own
-#: (``agentsview/``) and this repository's module is ``ccc/``, so every path this check reads
-#: inside the module starts there.
 FIXTURE_ROOT = Path("ccc/internal/ccc/testdata/fixtures")
 SOURCE_PROVIDER = "claude"
 TARGET_PROVIDER = "pi"
@@ -626,8 +623,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         build_parent = (repo / BINARY).parent
         build_parent.mkdir(parents=True, exist_ok=True)
-        # The module is a directory of its own inside the repository, so the package pattern is the
-        # module's own (``./cmd/ccc``) and the command runs *in* it.
         build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"],
                     cwd=repo / "ccc")
         if build.returncode != 0:

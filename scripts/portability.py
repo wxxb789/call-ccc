@@ -60,7 +60,7 @@ from upstream_manifest import Manifest, ManifestError, detect_layout, load_manif
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_RELATIVE = Path("scripts") / "upstream-manifest.txt"
 GATE = Path("scripts") / "gate.py"
-OUR_MODULE_DIR = "go.mod"
+MODULE_FILE = "go.mod"
 #: The one edge the layout is: the module's own ``go.mod`` declares the carried module a requirement
 #: and points the replace at the carry beside it. This check rewrites exactly this line, and a module
 #: whose file no longer holds it is a failure -- there would be no edge to aim.
@@ -374,7 +374,7 @@ def check(root: Path, supplied: Path | None, keep: bool) -> list[str]:
             ["the ccc/ module beside agentsview/ (the layout this repository moved to)"],
         )
     module_dir = root / layout.module
-    module_file = module_dir / OUR_MODULE_DIR
+    module_file = module_dir / MODULE_FILE
     if not module_file.exists():
         raise PortabilityError(f"{module_file} is missing, so there is no module to check")
 

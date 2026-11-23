@@ -402,6 +402,31 @@ class GateCase(GateTree, unittest.TestCase):
         self.assertIn("upstream-parity.py -> rc=1", proc.stdout)
         self.assertNotIn("GATE: PASS", proc.stdout)
 
+    def test_portability_that_could_not_run_is_a_disclosed_skip(self) -> None:
+        """rc=2 is the checker's own "could not run": SKIP, carrying its reason and its omissions."""
+        self.write(
+            "scripts/portability.py",
+            "import sys\n"
+            "print('portability: INCOMPLETE — no scratch root outside this tree')\n"
+            "print('  not checked: the pin checkout')\n"
+            "sys.exit(2)\n",
+        )
+        proc = self.gate()
+        status, detail = self.step_line(proc.stdout, "portability")
+        self.assertEqual(status, "SKIP", proc.stdout + proc.stderr)
+        self.assertIn("portability: INCOMPLETE — no scratch root outside this tree", detail)
+        self.assertIn("not checked: the pin checkout", detail)
+        self.assertIn("portability", self.partial_steps(proc.stdout), proc.stdout)
+
+    def test_portability_hook_that_fails_fails_the_gate(self) -> None:
+        """Any other non-zero code is a check that ran and failed, never the disclosed SKIP."""
+        self.write("scripts/portability.py", "import sys\n\nsys.exit(1)\n")
+        proc = self.gate()
+        status, _ = self.step_line(proc.stdout, "portability")
+        self.assertEqual(status, "FAIL", proc.stdout + proc.stderr)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertNotIn("GATE: PASS", proc.stdout)
+
     def test_missing_gofmt_fails_the_gate(self) -> None:
         """No toolchain on PATH fails on Linux and macOS, naming the tool it wanted."""
         proc = self.gate(env={"PATH": str(self.no_go_tools())})
@@ -1043,13 +1068,13 @@ class HostCase(GateTree, unittest.TestCase):
         what makes a dropped case fail the count below rather than pass.
 
         The key is the qualifier (``<module>.<class>.<case>``), not the bare name:
-        two cases in different modules may share a name -- this suite has such a
-        pair, the platform-fallback case in ``test_upstream_parity`` and in
-        ``test_portability`` -- and the count below is about *cases*, so a shared
-        name has to be two entries. Keyed by the bare name, a second case joining
-        an existing name made the count read ``481 != 482`` (a number, not a case)
-        and, worse, could answer for a case with its neighbour's line. A case's
-        bare name is what ``status_of`` reads the mapping by.
+        two cases in different modules may share a name -- this suite has such
+        pairs, one of them the platform-fallback case in ``test_upstream_parity``
+        and in ``test_portability`` -- and the count below is about *cases*, so a
+        shared name has to be two entries. Keyed by the bare name, a second case
+        joining an existing name made the count read ``485 != 488`` (a number, not
+        a case) and, worse, could answer for a case with its neighbour's line. A
+        case's bare name is what ``status_of`` reads the mapping by.
 
         A line with nothing after its ``...`` is not a case line: the verbose
         runner leaves the case's own line dangling before the indented line of a
