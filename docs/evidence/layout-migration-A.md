@@ -195,8 +195,9 @@ by one `replace` and no `go.work`.
 
 ## 6. Behaviour, not only bytes
 
-The gate is offline, so `scripts/upstream-compare.py` (deliberately not a gate step) is the check that
-the inherited code still *behaves* like the pin's. It was updated for the layout — the oracle is copied
+The gate's required steps are offline (the disclosed `portability` step fetches the pin), so
+`scripts/upstream-compare.py` (deliberately not a gate step) is the check that the inherited code still
+*behaves* like the pin's. It was updated for the layout — the oracle is copied
 into the pristine checkout at the same subpath (`ccc/internal/ccc`), which is what keeps its own import
 paths resolvable there — and re-run against a clean checkout of the pin:
 
@@ -497,12 +498,17 @@ shape is read now). Both are held the same way: reverting the qualifier keys fai
 
 ### 9.4 The step now enumerates its failures
 
-`scripts/gate.py`'s `step_selftest()` prints every `FAIL:`/`ERROR:` caption the child printed, ahead of
+`scripts/gate.py`'s `step_selftest()` prints every test the run named as failed, ahead of
 the detail's tail (`failing_tests()`): a tail holds only the last failure's traceback, and a CI log is
-what a reader has left when the run is over. Output only — no step is narrowed, skipped or silenced,
-and no gate rule changes. *Case:* `test_the_selftest_failure_names_every_failing_test` writes two
-failing tests (one failure, one error) and asserts both captions and the summary behind them;
-suppressing the listing fails it (measured). `docs/harness.md`'s `selftest` section states the rule.
+what a reader has left when the run is over. The names are read from the runner's own
+`FAIL: <test> (<module>.<class>.<test>)` case lines, so a check's printed `FAIL: <name> — <detail>`
+record is not listed as a test — the first cut read the prefix alone and listed records (§12 corrects
+it). Output only — no step is narrowed, skipped or silenced, and no gate rule changes. *Cases:*
+`test_the_selftest_failure_names_every_failing_test` writes two failing tests (one failure, one error)
+and asserts both captions and the summary behind them; suppressing the listing fails it (measured), and
+`test_a_record_line_printed_by_a_case_is_not_a_failing_test` prints a check's record beside a real
+failing case and asserts the listing holds the test alone (reverting the shape check fails it,
+measured). `docs/harness.md`'s `selftest` section states the rule.
 
 ### 9.5 The gate on the repaired state
 
@@ -532,10 +538,11 @@ case, the `.gitignore` scratch-pattern case, and the two `test_portability.py` s
 
 ### 9.6 What this repair does not claim
 
-- **No Windows runner executed this head.** Every Windows answer above is a *simulation of one axis* on
-  this Linux host — CRLF text writes, an absent `/tmp`, the `nt` platform seams, a host-spelled
-  relative path — never Windows itself. The simulations reproduce the leg's failure *classes* (and the
-  byte counts the Go tests printed), but the operator's re-run of `windows-latest` is the verification.
+- **The Windows answers above were simulations when they were written.** Every one is a *simulation of
+  one axis* on this Linux host — CRLF text writes, an absent `/tmp`, the `nt` platform seams, a
+  host-spelled relative path — never Windows itself, and they are what reproduced the leg's failure
+  *classes* (and the byte counts the Go tests printed). A Windows runner later executed the repaired
+  content at head `5331725` (run 44987938577, §12), where the four steps of §9.1 are PASS.
 - **The 28 + 9 enumeration is derived, not read.** The log holds the summary counts and exactly one
   caption (the assertion quoted in §9.1); the classes above reproduce on this host and their sum is the
   leg's own count, but no log line confirms the distribution — and the fixed `selftest` step is what
@@ -550,11 +557,13 @@ case, the `.gitignore` scratch-pattern case, and the two `test_portability.py` s
   no turn was taken, so `verification.load` / `verification.resume` states are absent from everything
   above; the five native checks were not executed (their *suites* were, with the CLI built from the new
   module path — that is not the same thing, and is not quoted as it).
-- **CI has not run on this head.** `gate (ubuntu-latest)` and `gate (windows-latest)` are the operator's
-  next step; the workflow's Go toolchain now comes from `ccc/go.mod`, and a case in
-  `scripts/tests/test_upstream_parity.py` holds that file's `go` directive to the carried tree's — but
-  no runner has executed this commit, and the Windows leg in particular is where the layout's path
-  lengths and case behaviour would show.
+- **CI ran, but not on every head this record covers — §12 is the ledger.** `gate (ubuntu-latest)` and
+  `gate (windows-latest)` executed the repaired content at `5331725` (run 44987938577: ubuntu the
+  unqualified `GATE: PASS`, windows `GATE: PASS (partial: portability did not run — see reasons above)`),
+  after §9.1's red leg at `4bab390` (run 44911322081); the two commits this record's own tail added
+  after that run — `9fca29f`, `27d8960` — were unpushed and un-CI'd at this record's writing. The
+  workflow's Go toolchain comes from `ccc/go.mod`, and a case in `scripts/tests/test_upstream_parity.py`
+  holds that file's `go` directive to the carried tree's.
 - **The `AGENTS.md` update is in this tree now** (`fe68e35`, owner-authorised 2026-11-22 after two
   unattended prompts timed out): the intended patch's nine hunks — the path statements the migration
   invalidates, the gate's new `portability` step, the carry's location — plus the owner's comment rule
@@ -570,11 +579,12 @@ case, the `.gitignore` scratch-pattern case, and the two `test_portability.py` s
   `<goal>-citations.tsv`, moves nothing into `docs/goals/archive/`, and changes no `Done when` clause.
 - **`.git-blame-ignore-revs` names the rule, not a SHA.** The squash commit that lands this migration
   does not exist yet; the file says how the operator appends it.
-- **The repair of §9 is not verified on Windows.** No runner executed the repaired head, and every
-  Windows answer §9 rests on is a simulation of one host axis on this Linux machine; what is verified
-  *here* is the gate on the repaired tree (§9.5), the suite (488 tests), and each emulation's
-  reproduction of the failing set it stands for. The next `windows-latest` run is the verification —
-  and the `selftest` step now names its failures, so that run enumerates itself.
+- **The repair of §9 is verified on Windows, by the run §12 records.** At head `5331725` the four steps
+  §9.1 had failed — `gofmt`, `test`, `selftest`, `citations` — are PASS on `windows-latest`, and the
+  leg's verdict is the disclosed-partial `GATE: PASS (partial: portability did not run — see reasons
+  above)`. Every simulation §9.6 describes remains a simulation of one host axis on this Linux machine,
+  and what is verified *here* is §9.5's gate and the suite of the state it names; §12 holds the run's own
+  numbers and the boundary that remains.
 
 ## 10. After the base moved: the rebase, the contract's own update, and the heads this record covers
 
@@ -636,4 +646,56 @@ same paragraph.
   (unchanged — this pass adds no case), `parity` 5 579 carried identical to the pin and *files seen by git*
   **5 770** (§9.5's apply-pass measurement read 5 769), `secrets` **191** owned files (that pass read 190),
   `citations` 36 / 37 / 13 rows. The +1 in each is this section's own new root file; §9.5's quoted block is left
-  as the measurement of the state it names, and this section is the state the increment lands in.
+  as the measurement of the state it names, and this section is the state the `LICENSE` commit lands in
+  (§12 states the state the review-fix pass leaves).
+
+## 12. The review-fix pass: the two CI runs, and the `selftest` listing's shape rule
+
+The machine review of 2026-11-23 (range `8989d2c..27d8960`, verdict **MUST_FIX (4)**) filed R1–R4, and the
+operator's table marked all four **FIX**; this section is the state the increment lands in after them, and
+it holds the numbers the earlier sections no longer state.
+
+- **The two runs, and what they executed.** Run
+  [44911322081](https://github.com/wxxb789/call-ccc/actions/runs/44911322081) at head `4bab390` is §9.1's
+  leg: `gate (ubuntu-latest)` PASS, `gate (windows-latest)` `GATE: FAIL — gofmt, test, selftest,
+  citations`. Run [44987938577](https://github.com/wxxb789/call-ccc/actions/runs/44987938577) at head
+  `5331725` executed the *repaired* content: `gate (ubuntu-latest)` ran all nine steps and printed the
+  unqualified `GATE: PASS` (its `selftest` `Ran 482 tests in 13.113s`, its `secrets` 190 owned files);
+  `gate (windows-latest)` ran eight steps PASS — the four §9.1 had failed among them (`gofmt`, `test`
+  `3 package(s) ok`, `selftest` `Ran 482 tests in 24.895s`, `citations`) — with `portability` a disclosed
+  `SKIP` (`portability: INCOMPLETE — no pinned checkout is available: git checkout --detach 83195c8a…
+  failed (rc=128): … Filename too long …`) and the verdict `GATE: PASS (partial: portability did not run
+  — see reasons above)`; the raw log is `artifacts/s1/ci-44987938577.log` in the task tree. Un-CI'd at
+  this record's writing: `9fca29f` (the simplify apply pass) and `27d8960` (the root `LICENSE`) — both
+  local until the operator pushes.
+- **R1 — the listing reads the runner's case lines only.** `scripts/gate.py`'s `failing_tests()` requires
+  the runner's own `(<module>.<class>.<test>)` qualifier, so a check's printed `FAIL: <name> — <detail>`
+  record is not listed as a failing test: a green full-suite run prints 40 such records (measured again
+  in this pass, where the fixed scan returns none of them and the prefix scan the fix removed returns
+  all 40 — none a test). §9.4 and `docs/harness.md`'s `selftest` paragraph now state the shipped rule.
+  *Case:* `test_a_record_line_printed_by_a_case_is_not_a_failing_test` — a throw-away
+  tree whose sample test prints a record beside a real failing case; reverting `failing_tests()` to the
+  prefix scan fails it on `2 failing test(s):` with the record listed (measured).
+- **R2 — §CI states the measured per-runner verdicts.** `docs/harness.md` §CI and the §Platform-boundary
+  sentence beside it now say what the runs answered — ubuntu the unqualified pass, windows the
+  disclosed-partial one over the pin's long fixture path — instead of "CI runs nine steps and not a
+  partial verdict"; the `test_ci_matrix_claim.py` pin still reads the section and the matrix as one
+  statement (7 cases, green). `Q-S1-02` files the choice the finding left open (state the boundary —
+  taken here — or teach the runner long paths and re-measure before claiming more).
+- **R3 — the offline claim is qualified.** `scripts/gate.py`'s module docstring and §6 above now say the
+  *required* steps are offline and the disclosed `portability` step fetches the pin.
+- **R4 — the record's own bullets say what CI did.** §9.6's first bullet, the two "What this record does
+  not claim" bullets it contradicted, and §11's closing pointer are corrected to the runs above; what
+  remains outside the runs' reach — no native check, and this host's own suite was never run *on* a
+  runner — is still stated as the record's boundary.
+- **No `AGENTS.md` edit, no goal archived.** This pass changes no layout, no gate step or knob, no
+  command and no rule an agent follows — the gate file's change is the shape of one step's listing, and
+  the step list and `scripts/gate-required.txt` are untouched — so `AGENTS.md` is left as it is, per its
+  own growth policy; and no accepted goal sits under `docs/goals/` to archive.
+- **Gate on the state this section lands in** (`artifacts/s1/gate-reviewfix-20261123.log`):
+  `python3 scripts/gate.py` → `GATE: PASS` (nine steps, `portability` included, against the pinned
+  pristine checkout); real numbers, so no reader has to open the log: nine steps PASS, `selftest` **489**
+  cases (§11's 488 plus this pass's one case), `parity` 5 579 carried identical to the pin and *files seen
+  by git* **5 770**, `secrets` **191** owned files, `citations` 36 / 37 / 13 rows. §9.5's quoted block and
+  §11's numbers are left as the measurements of the states they name; this section is the state the
+  increment lands in.

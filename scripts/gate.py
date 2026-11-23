@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""call/ccc project gate — one command, real exit codes, no network.
+"""call/ccc project gate — one command, real exit codes, no network for its required steps (the
+disclosed ``portability`` step fetches the pin).
 
 Steps, in order: gofmt, build, vet, test, portability, selftest, parity, citations, secrets.
 Exit 0 only when every step that RAN passed. A step that could not run prints
@@ -278,16 +279,29 @@ def step_go(
 def failing_tests(output: str) -> list[str]:
     """Every test the run named as a failure or an error, in the order it printed them.
 
-    ``unittest`` prints one ``FAIL: <test> (<module>)`` or ``ERROR: <test> (<module>)`` line per
-    failing test, before that test's traceback; its summary line only counts them. A step's detail
-    is a *tail* of the run (``step_selftest``), so on a run with several failures the names scroll
-    out of it -- and a CI job's log is all a reader has left when the run is over, where GitHub's
-    runner collapses the captions into a single annotation. The names are therefore read out of the
-    whole output, whole, and printed beside the tail: a list short of its failures is a run nobody
-    can enumerate.
+    ``unittest`` prints one ``FAIL: <test> (<module>.<class>.<test>)`` or
+    ``ERROR: <test> (<module>.<class>.<test>)`` line per failing test, before that test's traceback;
+    its summary line only counts them. A step's detail is a *tail* of the run (``step_selftest``),
+    so on a run with several failures the names scroll out of it -- and a CI job's log is all a
+    reader has left when the run is over, where GitHub's runner collapses the captions into a single
+    annotation. The names are therefore read out of the whole output, whole, and printed beside the
+    tail: a list short of its failures is a run nobody can enumerate.
+
+    A line is a test only when it carries the runner's own case-line shape -- the
+    ``(<module>.<class>.<test>)`` qualifier in parentheses after the name -- because the run's
+    output also holds what its cases printed, and the shipped checks print ``FAIL: <name> — <detail>``
+    records of their own during ordinary case execution: the prefix alone named those
+    records as failing tests (measured on this suite's green run at this rule's fix: 40 of them).
     """
-    return [line.strip() for line in output.splitlines()
-            if line.startswith(("FAIL: ", "ERROR: "))]
+    named = []
+    for line in output.splitlines():
+        if not line.startswith(("FAIL: ", "ERROR: ")):
+            continue
+        _, sep, rest = line.partition(" (")
+        qualifier, close, _ = rest.partition(")")
+        if sep and close and "." in qualifier:
+            named.append(line.strip())
+    return named
 
 
 def step_selftest() -> tuple[str, str]:

@@ -88,8 +88,10 @@ A failing run's step line names **every** test that failed, ahead of the detail'
 read out of the whole run (`failing_tests()`), because a step's detail is a tail and a CI job's log is
 what a reader has left when the run is over — GitHub's runner collapses the captions into a single
 annotation, so a run whose names stayed inside the tail could not be enumerated without running it
-again. `scripts/tests/test_gate.py` writes two failing tests (one failure, one error) and asserts both
-names, so a listing short of either fails the suite.
+again. Only the runner's own `(<module>.<class>.<case>)` case lines are read, so a check's printed
+`FAIL:` record is never listed as a test. `scripts/tests/test_gate.py` writes two failing tests (one
+failure, one error) and asserts both names, so a listing short of either fails the suite; a second case
+prints a check's own `FAIL:` record beside a real failing case and pins that the record is left out.
 
 ## `parity`: the carried tree against its pin
 
@@ -807,7 +809,9 @@ platform probe to its Windows answer (see the `selftest` section): no verdict in
 which platform is running it.
 
 Where each answer is *verified* is narrower than where it applies. `ubuntu-latest` and `windows-latest`
-run the whole gate on real runners; **macOS is not verified on a runner** — the workflow's matrix has no
+run the gate on real runners — every step on Linux, and on the Windows runner every step that runner's
+own checkout can establish, with any step that did not run named in the verdict line (§CI states the
+measured per-runner verdicts); **macOS is not verified on a runner** — the workflow's matrix has no
 macOS leg, by the owner decision of 2026-11-18 that the plan beside this file records
 ([`docs/plans/harness-ci-matrix.md`](plans/harness-ci-matrix.md)): the job was repeatedly starved of a
 runner, and a job that fails slowly with zero executed steps is infrastructure, not a verdict. A macOS
@@ -944,8 +948,10 @@ no macOS leg (the owner decision of 2026-11-18 stated with the platform rules ab
 macOS-shaped rule is answered in CI only by the suite's own executed host simulations — the
 empty-`PATH` child, the forced Windows-without-compiler probe, the
 `platform_name`/`symlink_target`/path-flavour seams — which run wherever the `selftest` step runs. A
-green run may therefore be read as the whole gate passing on Linux and on Windows, and not as evidence
-about macOS. `scripts/tests/test_ci_matrix_claim.py` (the `selftest` step) holds this section and the
+green run may therefore be read as the gate's own answer on Linux and on Windows, per runner: the
+verdict line names any step a runner did not run, and only a runner that ran every step prints the
+unqualified `GATE: PASS`. Neither is evidence about macOS.
+`scripts/tests/test_ci_matrix_claim.py` (the `selftest` step) holds this section and the
 matrix together as one statement: the runners named here are exactly the matrix's legs (the `os:` list
 with every `include:`/`exclude:` entry, read in GitHub's own order — `exclude` removes base labels and
 every `include` is processed after it, so a label both excluded and included is a leg, and the legs are
@@ -977,8 +983,14 @@ gate. The Go toolchain comes from this repository's own module (`go-version-file
 `go.sum` as the cache key), and that module declares the same `go` directive as the carried tree's —
 a case in `scripts/tests/test_upstream_parity.py` holds the two files to it — so the workflow, our
 module and the carry cannot disagree about the version the tree builds with. On a runner the
-`portability` step fetches the pin itself (the runners have network, and the repository is public), so
-CI runs nine steps and not a partial verdict.
+`portability` step fetches the pin itself (the runners have network, and the repository is public), and
+the runners' verdicts therefore differ, as measured at head `5331725` (CI run
+[44987938577](https://github.com/wxxb789/call-ccc/actions/runs/44987938577)): `ubuntu-latest` runs all
+nine steps and prints the unqualified `GATE: PASS`; `windows-latest` cannot create the pin's checkout —
+`git checkout --detach` meets one of its fixture paths and that host's path limit (`Filename too
+long`; the workflow sets no `core.longpaths`) — so `portability` is a disclosed `SKIP` there and the
+leg ends `GATE: PASS (partial: portability did not run — see reasons above)`, its other eight steps
+PASS.
 
 ## Growth policy
 

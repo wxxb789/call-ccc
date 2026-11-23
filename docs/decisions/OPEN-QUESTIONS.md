@@ -3092,3 +3092,26 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   (c), open the task and leave the file where it is until then.
 - **Settled by:** the owner's answer to Q2 — **`A`**, 2026-11-23, in the task thread — executed in this
   increment: root `LICENSE`, 1 074 bytes, sha256 `ffb1006b…`, byte-identical to `agentsview/LICENSE`.
+
+## Q-S1-02 — The Windows leg cannot run `portability`: state the boundary, or teach the runner long paths?
+
+- **Status:** open (default taken: the per-runner verdict is stated as measured — `docs/harness.md` §CI —
+  and the workflow is not changed).
+- **Question:** at head `5331725` (CI run 44987938577) the Windows leg is
+  `GATE: PASS (partial: portability did not run — see reasons above)`: `git checkout --detach 83195c8a…`
+  refuses one of the pin's fixture paths (`Filename too long`), so the step that builds and tests this
+  module against a *pristine* pin is the one check with no answer on that runner (the review's R2,
+  2026-11-23, and §12 of `docs/evidence/layout-migration-A.md`). Should the leg be made able to
+  establish it too — a `core.longpaths` setting before the gate step, or a short checkout root — so that
+  a green Windows run means every step ran?
+- **Options:** (a) state the measured per-runner verdict (taken here); (b) add the setting (or a short
+  cache root) to the workflow and re-measure on a runner before keeping any stronger sentence; (c) leave
+  the leg's partial verdict unstated — refused: the verdict line is in the log either way.
+- **Default taken:** (a) — an unverified workflow change would put a claim in the docs no runner has
+  measured, and the step's own disclosure is the honest form the gate's rules ask for.
+- **Reversal:** (b): add the setting, watch one `windows-latest` run print all nine steps and the
+  unqualified `GATE: PASS`, then tighten §CI back to the stronger sentence; the pin
+  (`scripts/tests/test_ci_matrix_claim.py`) reads §CI's runner names and moves with neither.
+- **Settled by:** the owner's word on whether the Windows claim should be widened (it costs runner
+  minutes and changes what a green Windows run proves), or an increment that lands (b) with its own
+  measured run.

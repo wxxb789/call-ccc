@@ -394,6 +394,33 @@ class GateCase(GateTree, unittest.TestCase):
         self.assertIn("Ran 2 tests", proc.stdout)  # the tail is still there, behind the names
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
 
+    def test_a_record_line_printed_by_a_case_is_not_a_failing_test(self) -> None:
+        """A case's own ``FAIL:`` record is not a test, and the listing names the real one.
+
+        The shipped checks record ``FAIL: <name> — <detail>`` lines and some cases print them to
+        stdout as they drive the check, so scanning a run's output for the prefix alone filled the
+        listing with records (measured on this suite's green run: 40 of them). This case's own print
+        is what the listing must leave out; the failing case line beside it is what it must name.
+        """
+        self.write(
+            "scripts/tests/test_record_printer.py",
+            "import unittest\n\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_prints_a_record(self):\n"
+            "        print('FAIL: opencode session export — timed out after 300s')\n"
+            "\n"
+            "    def test_failure(self):\n"
+            "        self.assertTrue(False)\n",
+        )
+        proc = self.gate()
+        status, _ = self.step_line(proc.stdout, "selftest")
+        self.assertEqual(status, "FAIL", proc.stdout + proc.stderr)
+        self.assertIn("FAIL: opencode session export — timed out after 300s", proc.stdout)
+        self.assertIn(
+            "\n1 failing test(s):\nFAIL: test_failure (test_record_printer.T.test_failure)\n",
+            proc.stdout,
+        )
+
     def test_parity_hook_that_fails_fails_the_gate(self) -> None:
         """A hook that exists and exits non-zero is a FAIL, never the absent-hook N/A."""
         self.write("scripts/upstream-parity.py", "import sys\n\nsys.exit(1)\n")
