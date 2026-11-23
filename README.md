@@ -151,4 +151,4 @@ Pi session and an Oh My Pi session, and OpenCode's own import document), and `In
 
 Inherited AgentsView code stays under upstream's MIT licence (see
 [`agentsview/LICENSE`](agentsview/LICENSE), carried with it); the code this project adds is under the
-same licence, with the upstream copyright notice preserved.
+same licence, with the upstream copyright notice preserved — [`LICENSE`](LICENSE) at the root states it.

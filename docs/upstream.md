@@ -45,6 +45,11 @@ an older record translates one word at a time:
 | `scripts/**` | this repository's own scripts unchanged; upstream's own `scripts/**` moved to `agentsview/scripts/**` |
 | `.github/workflows/gate.yml` | unchanged (GitHub reads the repository root's `.github/`; upstream's own `.github/**` is carried under `agentsview/.github/`, where Actions cannot see it) |
 
+The root `LICENSE` is **ours**, not a carried file: it states the same MIT terms as
+`agentsview/LICENSE`, with the upstream copyright notice preserved, so a reader at the root — GitHub's
+licence view included — sees a licence for this repository's own half (`ccc/**`, `scripts/**`). It was
+added by this increment under the owner's decision of 2026-11-23.
+
 The `parity` step prints tree paths (a record's upstream path through the layout), so its failures can
 be opened directly; the manifest itself keeps upstream paths, because that is what a pin update has to
 be diffed against.

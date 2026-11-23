@@ -3076,7 +3076,8 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 
 ## Q-S1-01 — The repository root carries no licence of its own
 
-- **Status:** open (default taken: no file change; the question is with the owner).
+- **Status:** **settled (owner, 2026-11-23, option a)** — the root `LICENSE` is in this increment;
+  `docs/evidence/layout-migration-A.md` §11 has the file, its hash and the gate on that state.
 - **Question:** the layout migration left upstream's `LICENSE` inside the carry (`agentsview/LICENSE`; the font
   licences live beside the fonts), and this repository's own half (`ccc/**`, `scripts/**`) has no licence file
   at the root — so a reader at the root, GitHub's licence view included, sees no licence for it. Does this
@@ -3089,4 +3090,5 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   increment.
 - **Reversal:** add the root `LICENSE` (one new, project-owned file; nothing else moves) — or, if the answer is
   (c), open the task and leave the file where it is until then.
-- **Settled by:** the owner's one-line answer to Q2 (`A` / `B` / `C`).
+- **Settled by:** the owner's answer to Q2 — **`A`**, 2026-11-23, in the task thread — executed in this
+  increment: root `LICENSE`, 1 074 bytes, sha256 `ffb1006b…`, byte-identical to `agentsview/LICENSE`.

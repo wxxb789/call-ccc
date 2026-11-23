@@ -608,3 +608,32 @@ same paragraph.
   and is re-pushed with `--force-with-lease`; it touched no carried byte (`parity` is the proof); it changed
   no plan statement beyond the scope line that now names `AGENTS.md` and the comment rule; and it left the
   earlier increments' dated records exactly as §"What this record does not claim" says.
+
+
+## 11. The root `LICENSE`, added on the owner's word
+
+- **What was asked, and what was answered.** §9.5's simplify pass raised one item it would not decide for the
+  operator (its D3): the migration left upstream's `LICENSE` inside the carry, so the repository's own half had
+  no licence file at the root. Filed as `Q-S1-01` in `docs/decisions/OPEN-QUESTIONS.md` with the reversible
+  default taken (no file change). The owner answered **A** on 2026-11-23: add a project-owned root `LICENSE`
+  with the same MIT text.
+- **What landed:** `LICENSE`, 1 074 bytes, sha256 `ffb1006bf3c32ec8da3ad6c5f693d8516eecb355df848a694332fa13174a77d4`
+  — **byte-identical** to `agentsview/LICENSE` (compared by hash, not by eye), which is what `README.md`'s
+  licence paragraph already claimed ("the same licence, with the upstream copyright notice preserved"). The
+  copyright line therefore still names upstream's holder, deliberately: the repository's own statement is that
+  the notice is preserved, and this record adds no claim of its own about who holds it.
+- **What moved with it:** `README.md`'s licence paragraph now points at the root `LICENSE` as well, and
+  `docs/upstream.md`'s "where the files are" section says the root `LICENSE` is ours rather than a carried file
+  (the carry's own licence stays at `agentsview/LICENSE`, and `parity`'s ledger is untouched by this: no carried
+  byte moved). `Q-S1-01` is settled in place, with its default and reversal kept as the record of what was
+  considered.
+- **Bounds.** This is the one item in this increment outside the migration itself, taken deliberately and with
+  the owner's letter; it adds one project-owned file, edits one sentence in each of `README.md` and
+  `docs/upstream.md`, and changes nothing else.
+- **Gate on the state this lands in:** `python3 scripts/gate.py` → `GATE: PASS` (nine steps; the numbers are in
+  `artifacts/s1/gate-license-20261123.log` in the task tree).
+  Real numbers from that run, so no reader has to open the log: nine steps PASS, `selftest` **488** cases
+  (unchanged — this pass adds no case), `parity` 5 579 carried identical to the pin and *files seen by git*
+  **5 770** (§9.5's apply-pass measurement read 5 769), `secrets` **191** owned files (that pass read 190),
+  `citations` 36 / 37 / 13 rows. The +1 in each is this section's own new root file; §9.5's quoted block is left
+  as the measurement of the state it names, and this section is the state the increment lands in.
