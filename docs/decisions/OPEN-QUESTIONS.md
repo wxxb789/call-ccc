@@ -3090,8 +3090,10 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   increment.
 - **Reversal:** add the root `LICENSE` (one new, project-owned file; nothing else moves) — or, if the answer is
   (c), open the task and leave the file where it is until then.
-- **Settled by:** the owner's answer to Q2 — **`A`**, 2026-11-23, in the task thread — executed in this
-  increment: root `LICENSE`, 1 074 bytes, sha256 `ffb1006b…`, byte-identical to `agentsview/LICENSE`.
+- **Settled by:** the owner's answers of 2026-11-23 in the task thread — **`A`** (add a project-owned
+  root `LICENSE`, which is what landed: same MIT terms) and then **`B`** on the follow-up (whose name the
+  root file carries: `Copyright (c) 2026 wxxb789`, with `agentsview/LICENSE` left as the pin's). See
+  `docs/evidence/layout-migration-A.md` §11.
 
 ## Q-S1-02 — The Windows leg cannot run `portability`: state the boundary, or teach the runner long paths?
 

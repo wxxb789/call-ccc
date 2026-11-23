@@ -627,19 +627,23 @@ same paragraph.
   no licence file at the root. Filed as `Q-S1-01` in `docs/decisions/OPEN-QUESTIONS.md` with the reversible
   default taken (no file change). The owner answered **A** on 2026-11-23: add a project-owned root `LICENSE`
   with the same MIT text.
-- **What landed:** `LICENSE`, 1 074 bytes, sha256 `ffb1006bf3c32ec8da3ad6c5f693d8516eecb355df848a694332fa13174a77d4`
-  — **byte-identical** to `agentsview/LICENSE` (compared by hash, not by eye), which is what `README.md`'s
-  licence paragraph already claimed ("the same licence, with the upstream copyright notice preserved"). The
-  copyright line therefore still names upstream's holder, deliberately: the repository's own statement is that
-  the notice is preserved, and this record adds no claim of its own about who holds it.
+- **What landed — the file, then its copyright line, both the same day.** The root `LICENSE` was first a
+  byte-identical copy of `agentsview/LICENSE` (1 074 bytes, sha256 `ffb1006bf3c32ec8da3ad6c5f693d8516eecb355df848a694332fa13174a77d4`).
+  The operator then put one follow-up to the owner — whose name the file should carry — and the owner answered
+  **B**: the root file names **this project** (`Copyright (c) 2026 wxxb789`), while `agentsview/LICENSE` keeps
+  upstream's notice **untouched**. The two files therefore differ by exactly that one line; the root file's
+  sha256 is now `cc40eb33b7579cbcb6e17205ad54c2a48c84ac4d1298b549f6fa9d3b6030ff29`. `README.md`'s licence paragraph and `docs/upstream.md`'s pointer were corrected in
+  the same commit. This record replaces its earlier claim that the root file made no statement of its own about
+  the holder — the owner made one, and it is in the file.
 - **What moved with it:** `README.md`'s licence paragraph now points at the root `LICENSE` as well, and
   `docs/upstream.md`'s "where the files are" section says the root `LICENSE` is ours rather than a carried file
   (the carry's own licence stays at `agentsview/LICENSE`, and `parity`'s ledger is untouched by this: no carried
   byte moved). `Q-S1-01` is settled in place, with its default and reversal kept as the record of what was
   considered.
 - **Bounds.** This is the one item in this increment outside the migration itself, taken deliberately and with
-  the owner's letter; it adds one project-owned file, edits one sentence in each of `README.md` and
-  `docs/upstream.md`, and changes nothing else.
+  the owner's letters; it adds one project-owned file, edits one sentence in each of `README.md` and
+  `docs/upstream.md`, and (on the second letter) one line inside the new file. Nothing else moves, and no
+  carried byte is touched: `agentsview/LICENSE` is exactly the pin's.
 - **Gate on the state this lands in:** `python3 scripts/gate.py` → `GATE: PASS` (nine steps; the numbers are in
   `artifacts/s1/gate-license-20261123.log` in the task tree).
   Real numbers from that run, so no reader has to open the log: nine steps PASS, `selftest` **488** cases

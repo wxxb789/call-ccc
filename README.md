@@ -150,5 +150,6 @@ Pi session and an Oh My Pi session, and OpenCode's own import document), and `In
 - Gate, knobs and evidence rules: [`docs/harness.md`](docs/harness.md), [`docs/conventions.md`](docs/conventions.md)
 
 Inherited AgentsView code stays under upstream's MIT licence (see
-[`agentsview/LICENSE`](agentsview/LICENSE), carried with it); the code this project adds is under the
-same licence, with the upstream copyright notice preserved — [`LICENSE`](LICENSE) at the root states it.
+[`agentsview/LICENSE`](agentsview/LICENSE), carried with it, upstream copyright notice preserved); the
+code this project adds is under the same MIT terms, stated by [`LICENSE`](LICENSE) at the root
+(`Copyright (c) 2026 wxxb789`).
