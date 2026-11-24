@@ -3203,3 +3203,30 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   re-shaped onto an artifact that has lines), after goal 0009's oracle lock ends.
 - **Settled by:** the increment that first needs to receipt-identify an artifact with no lines (0009c or
   0009d if their receipt must name one), or an owner sentence.
+
+## Q-0009a-05 — What the disclosure arm reads as the harness's refusal
+
+- **Status:** open (default taken: the arm's PASS requires the harness's own answer to name the planted
+  rollout, below).
+- **Question:** the disclosure arm records "the offline rules accept the artifact / the harness refuses
+  it". A JSON-RPC error answer to `thread/resume` is evidence about *this* artifact only if the harness
+  opened it; an answer naming the requested session id alone (`no session <id>`, `<id> not found`) is
+  what a lookup miss looks like, and the cross-family review round (2026-11-24) found the arm accepting
+  exactly that. Must a refusal name the artifact, or is any error naming the requested id enough?
+- **Options:** (a) require the harness's own words to identify the planted rollout — its file's own name,
+  as the measured answer holds it (`rollout at <path> is empty`, measured on 0.171.0; the file's name is
+  inside that path) (taken); (b) accept any error naming the requested id (the pre-fix behaviour —
+  refused: a store answers a lookup miss without opening the rollout, so the arm's name would claim
+  evidence it never obtained); (c) no error answer counts and only a load of some other session does —
+  refused: the harness's measured answer for this artifact *is* an error, and (c) would leave the arm
+  unable to pass at all.
+- **Default taken:** (a). The arm is this check's own evidence, and evidence that the rollout was read
+  and refused has to identify the rollout; the stub cases pin both directions
+  (`test_an_id_only_lookup_miss_is_not_read_as_the_refusal`,
+  `test_an_error_naming_another_artifact_is_not_read_as_the_refusal`, and the passing arm quoting the
+  measured answer). Not decided here: whether some later surface (a conversion's own verification, a
+  store reader) may read an id-only miss as "the session does not resolve" — that is a product question,
+  not this arm's.
+- **Reversal:** (b) — one increment that restores the id-or-name predicate and re-points the two stub
+  cases; the review round's finding would reopen with it.
+- **Settled by:** the owner, or the increment that gives the harness-answer reading another consumer.

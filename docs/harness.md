@@ -474,11 +474,15 @@ says so.
   one Codex reads or resumes is the binary's own answer — read by the native half above, and shown side
   by side by its **disclosure arm**, which plants the frozen artifact under the scratch home and records
   that the offline rules accept it while the harness refuses it (measured on 0.171.0: `thread/resume`
-  answers `rollout … is empty`). That limit is the re-scope's disclosure, not something this documentation
+  answers `rollout … is empty`) — the refusal read as one only where the harness's own words identify
+  the planted rollout, so an id-only lookup miss is a failed arm rather than a pass. That limit is the
+  re-scope's disclosure, not something this documentation
   can wave away: **the gate never runs the native half** — the native checks are deliberately not gate
   steps — so a green gate says nothing about whether any Codex reader accepts an artifact, and a native
   run records the resolved binary (`codex --version` and its own SHA-256; no version is pinned, the owner
-  follows `latest`) beside every answer it reads. The oracle's verdict line is the last one printed —
+  follows `latest`) beside every answer it reads, while a binary it cannot fingerprint ends the run
+  INCOMPLETE, naming the unreadable half, so no verdict is attributed to a binary its own header could
+  not name. The oracle's verdict line is the last one printed —
   `oracle: PASS` / `oracle: FAIL — …` / `oracle: INCOMPLETE — …` — with exit 0/1/2; its rules and their
   one-sentence statements live in the script's own `ORACLE_RULES`; its committed fixtures are
   `scripts/tests/testdata/codex-oracle/artifact.jsonl` (three JSON objects that model no agent's format)

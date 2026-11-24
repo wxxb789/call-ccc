@@ -52,6 +52,7 @@ import json
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -552,6 +553,10 @@ PROTECTED_CHECKS = ("the source session is unchanged",
 #: host spells paths with.
 PRE_EXISTING_NAME = "rollout-2025-12-31T23-59-00-01a1e000-0000-7000-8000-000000000003.jsonl"
 
+#: The path a case's dangling symlink points at: inside the case's own scratch root, whose parent
+#: exists, so a run that wrote through the link would create this file — which no assertion permits.
+SYMLINK_TARGET_NAME = "caller-symlink-target.jsonl"
+
 #: The words the case's own growth fragment records, so the run has something to find in the *later*
 #: target's document and not in the earlier one. They are the case's, not the committed fixture's: what
 #: this half of the suite pins is that the shipped check reads the fragment it is given and searches the
@@ -636,7 +641,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               unrelated_refusal: bool = False,
               handshake_fails: bool = False,
               probe_accepted: bool = False,
-              version_fails: bool = False
+              probe_lookup_miss: bool = False,
+              probe_other_artifact: bool = False,
+              version_fails: bool = False,
+              codex_digest_unreadable: bool = False,
+              dangling_symlink_at: str | None = None
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
@@ -707,13 +716,21 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
         ``seed_probe`` — and ``seed_unrelated``, the same collision under the unrelated session's own
         name, which the run meets first — writes a caller's own file before ``main``
-        runs — the collisions those guards' refusal paths are about; ``unrelated_refusal`` makes the stub app server
+        runs — the collisions those guards' refusal paths are about; ``dangling_symlink_at``
+        (``"probe"`` or ``"unrelated"``) plants a caller's *dangling symlink* there instead, whose
+        target the run must neither follow nor delete — the collision shape a guard asking ``exists()``
+        misses; ``unrelated_refusal`` makes the stub app server
         answer the arm's resume with a JSON-RPC error that names neither the planted session nor its
-        file (protocol drift, not a refusal); ``handshake_fails`` makes the stub app server never
+        file (protocol drift, not a refusal); ``probe_lookup_miss`` makes it answer an error that names
+        the requested id alone (a lookup miss, which a store answers without opening the rollout);
+        ``probe_other_artifact`` makes it answer a refusal-shaped error naming *another* rollout;
+        ``handshake_fails`` makes the stub app server never
         complete the handshake, so the arm's subject becomes an answer that was never obtained;
         ``probe_accepted`` makes it answer the arm's resume with a thread of the planted session's own,
-        so the arm's subject becomes an answer that accepted the artifact; and ``version_fails`` makes
-        the stub's ``codex --version`` exit non-zero. The run's own stdout and stderr are kept as
+        so the arm's subject becomes an answer that accepted the artifact; ``version_fails`` makes
+        the stub's ``codex --version`` exit non-zero, and ``codex_digest_unreadable`` leaves a
+        directory at the resolved name instead of the stub file, so the binary's digest cannot be
+        read. The run's own stdout and stderr are kept as
         ``self.last_stdout``/``self.last_stderr``, the home it drove as ``self.last_home``, and the
         stub binary it resolved as ``self.last_codex``, so a case can read what the run reported and
         what it left on disk after ``main`` returned.
@@ -746,10 +763,15 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                                                                    "text": GROWTH_ANSWER}]}}) + "\n")
         home = scratch / "codex-home"
         home.mkdir()
-        # The two tools the harness resolves: names it only compares and runs through the stub below,
-        # so no binary has to exist for this case.
+        # The two tools the harness resolves: names it only compares and runs through the stub below.
+        # The Codex path is a real file all the same, because the run digests the binary it resolves:
+        # `codex_digest_unreadable` is the one shape where it is not (a directory under that name).
         codex = str(scratch / "codex")
         go = str(scratch / "go")
+        if codex_digest_unreadable:
+            Path(codex).mkdir()
+        else:
+            Path(codex).write_text("the case's stub codex binary\n")
 
         thread_id = "01a1e000-0000-7000-8000-000000000002"
         second_thread_id = "01a1e000-0000-7000-8000-000000000004"
@@ -775,6 +797,17 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         if seed_unrelated:
             planted.parent.mkdir(parents=True, exist_ok=True)
             planted.write_text("the caller's own file under the unrelated session's name\n")
+        # A caller's *dangling* link at one plant's name: nothing is at that path by `exists()`, so a
+        # guard asking it writes through the link and the cleanup unlinks the caller's own link. The
+        # target sits beside the home with its parent in place, so a write through the link would
+        # create it here rather than fail somewhere else.
+        if dangling_symlink_at is not None:
+            link = {"probe": probe, "unrelated": planted}[dangling_symlink_at]
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                link.symlink_to(scratch / SYMLINK_TARGET_NAME)
+            except (OSError, NotImplementedError):
+                self.skipTest("this host cannot create a symlink")
         # The two reported command lines are rendered the way the conversion's own renderer spells one
         # (`internal/ccc/continue.go`'s ``renderResumeCommand``/``shellQuote``: the environment's value,
         # then every argument word, quoted where a POSIX shell would act on it), because the harness
@@ -947,11 +980,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     if unrelated_refusal:
                         raise NATIVE_CHECK.AppServerErrorResponse(
                             "thread/resume failed: Invalid params: threadId is required")
+                    if probe_lookup_miss:
+                        raise NATIVE_CHECK.AppServerErrorResponse(
+                            f"thread/resume failed: no session {session} is known to this store")
+                    if probe_other_artifact:
+                        raise NATIVE_CHECK.AppServerErrorResponse(
+                            f"thread/resume failed: failed to read session metadata {planted}: "
+                            f"rollout at {planted} is empty")
                     # The disclosure arm's own subject: the loader holds no session for the artifact the
-                    # offline rules accept, and the harness's answer for it is its refusal -- an error
-                    # response to thread/resume, the way the real AppServer reports one.
+                    # offline rules accept, and the harness's answer for it is its refusal — the shape
+                    # the real binary was measured answering (`rollout at <path> is empty`), naming the
+                    # rollout it could not read rather than a session id.
                     raise NATIVE_CHECK.AppServerErrorResponse(
-                        f"thread/resume failed: the case's stub holds no session {session}")
+                        f"thread/resume failed: failed to read thread: thread-store internal error: "
+                        f"failed to read session metadata {probe}: rollout at {probe} is empty")
                 second = session == second_thread_id
                 path = second_installed if second else installed
                 if copy_mutation == ("second load" if second else "first load"):
@@ -1304,17 +1346,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
 
     def test_the_disclosure_arm_is_a_recorded_pass_naming_the_harnesss_refusal(self) -> None:
         """The D3 side-by-side is a check of its own, and this pins its record both ways: the arm runs,
-        its PASS rests on the harness's own refusal — a harness that accepted the artifact is recorded
-        FAIL — and its detail quotes that refusal; a run that stopped recording the arm, or one that
-        recorded it unconditionally, fails here."""
+        its PASS rests on the harness's own refusal — a refusal that names the rollout it could not
+        read — a harness that accepted the artifact is recorded FAIL, and its detail quotes that
+        refusal; a run that stopped recording the arm, or one that recorded it unconditionally, fails
+        here."""
         _, results = self.drive(mutate_during_resume=False)
         state, detail = results.get("the harness refuses an artifact the offline rules accept",
                                     ("missing", ""))
         self.assertEqual(state, "PASS",
                          f"the disclosure arm is not a recorded PASS: {state} — {detail}")
         self.assertIn("the offline rules: green", detail, detail)
-        self.assertIn("the case's stub holds no session", detail,
-                      f"the arm's detail does not name the harness's own refusal: {detail}")
+        probe = self.last_home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
+        self.assertIn(f"rollout at {probe} is empty", detail,
+                      f"the arm's detail does not quote the harness's refusal of the planted rollout: "
+                      f"{detail}")
         _, results = self.drive(mutate_during_resume=False, probe_accepted=True)
         state, detail = results.get("the harness refuses an artifact the offline rules accept",
                                     ("missing", ""))
@@ -1348,17 +1393,69 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                       f"the arm's failure does not quote the harness's own answer: {detail}")
         self.assertEqual(code, 1, f"exit {code} for a run whose disclosure arm failed: {results}")
 
-    def test_a_run_records_the_resolved_binary_and_its_digest(self) -> None:
-        """D3's own line is a record: every run names the binary it resolved — the `--version` answer
-        and the binary's own digest — and answers "unreadable" where either cannot be measured."""
-        self.drive(mutate_during_resume=False)
-        self.assertIn(f"{self.last_codex} (codex-cli 0.test, sha256 unreadable)", self.last_stdout,
-                      "the run did not record the resolved binary's version and its own digest")
-        self.drive(mutate_during_resume=False, version_fails=True)
-        self.assertIn(f"{self.last_codex} (unreadable, sha256 unreadable)", self.last_stdout,
-                      "a run whose `codex --version` failed did not name the version unreadable")
+    def test_an_id_only_lookup_miss_is_not_read_as_the_refusal(self) -> None:
+        """The refusal is evidence about the *artifact*, never an id-only miss.
 
-    def test_a_caller_file_under_the_probes_name_is_refused_without_leaving_a_fabrication(self) -> None:
+        An error answer that names the requested session id alone is a lookup miss: a store can answer
+        it without ever opening the rollout, so it is not the harness saying it read this artifact and
+        refused it. The arm must record its FAIL carrying the harness's own answer, and the run must
+        exit 1 — a predicate that accepted any answer naming the id records a PASS here.
+        """
+        code, results = self.drive(mutate_during_resume=False, probe_lookup_miss=True)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"an id-only lookup miss was recorded as {state}: {detail}")
+        self.assertIn(NATIVE_CHECK.ORACLE_PROBE_ID, detail,
+                      f"the arm's failure does not quote the harness's own answer: {detail}")
+        self.assertEqual(code, 1, f"exit {code} for a run whose disclosure arm failed: {results}")
+
+    def test_an_error_naming_another_artifact_is_not_read_as_the_refusal(self) -> None:
+        """A refusal-shaped error about another rollout is not this artifact's refusal.
+
+        The stub answers the way the real binary does (`rollout at <path> is empty`) but names the
+        home's other planted rollout: the words alone do not establish that *this* artifact was read
+        and refused, so the arm records FAIL naming what the harness's answer did not identify, and
+        the run exits 1.
+        """
+        code, results = self.drive(mutate_during_resume=False, probe_other_artifact=True)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"an error naming another artifact was recorded as {state}: {detail}")
+        self.assertIn(NATIVE_CHECK.UNRELATED_NAME, detail,
+                      f"the arm's failure does not quote the harness's own answer: {detail}")
+        self.assertIn(NATIVE_CHECK.ORACLE_PROBE_NAME, detail,
+                      f"the arm's failure does not say which artifact it asked for: {detail}")
+        self.assertEqual(code, 1, f"exit {code} for a run whose disclosure arm failed: {results}")
+
+    def test_a_run_records_the_resolved_binary_and_its_digest(self) -> None:
+        """D3's own line is a record, not prose: every run names the binary it resolved — the stub's
+        `--version` answer and the digest this case measures from that same file — and a fingerprint
+        the run cannot record (an unreadable `--version`, or a resolved name whose bytes cannot be
+        digested) ends it INCOMPLETE, exit 2, with the reason on stderr, so no check of that run can
+        read as verified against a binary the header could not name."""
+        code, _ = self.drive(mutate_during_resume=False)
+        self.assertEqual(code, 0, f"exit {code} for an intact run: {self.last_stderr}")
+        digest = hashlib.sha256(Path(self.last_codex).read_bytes()).hexdigest()
+        self.assertIn(f"{self.last_codex} (codex-cli 0.test, sha256 {digest})", self.last_stdout,
+                      "the run did not record the resolved binary's version and the digest of the file "
+                      "it drove")
+        for label, arm, fragment in (
+                ("an unreadable --version", {"version_fails": True}, "no --version answer"),
+                ("a resolved name whose bytes cannot be digested",
+                 {"codex_digest_unreadable": True}, "sha256 unreadable")):
+            with self.subTest(arm=label):
+                code, results = self.drive(mutate_during_resume=False, **arm)
+                self.assertEqual(code, 2,
+                                 f"{label}: exit {code}, stdout={self.last_stdout!r}, "
+                                 f"stderr={self.last_stderr!r}")
+                self.assertIn("INCOMPLETE", self.last_stderr, f"{label}: {self.last_stderr}")
+                self.assertIn(fragment, self.last_stderr, f"{label}: {self.last_stderr}")
+                self.assertEqual(results, {},
+                                 f"{label}: a run with no fingerprint recorded checks: {results}")
+
+    def test_a_callers_file_under_the_probes_name_is_refused_without_leaving_a_fabrication(self) -> None:
         """A probe collision plants nothing: the run refuses (exit 2), the caller's own file is left
         exactly as found, and no fabricated session is written into the home — the leak this pins was
         measured when the check ran after the unrelated fabric had already been planted."""
@@ -1370,6 +1467,40 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          "the run did not leave the caller's probe file as it found it")
         self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
                           "the refused run left the fabricated unrelated session in the home")
+
+    def test_a_callers_dangling_symlink_under_a_plants_name_is_a_collision(self) -> None:
+        """A dangling symlink is a collision like any other, never written through or deleted.
+
+        The caller's own link sits under a plant's name with its target not created, so a guard asking
+        ``exists()`` sees nothing: the run must refuse (exit 2) naming the collision, leave the link
+        exactly as it found it, not follow it (the target is not created), and write no fabrication of
+        its own into the home. A guard asking ``exists()`` writes through the link with the plant's own
+        write and unlinks the caller's link in the cleanup instead — on the probe's guard and on the
+        unrelated session's, which is the first the run meets.
+        """
+        for label, at, link_name, other_name in (
+                ("the probe's name", "probe", NATIVE_CHECK.ORACLE_PROBE_NAME,
+                 NATIVE_CHECK.UNRELATED_NAME),
+                ("the unrelated session's name", "unrelated", NATIVE_CHECK.UNRELATED_NAME,
+                 NATIVE_CHECK.ORACLE_PROBE_NAME)):
+            with self.subTest(collision=label):
+                code, _ = self.drive(mutate_during_resume=False, dangling_symlink_at=at)
+                self.assertEqual(code, 2,
+                                 f"exit {code} for the {label} symlink: {self.last_stderr}")
+                self.assertIn("already exists", self.last_stderr,
+                              f"the refusal does not name the {label} collision: {self.last_stderr}")
+                sessions = self.last_home / "sessions" / "2026" / "01" / "01"
+                link = sessions / link_name
+                self.assertTrue(link.is_symlink() and not link.exists(),
+                                f"the run did not leave the caller's dangling {label} link as it found "
+                                f"it: is_symlink={link.is_symlink()}, exists={link.exists()}")
+                target = self.last_home.parent / SYMLINK_TARGET_NAME
+                self.assertFalse(target.exists(),
+                                 f"the run wrote through the caller's {label} link: {target} was created")
+                self.assertFalse((sessions / other_name).is_symlink()
+                                 or (sessions / other_name).exists(),
+                                 f"the refused run left a fabrication of its own in the home: "
+                                 f"{sessions / other_name}")
 
     def test_a_refused_collision_leaves_no_scratch_tree(self) -> None:
         """A refused run owns nothing it created: the collision guards fire before the plants, and the
@@ -1771,6 +1902,28 @@ class CodexArtifactOracle(unittest.TestCase):
                          {("oracle.receipt-integrity", number) for number in (1, 2, 3)},
                          f"the LF anchors were not answered as the anchors they are not: {violations}")
 
+    def test_a_line_feed_moved_is_named_by_the_line_whose_bytes_diverged(self) -> None:
+        """A byte moved between two lines is refused with a line, not only with the file's digest.
+
+        The first line feed replaced by a space leaves the file's size the same and merges the first two
+        lines, so the receipt's anchor count no longer equals the artifact's line count *and* the first
+        line's own bytes diverged. The anchors the two sides still share are compared even on that count
+        mismatch, so the reading names the line the moved byte diverged on; a reading that skipped the
+        comparison whenever the counts differed would report only the whole-file digest and the count,
+        where a reader cannot find the byte — the receipt-integrity line a moved line feed is.
+        """
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        first_feed = data.index(b"\n")
+        moved = data[:first_feed] + b" " + data[first_feed + 1:]
+        self.assertEqual(len(moved), len(data), "the case's own mutation moved the file's size")
+        violations = self.reading(moved, receipt)
+        named = {(violation.rule, violation.line) for violation in violations}
+        self.assertIn(("oracle.receipt-integrity", 1), named,
+                      f"the receipt did not name the line the moved byte diverged on: {violations}")
+        self.assertIn(("oracle.receipt-integrity", 0), named,
+                      f"the count mismatch is no longer reported: {violations}")
+
     def test_the_byte_layer_ends_the_reading(self) -> None:
         """A violation at the byte layer stops the reading — the BOM and a byte that is not UTF-8 are
         `oracle.utf8` alone, never also a line's JSON defect — and dropping that rule hands back a
@@ -1841,6 +1994,26 @@ class CodexArtifactOracle(unittest.TestCase):
                                                                            line.encode("utf-8")))
                 self.assertEqual(violations, [],
                                  f"{label}: a line this rule admits was refused: {violations}")
+
+    def test_a_line_holding_a_big_integer_is_one_json_object_whatever_the_limit(self) -> None:
+        """The line rule reads a number's syntax, never its value: a line carrying a 5,000-digit
+        integer is one JSON object by the rule's own sentence, on this interpreter's default
+        integer-string limit and on one whose limit is lowered under the number's digits, because the
+        reading never converts the digits to an integer. A reading that did would refuse the line with
+        the interpreter's own words here — the same artifact's verdict moving with the interpreter's
+        settings."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        line = b'{"n": ' + b"9" * 5000 + b"}"
+        mutated = NATIVE_CHECK.oracle_replace_line(data, 2, line)
+        self.assertEqual(self.reading(mutated), [],
+                         "a 5,000-digit integer refused a line this rule admits")
+        previous = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(640)
+            self.assertEqual(self.reading(mutated), [],
+                             "the line's verdict moved with the interpreter's digit limit")
+        finally:
+            sys.set_int_max_str_digits(previous)
 
     def test_the_unterminated_tail_is_counted_in_the_artifact_s_own_bytes(self) -> None:
         """`oracle.whole-lines` states a byte count: an unterminated record holding multi-byte text is

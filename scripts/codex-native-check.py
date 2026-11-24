@@ -734,11 +734,13 @@ def resume_answer(codex: str, home: Path, thread_id: str, planted: Path) -> tupl
     words either way.
 
     A JSON-RPC error answer to `thread/resume` counts as the harness's refusal of the artifact only
-    where its own words name the planted session or its file: any error answer can be protocol drift or
-    a thread-store failure, so an answer that names neither is recorded as a failure in its own words
-    rather than as the refusal this check's name claims. A handshake, timeout or close failure is no
-    answer at all, and is likewise *not* a refusal, because a run that never obtained an answer may not
-    record the refusal its name claims.
+    where its own words identify the planted rollout — its file's own name, the way the real binary
+    names the rollout it could not read (`rollout at <path> is empty`) — because an answer that merely
+    names the requested session id is a lookup miss a store can answer without opening the rollout, and
+    any error answer can be protocol drift or a thread-store failure: an answer identifying the artifact
+    in neither way is recorded as a failure in its own words rather than as the refusal this check's
+    name claims. A handshake, timeout or close failure is no answer at all, and is likewise *not* a
+    refusal, because a run that never obtained an answer may not record the refusal its name claims.
     """
     server = AppServer(codex, home)
     try:
@@ -749,10 +751,10 @@ def resume_answer(codex: str, home: Path, thread_id: str, planted: Path) -> tupl
         try:
             loaded = server.call("thread/resume", {"threadId": thread_id})
         except AppServerErrorResponse as answer:
-            if thread_id in str(answer) or planted.name in str(answer):
+            if planted.name in str(answer):
                 return True, f"thread/resume answered: {answer}"
-            return False, (f"the harness answered an error that names neither the planted session "
-                           f"{thread_id} nor its file {planted.name}: {answer}")
+            return False, (f"the harness answered an error that does not name the planted artifact "
+                           f"{planted.name} it was asked for: {answer}")
         except RuntimeError as failure:
             return False, f"the harness never answered: {failure}"
     finally:
@@ -987,7 +989,9 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
     """One line per record: every line exactly one JSON object, read the way a strict JSON reader reads
     it — no `NaN`/`Infinity` constant, no repeated member name, no unpaired surrogate escape, and a line
     nested deeper than `ORACLE_NESTING_BOUND` levels refused by this rule's own bound rather than by the
-    reading interpreter's recursion limit."""
+    reading interpreter's recursion limit. Integers are decoded as their written digits (`parse_int`),
+    never converted to interpreter integers, so the interpreter's integer-string conversion limit
+    decides no line's verdict either."""
     records: list[tuple[int, dict]] = []
     violations: list[Violation] = []
     for number, line in enumerate(oracle_lines(text), start=1):
@@ -997,8 +1001,10 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
                                         f"the bound this rule states"))
             continue
         try:
+            # `parse_int=str`: the recorded digit string, never an interpreter integer, so a line's
+            # verdict is its own bytes rather than the reading interpreter's digit-limit setting.
             value = json.loads(line, parse_constant=_reject_json_constant,
-                               object_pairs_hook=_oracle_unique_members)
+                               object_pairs_hook=_oracle_unique_members, parse_int=str)
         except _OracleMemberNameRepeated:
             violations.append(Violation("oracle.jsonl-objects", number,
                                         "one member name is written twice in one object, so two JSON "
@@ -1067,11 +1073,14 @@ def oracle_receipt_violations(data: bytes, receipt: object) -> list[Violation]:
     if not isinstance(anchors, list) or not anchors:
         violations.append(Violation("oracle.receipt-integrity", 0,
                                     "a receipt names one anchor per line, as a non-empty array"))
-    elif len(anchors) != len(spans):
-        violations.append(Violation("oracle.receipt-integrity", 0,
-                                    f"the receipt names {len(anchors)} line(s), the artifact holds "
-                                    f"{len(spans)}"))
     else:
+        if len(anchors) != len(spans):
+            violations.append(Violation("oracle.receipt-integrity", 0,
+                                        f"the receipt names {len(anchors)} line(s), the artifact holds "
+                                        f"{len(spans)}"))
+        # The anchors the two sides share are compared even where the counts differ, so the first line
+        # whose bytes diverged is still named: a moved delimiter byte changes the count too, and a
+        # count-only report leaves a reader no line to look at.
         for number, (anchor, span) in enumerate(zip(anchors, spans), start=1):
             stated = oracle_digest_stated(anchor.get("sha256") if isinstance(anchor, dict) else None)
             if stated is None:
@@ -1516,11 +1525,22 @@ def main(argv: list[str] | None = None) -> int:
               f"target harness installed", file=sys.stderr)
         return 2
     # The Codex judgment is this binary's, and the owner's answer is to follow `latest`: no version is
-    # pinned anywhere, so each run records what it resolved — the binary's own words and its digest.
-    codex_digest = sha256(Path(codex)) if Path(codex).is_file() else "unreadable"
+    # pinned anywhere, so each run records what it resolved — the binary's own words and its digest. A
+    # fingerprint this run cannot record ends it INCOMPLETE: every verdict below is attributed to the
+    # binary the header names, and a run whose header cannot name it has none to attribute.
+    try:
+        codex_digest = sha256(Path(codex))
+    except OSError:
+        codex_digest = ""
     version = run([codex, "--version"], cwd=repo)
     codex_version = (last_meaningful_line(version.stdout or version.stderr)
-                     if version.returncode == 0 else "unreadable")
+                     if version.returncode == 0 else "")
+    if not codex_digest or not codex_version:
+        print(f"the resolved binary {codex} cannot be fingerprinted: "
+              f"{codex_version or 'no --version answer'}, sha256 {codex_digest or 'unreadable'} — this "
+              f"harness records the binary it verified against, so the run is INCOMPLETE",
+              file=sys.stderr)
+        return 2
     oracle_fixture_path = ORACLE_FIXTURE_ROOT / ORACLE_ARTIFACT
     if not oracle_fixture_path.is_file():
         print(f"the committed oracle fixture {oracle_fixture_path} is missing: the disclosure arm "
@@ -1567,7 +1587,10 @@ def main(argv: list[str] | None = None) -> int:
     sessions.mkdir(parents=True, exist_ok=True)
     unrelated = sessions / UNRELATED_NAME
     probe = sessions / ORACLE_PROBE_NAME
-    if unrelated.exists():
+    # Both guards ask by the path's own presence (`lexists`), never whether it resolves: a caller's
+    # *dangling* symlink here is a collision like any other, so no plant write follows a caller's link
+    # and the cleanup below only ever removes what this run created at a path it found empty.
+    if os.path.lexists(unrelated):
         print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
         if args.keep:
@@ -1575,7 +1598,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             shutil.rmtree(scratch, ignore_errors=True)
         return 2
-    if probe.exists():
+    if os.path.lexists(probe):
         print(f"{probe} already exists: this harness plants the oracle's frozen artifact under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
         if args.keep:

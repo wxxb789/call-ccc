@@ -20,8 +20,8 @@ step or CI workflow changes.
 | --- | --- |
 | `oracle.utf8` | valid UTF-8 text, opening with no byte-order mark |
 | `oracle.whole-lines` | whole lines: the empty artifact, or bytes whose final byte is a line feed |
-| `oracle.jsonl-objects` | every line exactly one JSON object, member names unique, no unpaired surrogate escape; a line nested deeper than 256 levels is refused by the rule's own stated bound, not by the reading interpreter's recursion limit |
-| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
+| `oracle.jsonl-objects` | every line exactly one JSON object, member names unique, no unpaired surrogate escape; a line nested deeper than 256 levels is refused by the rule's own stated bound, not by the reading interpreter's recursion limit; integers are read by their written digits, never converted, so the interpreter's integer-conversion limit decides no verdict |
+| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes — the anchors the two sides share are compared even where the counts differ, so a moved delimiter byte still names the line it diverged on (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
 
 The reading is staged (the byte layer first: a violation there ends the reading), the receipt is a
 committed document beside the frozen artifact (`scripts/tests/testdata/codex-oracle/artifact.jsonl` +
@@ -34,7 +34,11 @@ records the resolved binary (the owner's answer — follow `latest`, no version 
 records `codex --version` and the binary's own SHA-256), and the **disclosure arm** plants the oracle's
 frozen artifact in the scratch home and records the pair *offline rules accept / the harness refuses*,
 with the harness's own words in the detail. The loader, resume and turn checks are the file's own,
-unchanged; nothing in Python restates what they answer.
+unchanged; nothing in Python restates what they answer. The 2026-11-24 cross-family review round
+tightened three of the native half's own readings: a plant path holding anything — a caller's *dangling*
+symlink included — is a collision, never written through or removed; the refusal is the harness's only
+where its own words identify the planted rollout; and a binary fingerprint the run cannot record ends it
+INCOMPLETE instead of a pass (§3, §6).
 
 ## 2. The deletion list
 
@@ -85,9 +89,10 @@ sessions of 17/12/17 lines and two manifest receipts). Added in their place: `ar
 JSON objects, no agent's format) and the `artifact-receipt.json` that names its bytes.
 
 **Test cases.** The attempt's oracle class held 37 cases over the deleted rules, its manifest receipts
-and its reader model; the reduced file's oracle class holds 21 at this head — 18 through the
-simplify-apply round, one more from the review-fix round (the nesting bound's at-or-under/past-it case),
-and the two the second fix pass added (the string-literal skip's own case and the byte-counted tail) —
+and its reader model; the reduced file's oracle class held 21 at the head the second fix pass left — 18
+through the simplify-apply round, one more from the review-fix round (the nesting bound's
+at-or-under/past-it case), and the two the second fix pass added (the string-literal skip's own case and
+the byte-counted tail) —
 all of them over the survivors and the premise's two negative spaces (D2's container-valid-but-not-Codex
 artifact, D2's vocabulary scan), the
 D1 corpus read through the shipped command, and D4's two receipt cases. The rest of the suite
@@ -106,7 +111,15 @@ string-literal skip (`test_a_bracket_inside_a_string_is_not_nesting`) and the by
 (`test_the_unterminated_tail_is_counted_in_the_artifact_s_own_bytes`) — and, in
 `ProtectedArtifactsAfterNativeVerification`, `test_a_refused_collision_leaves_no_scratch_tree` (which the
 third pass mirrored for the unrelated-name guard, alongside
-`test_a_keep_run_that_refuses_keeps_and_names_its_scratch_tree`), so the narrowed suite's count is 64.
+`test_a_keep_run_that_refuses_keeps_and_names_its_scratch_tree`), so the narrowed suite's count moved
+59 → 62 → 64 across the second and third passes. The cross-family review round of 2026-11-24
+added five more: in the oracle class, the big-integer host-independence case
+(`test_a_line_holding_a_big_integer_is_one_json_object_whatever_the_limit`) and the moved-delimiter case
+(`test_a_line_feed_moved_is_named_by_the_line_whose_bytes_diverged`), its count moving 21 → 23, and, in
+`ProtectedArtifactsAfterNativeVerification`, the dangling-symlink collision case, the id-only
+lookup-miss case and the other-artifact case, its count moving 23 → 25 — beside the resolved-binary case
+rewritten to pin the digest of the executable this run drove and two INCOMPLETE arms — so the oracle
+class holds 23 at this head and the narrowed suite's count is 69.
 
 **Documentation.** The attempt's `docs/harness.md` paragraph describing sixteen rules and the manifest
 receipt is replaced by the reduced oracle's description plus the disclosure (§4); its AGENTS.md edits of
@@ -145,20 +158,34 @@ oracle: oracle.utf8 — the artifact is not UTF-8 text: byte 0xff at offset 0
 oracle: FAIL — 0 record(s), 1 violation(s)                                    # exit 1
 $ python3 scripts/codex-native-check.py --validate /tmp/no-such-file.jsonl
 oracle: INCOMPLETE — the artifact /tmp/no-such-file.jsonl cannot be read: …   # exit 2
+$ python3 scripts/codex-native-check.py --validate /tmp/big.jsonl             # {"n": <5,000 nines>}
+oracle: PASS — 3 record(s)                                                    # exit 0
+$ python3 scripts/codex-native-check.py --validate /tmp/moved-lf.jsonl \
+    --receipt scripts/tests/testdata/codex-oracle/artifact-receipt.json       # the first LF became a space
+oracle: oracle.receipt-integrity — the receipt names 3 line(s), the artifact holds 2
+oracle: oracle.receipt-integrity — the receipt states sha256 855ccca11024…, the artifact's bytes are sha256 7f78a8778a84…
+oracle: oracle.jsonl-objects line 1 — not JSON (Extra data at column 63)
+oracle: oracle.receipt-integrity line 1 — the line's bytes are sha256 f4c89b83a897…, the receipt's anchor is sha256 402041d785c7…
+oracle: oracle.receipt-integrity line 2 — the line's bytes are sha256 ac584578fe8b…, the receipt's anchor is sha256 9371e97c2450…
+oracle: FAIL — 1 record(s), 5 violation(s)                                    # exit 1
 ```
+
+The last two commands are this round's reading fixes, re-measured: a 5,000-digit integer is one JSON
+object on an interpreter whose conversion limit is 4,300 digits, and a moved delimiter byte is refused
+with the line whose bytes diverged rather than only with the file's digest and the count.
 
 **The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §6):
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 64 tests in 0.348s
+Ran 69 tests in 0.380s
 OK
 ```
 
 The 48 → 57 movement is the simplify-apply round's nine added cases, 57 → 59 the review-fix round's two,
 59 → 62 the second fix pass's three and 62 → 64 the third pass's two (the unrelated-name guard's own
-refusal path and the `--keep` refusal) (§2 names them); the run above is the third pass's own, on the
-tree this record describes.
+refusal path and the `--keep` refusal), and 64 → 69 the cross-family review round's five (§2 names
+them); the run above is that round's own, on the tree this record describes.
 
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
 exit 0). The header it records — this run's resolved binary, the same two values the run's `--json`
@@ -172,8 +199,16 @@ its counts — `27 check(s) passed, 0 failed, 2 skipped` (the two skips are the 
 model access and no prompt flag was passed) — and the disclosure arm's own line, verbatim:
 
 ```
-PASS: the harness refuses an artifact the offline rules accept — the offline rules: green; thread/resume answered: thread/resume failed: failed to read thread: thread-store internal error: failed to read session metadata …/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl: rollout at … is empty
+PASS: the harness refuses an artifact the offline rules accept — the offline rules: green; thread/resume answered: thread/resume failed: failed to read thread: thread-store internal error: failed to read session metadata /tmp/ccc-native-check-1f6dkw64/codex-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl: rollout at /tmp/ccc-native-check-1f6dkw64/codex-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl is empty
 ```
+
+This round reads two things about that arm and this run more strictly. The arm's PASS requires the
+harness's own answer to name the planted rollout — this answer does, by the path it could not read — so
+an answer naming the requested id alone is a failed arm
+(`test_an_id_only_lookup_miss_is_not_read_as_the_refusal`), never a pass. And the binary's fingerprint
+is a precondition of the whole run: a `--version` or digest that cannot be read ends it INCOMPLETE (exit
+2) naming the unreadable half, instead of a header holding the word `unreadable` and a run that still
+passes (`test_a_run_records_the_resolved_binary_and_its_digest` pins both arms and the measured digest).
 
 **The absent-binary arm** (D3's other half — the reason, and a non-zero exit, never a guess):
 
@@ -211,7 +246,7 @@ no other native check). Each is **kept** with its condition unchanged:
 
 No new entry is owed: the surviving rules judge no foreign format, and the arm that asks the binary is a
 read of the binary's own answer, which is what the ownership rule asks for. The defaults this increment
-took where the brief was silent are recorded in `docs/decisions/OPEN-QUESTIONS.md` as `Q-0009a-01`–`04`.
+took where the brief was silent are recorded in `docs/decisions/OPEN-QUESTIONS.md` as `Q-0009a-01`–`05`.
 
 ## 6. The gate, on the state this increment leaves
 
@@ -225,19 +260,19 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go module=ccc 
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 519 tests in 9.443s (rc=0)
+  PASS     selftest    Ran 524 tests in 9.836s (rc=0)
   PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5775 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
-  PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 2 row(s) verified
+  PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
   PASS     secrets     no leaks found in 228 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 16 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's two rows against the Go tests they cite. The table is the third fix pass's
+which verifies the goal's row against the Go test it cites. The table is the cross-family review round's
 own run, on the tree that holds this record, and it printed the unqualified `GATE: PASS`; its `selftest`
-count moved 503 → 519 across the four rounds (§2 and §3 name the eleven added cases, the second pass's
-three and the third pass's two), and its `secrets` count (228 files) is this worktree's own scope — the
+count moved 503 → 519 across the four rounds and → 524 in the cross-family round (§2 and §3 name the
+added cases), and its `secrets` count (228 files) is this worktree's own scope — the
 count includes untracked `__pycache__`/`bin` files — not a change the round made.
 
 ## What this record does not claim

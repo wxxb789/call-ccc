@@ -51,11 +51,22 @@
 #         the container, and the frozen surface names no foreign format's vocabulary) — and
 #         `test_the_corpus_arms_run_the_shipped_command_not_the_python_validator` (the arms are the
 #         command's own).
+#   oracle.receipt-integrity — no Go test reads the frozen oracle artifact or its receipt: the case a
+#         row once cited here (`TestFixturesMatchTheirGenerator`) hashes the Go fixture and growth trees
+#         (`ccc/internal/ccc/fixtures_test.go`), never `scripts/tests/testdata/codex-oracle/`, so
+#         nothing it does can move when the artifact, its receipt or their comparison changes. D4's
+#         discharge is the required `selftest` step itself — the surface that reads those files: the
+#         receipt cases named under `oracle.utf8, oracle.whole-lines` above (D4's verify case and its
+#         second case, and the anchors-are-bytes case), plus
+#         `test_a_line_feed_moved_is_named_by_the_line_whose_bytes_diverged` (a moved delimiter byte
+#         changes the anchor count and the shared anchors are still compared, so the line it diverged
+#         on is named), beside the `oracle.receipt-integrity` mutations of `--selftest-mutations`
+#         (7 pairs: a changed byte under the unchanged receipt, another whole-file digest, a wrong byte
+#         count, no lines, one line fewer, another line's anchor, and a receipt that is not an object).
 #   D3 — the Codex judgment is the binary's: the native check's own unflagged run is a native harness
 #         run, not a gate step; its verdicts (and the disclosure arm, where the harness refuses the
 #         artifact the offline rules accept) are quoted in §3 of docs/evidence/0009a-native-oracle-v2.md.
 #   D5 — the deletions are declared: §2 of the same record carries the deleted rule list with each
 #         rule's fixture and mutations, derived from PR #19's diff; the gate cannot hold a deleted rule.
 rule_id	test	package	artifact
-oracle.jsonl-objects	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle-v2.md §2-§3 (the writer's own bytes: each written line decodes as exactly one JSON object — the case's `decodeRollout` fails a line that is not one — the framing clause the rule states; the member-name-uniqueness and unpaired-surrogate clauses have no Go producer and are the corpus mutations `a line holding a member name twice` and `a line holding an unpaired surrogate escape`)
-oracle.receipt-integrity	TestFixturesMatchTheirGenerator	./internal/ccc	0009a-native-oracle-v2.md §2-§3 (a committed artifact is identified by the SHA-256 of its own bytes: the case digests the committed fixture tree and compares it file by file with what the generator writes, and a changed byte moves a digest — the frozen-bytes clause the rule states; the receipt document and its comparison have no Go producer and are the corpus's `oracle.receipt-integrity` mutations)
+oracle.jsonl-objects	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle-v2.md §2-§3 (the writer's own bytes: each written line decodes as exactly one JSON object — the case's `decodeRollout` fails a line that is not one — the framing clause the rule states; the member-name-uniqueness and unpaired-surrogate clauses have no Go producer and are the corpus mutations `a line holding a member name twice` and `a line holding an unpaired surrogate escape`; the integer-reading clause — a line's integers are read by their digits and never converted, so the interpreter's digit limit decides no verdict — has no Go producer either and is pinned by the selftest step's `test_a_line_holding_a_big_integer_is_one_json_object_whatever_the_limit`)
