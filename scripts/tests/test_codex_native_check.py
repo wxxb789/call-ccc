@@ -635,6 +635,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               keep: bool = False,
               unrelated_refusal: bool = False,
               handshake_fails: bool = False,
+              probe_accepted: bool = False,
               version_fails: bool = False
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
@@ -709,11 +710,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         runs — the collisions those guards' refusal paths are about; ``unrelated_refusal`` makes the stub app server
         answer the arm's resume with a JSON-RPC error that names neither the planted session nor its
         file (protocol drift, not a refusal); ``handshake_fails`` makes the stub app server never
-        complete the handshake, so the arm's subject becomes an answer that was never obtained; and
-        ``version_fails`` makes the stub's ``codex --version`` exit non-zero. The run's own stdout
-        and stderr are kept as ``self.last_stdout``/``self.last_stderr``, and the home it drove as
-        ``self.last_home``, so a case can read what the run reported and what it left on disk after
-        ``main`` returned.
+        complete the handshake, so the arm's subject becomes an answer that was never obtained;
+        ``probe_accepted`` makes it answer the arm's resume with a thread of the planted session's own,
+        so the arm's subject becomes an answer that accepted the artifact; and ``version_fails`` makes
+        the stub's ``codex --version`` exit non-zero. The run's own stdout and stderr are kept as
+        ``self.last_stdout``/``self.last_stderr``, the home it drove as ``self.last_home``, and the
+        stub binary it resolved as ``self.last_codex``, so a case can read what the run reported and
+        what it left on disk after ``main`` returned.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -938,6 +941,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         raise AssertionError(
                             f"the disclosure arm's refusal was asked for session {session}, but the "
                             f"planted artifact {probe} does not hold the frozen fixture's own bytes")
+                    if probe_accepted:
+                        return {"thread": {"id": session, "path": str(probe),
+                                           "historyMode": "paginated", "cwd": "/tmp"}}
                     if unrelated_refusal:
                         raise NATIVE_CHECK.AppServerErrorResponse(
                             "thread/resume failed: Invalid params: threadId is required")
@@ -989,6 +995,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
         del NATIVE_CHECK.RESULTS[before:]
         self.last_stdout, self.last_stderr, self.last_home = stdout.getvalue(), stderr.getvalue(), home
+        self.last_codex = codex
         return code, results
 
     def test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison(self) -> None:
@@ -1296,9 +1303,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                                  f"exit {code} for a run whose JSONL check failed: {results}")
 
     def test_the_disclosure_arm_is_a_recorded_pass_naming_the_harnesss_refusal(self) -> None:
-        """The D3 side-by-side is a check of its own, and this pins its record: the arm runs, its PASS
-        rests on the harness's own refusal, and its detail quotes that refusal — a run that stopped
-        recording the arm, or one that recorded it unconditionally, fails here."""
+        """The D3 side-by-side is a check of its own, and this pins its record both ways: the arm runs,
+        its PASS rests on the harness's own refusal — a harness that accepted the artifact is recorded
+        FAIL — and its detail quotes that refusal; a run that stopped recording the arm, or one that
+        recorded it unconditionally, fails here."""
         _, results = self.drive(mutate_during_resume=False)
         state, detail = results.get("the harness refuses an artifact the offline rules accept",
                                     ("missing", ""))
@@ -1307,6 +1315,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("the offline rules: green", detail, detail)
         self.assertIn("the case's stub holds no session", detail,
                       f"the arm's detail does not name the harness's own refusal: {detail}")
+        _, results = self.drive(mutate_during_resume=False, probe_accepted=True)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"a harness that accepted the artifact was recorded as {state}: {detail}")
+        self.assertIn("thread/resume answered", detail,
+                      f"the arm's FAIL does not carry the harness's own answer: {detail}")
 
     def test_a_handshake_that_never_answered_is_not_read_as_a_refusal(self) -> None:
         """No answer is not a refusal: with the handshake never completing, the disclosure arm records
@@ -1337,10 +1352,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         """D3's own line is a record: every run names the binary it resolved — the `--version` answer
         and the binary's own digest — and answers "unreadable" where either cannot be measured."""
         self.drive(mutate_during_resume=False)
-        self.assertIn("codex-cli 0.test, sha256 unreadable", self.last_stdout,
+        self.assertIn(f"{self.last_codex} (codex-cli 0.test, sha256 unreadable)", self.last_stdout,
                       "the run did not record the resolved binary's version and its own digest")
         self.drive(mutate_during_resume=False, version_fails=True)
-        self.assertIn("(unreadable, sha256 unreadable)", self.last_stdout,
+        self.assertIn(f"{self.last_codex} (unreadable, sha256 unreadable)", self.last_stdout,
                       "a run whose `codex --version` failed did not name the version unreadable")
 
     def test_a_caller_file_under_the_probes_name_is_refused_without_leaving_a_fabrication(self) -> None:
@@ -1522,6 +1537,36 @@ class RecordStatesTheChecksOwnOrder(unittest.TestCase):
                          f"script takes it after the first session's turn and before the second's")
 
 
+def decoded_json_words(data: bytes) -> list[str]:
+    """Every string a JSON reader answers for one fixture's own bytes: member names and string leaves
+    at every depth, so a token spelled with JSON escapes is read as the word it decodes to rather than
+    as its spelling. An artifact is one document per line and a receipt one document; a line no reader
+    can read contributes no words, and its own spelling stays in the scanned surface."""
+    text = data.decode("utf-8", "replace")
+    roots: list[object] = []
+    try:
+        roots.append(json.loads(text))
+    except ValueError:
+        for line in text.splitlines():
+            try:
+                roots.append(json.loads(line))
+            except ValueError:
+                continue
+    words: list[str] = []
+    stack: list[object] = list(roots)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            words.append(item)
+        elif isinstance(item, dict):
+            for name, member in item.items():
+                words.append(name)
+                stack.append(member)
+        elif isinstance(item, list):
+            stack.extend(item)
+    return words
+
+
 class CodexArtifactOracle(unittest.TestCase):
     """The offline oracle (goal 0009a, re-scoped): the container and receipt rules, their corpus, and
     the `--validate` mode.
@@ -1586,9 +1631,10 @@ class CodexArtifactOracle(unittest.TestCase):
     def test_the_registry_holds_no_foreign_format_vocabulary(self) -> None:
         """D2, over the frozen surface: the id set is the four container/receipt rules, and nothing the
         registry, its sentences, the corpus's labels, the fixtures' names or the fixtures' own bytes
-        spell is a foreign format's vocabulary — the committed artifact and receipt are read, not just
-        named, so a Codex-shaped fixture reappearing fails here (the claim the fixture root's own comment
-        makes)."""
+        spell — as raw text or as the words their JSON documents decode to — is a foreign format's
+        vocabulary, so a Codex-shaped fixture reappearing fails here however it spells a token (a JSON
+        escape included): the committed artifact and receipt are read as JSON, not just named (the claim
+        the fixture root's own comment makes)."""
         self.assertEqual(sorted(NATIVE_CHECK.ORACLE_RULES),
                          ["oracle.jsonl-objects", "oracle.receipt-integrity", "oracle.utf8",
                           "oracle.whole-lines"])
@@ -1600,6 +1646,9 @@ class CodexArtifactOracle(unittest.TestCase):
                            + [NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT]
                            + [NATIVE_CHECK.oracle_fixture(name).decode("utf-8", "replace")
                               for name in (NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT)]
+                           + [word
+                              for name in (NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT)
+                              for word in decoded_json_words(NATIVE_CHECK.oracle_fixture(name))]
                            ).lower()
         found = sorted(token for token in self.FOREIGN_VOCABULARY if token in surface)
         self.assertEqual(found, [],
@@ -1704,15 +1753,23 @@ class CodexArtifactOracle(unittest.TestCase):
                          "a receipt recomputed for the mutated bytes is not green")
 
     def test_the_receipt_compares_the_lines_own_bytes(self) -> None:
-        """The anchors are bytes, not the JSON value a reader makes of them: a carriage return the
-        container rules read as whitespace is a byte the receipt sees, and the artifact is otherwise
-        clean, so the comparison is what refuses it."""
+        """The receipt's comparison is over the artifact's bytes, not the JSON values a reader makes of
+        them: a carriage return the container rules read as whitespace is a byte the receipt refuses —
+        under the committed receipt, and under one whose count and digest are the CRLF bytes' own while
+        its anchors state the LF lines', so an anchor comparison that normalized line endings, and
+        nothing else, would accept the second."""
         data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT).replace(b"\n", b"\r\n")
         receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
         self.assertEqual(self.reading(data), [], "the CRLF artifact is the container's own defect")
         violations = self.reading(data, receipt)
         self.assertEqual({violation.rule for violation in violations}, {"oracle.receipt-integrity"},
                          f"the receipt did not answer the changed bytes: {violations}")
+        lf_anchors = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                      "lines": receipt["lines"]}
+        violations = self.reading(data, lf_anchors)
+        self.assertEqual({(violation.rule, violation.line) for violation in violations},
+                         {("oracle.receipt-integrity", number) for number in (1, 2, 3)},
+                         f"the LF anchors were not answered as the anchors they are not: {violations}")
 
     def test_the_byte_layer_ends_the_reading(self) -> None:
         """A violation at the byte layer stops the reading — the BOM and a byte that is not UTF-8 are
