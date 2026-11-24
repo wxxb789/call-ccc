@@ -631,6 +631,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               copy_mutation: str | None = None,
               repeat_turn: bool = False,
               seed_probe: bool = False,
+              seed_unrelated: bool = False,
+              keep: bool = False,
               unrelated_refusal: bool = False,
               handshake_fails: bool = False,
               version_fails: bool = False
@@ -702,8 +704,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         to put a mutation in; their cases assert both turns' own checks passed, so a window whose turn was
         skipped cannot read as one whose mutation nothing caught.
 
-        ``seed_probe`` writes a caller's own file under the disclosure arm's probe name before ``main``
-        runs — the collision its refusal path is about; ``unrelated_refusal`` makes the stub app server
+        ``seed_probe`` — and ``seed_unrelated``, the same collision under the unrelated session's own
+        name, which the run meets first — writes a caller's own file before ``main``
+        runs — the collisions those guards' refusal paths are about; ``unrelated_refusal`` makes the stub app server
         answer the arm's resume with a JSON-RPC error that names neither the planted session nor its
         file (protocol drift, not a refusal); ``handshake_fails`` makes the stub app server never
         complete the handshake, so the arm's subject becomes an answer that was never obtained; and
@@ -764,6 +767,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         if seed_probe:
             probe.parent.mkdir(parents=True, exist_ok=True)
             probe.write_text("the caller's own file under the probe's name\n")
+        # The same collision under the unrelated session's own name: that guard is the *first* one the
+        # run meets, so its refusal path is reached (and its cleanup exercised) only from here.
+        if seed_unrelated:
+            planted.parent.mkdir(parents=True, exist_ok=True)
+            planted.write_text("the caller's own file under the unrelated session's name\n")
         # The two reported command lines are rendered the way the conversion's own renderer spells one
         # (`internal/ccc/continue.go`'s ``renderResumeCommand``/``shellQuote``: the environment's value,
         # then every argument word, quoted where a POSIX shell would act on it), because the harness
@@ -976,7 +984,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 mock.patch("shutil.which", fake_which), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
-                                      "--codex-home", str(home)] + prompts)
+                                      "--codex-home", str(home)] + prompts
+                                     + (["--keep"] if keep else []))
         results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
         del NATIVE_CHECK.RESULTS[before:]
         self.last_stdout, self.last_stderr, self.last_home = stdout.getvalue(), stderr.getvalue(), home
@@ -1364,6 +1373,48 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             left = sorted(entry.name for entry in Path(temp_root).iterdir()
                           if entry.name.startswith(prefix) and len(entry.name) == len(prefix) + 8)
             self.assertEqual(left, [], f"the refused run left its scratch tree(s) behind: {left}")
+
+    def test_a_refused_unrelated_collision_also_leaves_no_scratch_tree(self) -> None:
+        """The other refusal path: the unrelated-name guard is the first the run meets, and it removes
+        this run's scratch tree as well, so neither collision leaks a mkdtemp tree — and the caller's own
+        file is left as it was found, in this path too."""
+        with tempfile.TemporaryDirectory() as temp_root:
+            previous = tempfile.tempdir
+            tempfile.tempdir = temp_root
+            try:
+                code, _ = self.drive(mutate_during_resume=False, seed_unrelated=True)
+            finally:
+                tempfile.tempdir = previous
+            self.assertEqual(code, 2,
+                             f"exit {code} for an unrelated-name collision: {self.last_stderr}")
+            planted = (self.last_home / "sessions" / "2026" / "01" / "01"
+                       / NATIVE_CHECK.UNRELATED_NAME)
+            self.assertEqual(planted.read_text(),
+                             "the caller's own file under the unrelated session's name\n",
+                             "the run did not leave the caller's colliding file as it found it")
+            prefix = "ccc-native-check-"
+            left = sorted(entry.name for entry in Path(temp_root).iterdir()
+                          if entry.name.startswith(prefix) and len(entry.name) == len(prefix) + 8)
+            self.assertEqual(left, [], f"the refused run left its scratch tree(s) behind: {left}")
+
+    def test_a_keep_run_that_refuses_keeps_and_names_its_scratch_tree(self) -> None:
+        """`--keep` is honoured on the refusal paths too: a collision with `--keep` leaves this run's tree
+        where the run says it is, rather than removing it silently — the promise the flag's own help
+        makes, and the promise the refusal would otherwise break."""
+        with tempfile.TemporaryDirectory() as temp_root:
+            previous = tempfile.tempdir
+            tempfile.tempdir = temp_root
+            try:
+                code, _ = self.drive(mutate_during_resume=False, seed_probe=True, keep=True)
+            finally:
+                tempfile.tempdir = previous
+            self.assertEqual(code, 2, f"exit {code} for a probe collision: {self.last_stderr}")
+            prefix = "ccc-native-check-"
+            kept = sorted(entry.name for entry in Path(temp_root).iterdir()
+                          if entry.name.startswith(prefix) and len(entry.name) == len(prefix) + 8)
+            self.assertEqual(len(kept), 1, f"a --keep run removed its own scratch tree: {kept}")
+            self.assertIn(f"kept {temp_root}", self.last_stdout,
+                          f"the refusal does not say where the tree it kept is: {self.last_stdout!r}")
 
     def test_the_planted_probe_is_removed_when_the_run_ends(self) -> None:
         """The disclosure arm's planted artifact belongs to the run: a normal run removes it from the

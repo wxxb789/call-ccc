@@ -1570,12 +1570,18 @@ def main(argv: list[str] | None = None) -> int:
     if unrelated.exists():
         print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
-        shutil.rmtree(scratch, ignore_errors=True)
+        if args.keep:
+            print(f"kept {scratch} and {home}")
+        else:
+            shutil.rmtree(scratch, ignore_errors=True)
         return 2
     if probe.exists():
         print(f"{probe} already exists: this harness plants the oracle's frozen artifact under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
-        shutil.rmtree(scratch, ignore_errors=True)
+        if args.keep:
+            print(f"kept {scratch} and {home}")
+        else:
+            shutil.rmtree(scratch, ignore_errors=True)
         return 2
     try:
         unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
