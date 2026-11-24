@@ -21,7 +21,7 @@ step or CI workflow changes.
 | `oracle.utf8` | valid UTF-8 text, opening with no byte-order mark |
 | `oracle.whole-lines` | whole lines: the empty artifact, or bytes whose final byte is a line feed |
 | `oracle.jsonl-objects` | every line exactly one JSON object, member names unique, no unpaired surrogate escape |
-| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes |
+| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
 
 The reading is staged (the byte layer first: a violation there ends the reading), the receipt is a
 committed document beside the frozen artifact (`scripts/tests/testdata/codex-oracle/artifact.jsonl` +
@@ -85,14 +85,18 @@ sessions of 17/12/17 lines and two manifest receipts). Added in their place: `ar
 JSON objects, no agent's format) and the `artifact-receipt.json` that names its bytes.
 
 **Test cases.** The attempt's oracle class held 37 cases over the deleted rules, its manifest receipts
-and its reader model; the reduced file's oracle class holds 14, all of them over the survivors and the
+and its reader model; the reduced file's oracle class holds 18, all of them over the survivors and the
 premise's two negative spaces (D2's container-valid-but-not-Codex artifact, D2's vocabulary scan), the
 D1 corpus read through the shipped command, and D4's two receipt cases. The rest of the suite
 (`ProtectedArtifactsAfterNativeVerification` and the file's other classes) is the base's own; two of its
 stubs gained the two host probes this increment's native half now makes (`codex --version`, and the
 loader's refusal of a session it does not hold — the disclosure arm's own subject), and one existing
 assertion ("1 pre-existing session file(s)") stands because the disclosure arm's planted file, like the
-unrelated session, is the harness's own fabrication rather than the caller's.
+unrelated session, is the harness's own fabrication rather than the caller's. The 2026-11-24
+simplify-apply round added four refusal-arm cases to the oracle class (its count moves 14 → 18) and five
+to `ProtectedArtifactsAfterNativeVerification` (the disclosure arm's own record, the handshake that must
+not read as a refusal, the resolved binary's version and digest, the planted probe's refusal and its
+removal), so the narrowed suite's count moves 48 → 57.
 
 **Documentation.** The attempt's `docs/harness.md` paragraph describing sixteen rules and the manifest
 receipt is replaced by the reduced oracle's description plus the disclosure (§4); its AGENTS.md edits of
@@ -125,7 +129,7 @@ oracle: oracle.receipt-integrity — the receipt states sha256 855ccca11024…, 
 oracle: oracle.receipt-integrity line 3 — the line's bytes are sha256 595a00578a9b…, the receipt's anchor is sha256 ac584578fe8b…
 oracle: FAIL — 3 record(s), 2 violation(s)                                    # exit 1
 $ python3 scripts/codex-native-check.py --validate /tmp/any.jsonl             # {"anything":"goes"} ×3
-oracle: PASS — 2 record(s)                                                    # exit 0
+oracle: PASS — 3 record(s)                                                    # exit 0
 $ python3 scripts/codex-native-check.py --validate /tmp/bad.jsonl             # a 0xFF first byte
 oracle: oracle.utf8 — the artifact is not UTF-8 text: byte 0xff at offset 0
 oracle: FAIL — 0 record(s), 1 violation(s)                                    # exit 1
@@ -133,17 +137,20 @@ $ python3 scripts/codex-native-check.py --validate /tmp/no-such-file.jsonl
 oracle: INCOMPLETE — the artifact /tmp/no-such-file.jsonl cannot be read: …   # exit 2
 ```
 
-**The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §5):
+**The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §6):
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 48 tests in 0.181s
+Ran 57 tests in 0.219s
 OK
 ```
 
+The 48 → 57 movement is the simplify-apply round's nine added cases (§2 names them); the run above is
+that round's own, on the tree this record describes.
+
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
-exit 0). The header it records — this run's resolved binary, which is the only place a version is named,
-because the owner's answer is to follow `latest`:
+exit 0). The header it records — this run's resolved binary, the same two values the run's `--json`
+payload carries as `codex_version`/`codex_sha256`, because the owner's answer is to follow `latest`:
 
 ```
 codex:       /home/azureuser/.local/share/mise/installs/codex/latest/bin/codex (codex-cli 0.171.0, sha256 b76a027d6b210f9a8da7aaf321dd235c700f0ef7a794d4a5314b9af6c134f0f0)
@@ -206,18 +213,20 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go module=ccc 
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 503 tests in 13.932s (rc=0)
+  PASS     selftest    Ran 512 tests in 12.087s (rc=0)
   PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5775 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 2 row(s) verified
-  PASS     secrets     no leaks found in 195 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets     no leaks found in 201 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 16 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's two rows against the Go tests they cite. The table is the run taken before this
-§6 was written; it was repeated afterwards on the tree that holds this record, and printed the same
-unqualified `GATE: PASS`.
+which verifies the goal's two rows against the Go tests they cite. The table is the simplify-apply
+round's own run, on the tree that holds this record, and it printed the unqualified `GATE: PASS`; its
+`selftest` count moved 503 → 512 with that round's nine added cases (the same nine §2 and §3 name), and
+its `secrets` count (201 files) is this worktree's own scope — the count includes untracked
+`__pycache__`/`bin` files — not a change the round made.
 
 ## What this record does not claim
 

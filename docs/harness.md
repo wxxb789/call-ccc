@@ -466,7 +466,9 @@ says so.
   bytes whose final byte is a line feed), `oracle.jsonl-objects` (every line exactly one JSON object,
   member names unique, no unpaired surrogate escape) and `oracle.receipt-integrity` (a receipt's byte
   count, whole-file SHA-256 and one anchor per line — the line's own bytes, line feed included — read
-  against the artifact: a mutated byte is refused, named by the line it moved). The byte layer is read
+  against the artifact: a mutated byte is refused, named by the line it moved; a receipt covers an
+  artifact holding at least one line, so the empty artifact is not receipt-identified by this rule). The
+  byte layer is read
   first, and a violation there ends the reading. **It holds no Codex knowledge**: whether an artifact is
   one Codex reads or resumes is the binary's own answer — read by the native half above, and shown side
   by side by its **disclosure arm**, which plants the frozen artifact under the scratch home and records

@@ -3175,3 +3175,31 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Reversal:** one increment that adds the skip clause and the mutation that turns its fixture red; the
   rule's sentence and the corpus move together.
 - **Settled by:** an increment whose artifacts legitimately carry blank lines, or an owner sentence.
+
+## Q-0009a-04 — The empty artifact is not receipt-identified
+
+- **Status:** open (default taken: the non-empty `lines` clause stays, and the rule sentence now states
+  it; the oracle is frozen for the rest of goal 0009, so a change is that lock's own subject until goal
+  0009 ends, an ordinary increment after).
+- **Question:** the container blesses the empty artifact (`oracle.whole-lines` names "the empty
+  artifact", pinned by `CodexArtifactOracle.test_the_line_rule_is_the_whole_lines_own`), while
+  `oracle.receipt-integrity` refuses an empty `lines` array even when the artifact holds no lines — so
+  the one artifact a receipt could faithfully name with `lines: []` cannot be receipt-identified at all.
+  Is that the intended reading, or should the anchors clause admit `lines: []` exactly when the artifact
+  has no lines?
+- **Options:** (a) keep the non-empty requirement and state it in the rule's sentence (taken; the
+  wording arm of the 2026-11-24 simplify-apply round); (b) allow `lines: []` iff the artifact holds no
+  lines — the code path is `oracle_receipt_violations`'s anchors clause in
+  `scripts/codex-native-check.py`, and the corpus's `a receipt naming no lines` pair would move with it;
+  (c) forbid the empty artifact in the container — refused: `oracle.whole-lines` names it on purpose.
+- **Default taken:** (a). The narrow reading is the one the frozen corpus pins (all seven
+  `oracle.receipt-integrity` pairs are about a non-empty artifact), and a mechanism change under the
+  oracle lock would move both sides of "the implementation satisfies the oracle" at once — the
+  co-mutation the lock exists to prevent. The cost is stated rather than silent: a later increment that
+  re-identifies fixtures by receipt (0009c/0009d's manifest receipt) cannot do so for a zero-line
+  artifact.
+- **Reversal:** (b) — one increment that changes the anchors clause and the corpus together (a
+  `lines: []`-over-a-zero-line-artifact pair becomes positive, and `a receipt naming no lines` is
+  re-shaped onto an artifact that has lines), after goal 0009's oracle lock ends.
+- **Settled by:** the increment that first needs to receipt-identify an artifact with no lines (0009c or
+  0009d if their receipt must name one), or an owner sentence.

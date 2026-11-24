@@ -24,16 +24,17 @@ the Codex knowledge from Python rather than repairing it.
 1. **Survives** — only format-agnostic rules:
    - the container: one JSON object per line, JSONL line discipline (whole terminated lines, no
      byte-order mark), the file's own UTF-8 validity;
-   - receipt integrity: a frozen artifact's byte count and whole-file SHA-256 plus one anchor per line,
-     so the fixture is re-identified by its bytes in a later increment and a mutated byte is named by
-     the line it moved;
+   - receipt integrity: a frozen artifact's byte count and whole-file SHA-256 plus one anchor per line
+     (a receipt covers an artifact holding at least one line; the empty artifact is not
+     receipt-identified by this rule), so the fixture is re-identified by its bytes in a later increment
+     and a mutated byte is named by the line it moved;
    - the registry's own closure: the declared rule set equals the mutated rule set
      (`--selftest-mutations`).
 2. **Deleted** — every rule whose subject is a Codex member, event vocabulary, record shape or replay
    ordering, with its fixtures and mutations. The list is derived by **reading PR #19's diff**
    (`git diff 8989d2c..archive/0009a-pre-rescope`) — one entry per rule, named by its id, its positive
    fixture and each of its mutations — and lands in the evidence record in full.
-3. **The Codex judgment is the pinned `codex` binary's** — the native check runs the binary against an
+3. **The Codex judgment is the installed `codex` binary's** — the native check runs the binary against an
    artifact and reports *its* answer (load / resume / refusal); where the binary is absent the check
    prints the reason and exits non-zero (exit 2 today). No Python restatement of the loader anywhere.
    The owner's answer stands: follow `latest` (no version re-pin), and every native run records the
@@ -56,7 +57,7 @@ digest, and the disclosure arm below.
 | `oracle.utf8` | the artifact's bytes are valid UTF-8 text and its first bytes are no byte-order mark |
 | `oracle.whole-lines` | the artifact's bytes are whole lines: the empty artifact, or bytes whose final byte is a line feed — an artifact whose last bytes are an unterminated record is refused |
 | `oracle.jsonl-objects` | every non-empty line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer |
-| `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved |
+| `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule |
 
 **Reading is staged.** The byte layer is read first (`oracle.utf8`): a violation there ends the reading,
 because nothing beyond the bytes can be read at all — the same fail-closed stance the superseded checker

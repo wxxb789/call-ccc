@@ -629,7 +629,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               second_boundary: str | None = None,
               include_growth_in_second: bool = True,
               copy_mutation: str | None = None,
-              repeat_turn: bool = False
+              repeat_turn: bool = False,
+              seed_probe: bool = False,
+              handshake_fails: bool = False,
+              version_fails: bool = False
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
@@ -697,6 +700,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         comparisons. The two ``* turn`` windows require it, because a turn that did not run has no window
         to put a mutation in; their cases assert both turns' own checks passed, so a window whose turn was
         skipped cannot read as one whose mutation nothing caught.
+
+        ``seed_probe`` writes a caller's own file under the disclosure arm's probe name before ``main``
+        runs — the collision its refusal path is about; ``handshake_fails`` makes the stub app server
+        never complete the handshake, so the arm's subject becomes an answer that was never obtained;
+        and ``version_fails`` makes the stub's ``codex --version`` exit non-zero. The run's own stdout
+        and stderr are kept as ``self.last_stdout``/``self.last_stderr``, and the home it drove as
+        ``self.last_home``, so a case can read what the run reported and what it left on disk after
+        ``main`` returned.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -744,6 +755,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         pre_existing = home / "sessions" / "2025" / "12" / "31" / PRE_EXISTING_NAME
         pre_existing.parent.mkdir(parents=True)
         pre_existing.write_text(json.dumps({"type": "session_meta"}) + "\n")
+        # The caller's own file under the probe's name: the run must refuse to overwrite it, plant
+        # nothing of its own, and leave this file exactly as it found it.
+        probe = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
+        if seed_probe:
+            probe.parent.mkdir(parents=True, exist_ok=True)
+            probe.write_text("the caller's own file under the probe's name\n")
         # The two reported command lines are rendered the way the conversion's own renderer spells one
         # (`internal/ccc/continue.go`'s ``renderResumeCommand``/``shellQuote``: the environment's value,
         # then every argument word, quoted where a POSIX shell would act on it), because the harness
@@ -835,6 +852,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             if command[0] == go:
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if command[0] == codex and command[1:] == ["--version"]:
+                if version_fails:
+                    return subprocess.CompletedProcess(cmd, 1, "", "codex-cli 0.test is broken\n")
                 return subprocess.CompletedProcess(cmd, 0, "codex-cli 0.test\n", "")
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
                 if command[1] == "continue":
@@ -894,7 +913,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 self.binary, self.home = binary, home
 
             def handshake(self) -> None:
-                pass
+                if handshake_fails:
+                    raise RuntimeError("the case's stub never answered initialize")
 
             def call(self, method: str, params: dict) -> dict:
                 if method != "thread/resume":
@@ -902,8 +922,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 session = str(params.get("threadId"))
                 if session not in (thread_id, second_thread_id):
                     # The disclosure arm's own subject: the loader holds no session for the artifact the
-                    # offline rules accept, and the harness's answer for it is its refusal.
-                    raise RuntimeError(f"the case's stub holds no session {session}")
+                    # offline rules accept, and the harness's answer for it is its refusal -- an error
+                    # response to thread/resume, the way the real AppServer reports one.
+                    raise NATIVE_CHECK.AppServerErrorResponse(
+                        f"thread/resume failed: the case's stub holds no session {session}")
                 second = session == second_thread_id
                 path = second_installed if second else installed
                 if copy_mutation == ("second load" if second else "first load"):
@@ -935,15 +957,17 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             # turn each), so a case can put its mutation in either turn's own window.
             prompts += ["--repeat-resume-prompt", "answer only from this conversation"]
         before = len(NATIVE_CHECK.RESULTS)
+        stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
                 mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer), \
                 mock.patch.object(NATIVE_CHECK, "thread_view", fake_thread_view), \
                 mock.patch("shutil.which", fake_which), \
-                contextlib.redirect_stdout(io.StringIO()):
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
                                       "--codex-home", str(home)] + prompts)
         results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
         del NATIVE_CHECK.RESULTS[before:]
+        self.last_stdout, self.last_stderr, self.last_home = stdout.getvalue(), stderr.getvalue(), home
         return code, results
 
     def test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison(self) -> None:
@@ -1249,6 +1273,63 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 self.assertIn(f"line 2 is not a JSON object, but {kind}", detail, detail)
                 self.assertEqual(code, 1,
                                  f"exit {code} for a run whose JSONL check failed: {results}")
+
+    def test_the_disclosure_arm_is_a_recorded_pass_naming_the_harnesss_refusal(self) -> None:
+        """The D3 side-by-side is a check of its own, and this pins its record: the arm runs, its PASS
+        rests on the harness's own refusal, and its detail quotes that refusal — a run that stopped
+        recording the arm, or one that recorded it unconditionally, fails here."""
+        _, results = self.drive(mutate_during_resume=False)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "PASS",
+                         f"the disclosure arm is not a recorded PASS: {state} — {detail}")
+        self.assertIn("the offline rules: green", detail, detail)
+        self.assertIn("the case's stub holds no session", detail,
+                      f"the arm's detail does not name the harness's own refusal: {detail}")
+
+    def test_a_handshake_that_never_answered_is_not_read_as_a_refusal(self) -> None:
+        """No answer is not a refusal: with the handshake never completing, the disclosure arm records
+        its FAIL in the failure's own words — a run that read the missing answer as the refusal its
+        name claims fails here."""
+        _, results = self.drive(mutate_during_resume=False, handshake_fails=True)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"a handshake that never answered was recorded as {state}: {detail}")
+        self.assertIn("the case's stub never answered initialize", detail, detail)
+
+    def test_a_run_records_the_resolved_binary_and_its_digest(self) -> None:
+        """D3's own line is a record: every run names the binary it resolved — the `--version` answer
+        and the binary's own digest — and answers "unreadable" where either cannot be measured."""
+        self.drive(mutate_during_resume=False)
+        self.assertIn("codex-cli 0.test, sha256 unreadable", self.last_stdout,
+                      "the run did not record the resolved binary's version and its own digest")
+        self.drive(mutate_during_resume=False, version_fails=True)
+        self.assertIn("(unreadable, sha256 unreadable)", self.last_stdout,
+                      "a run whose `codex --version` failed did not name the version unreadable")
+
+    def test_a_caller_file_under_the_probes_name_is_refused_without_leaving_a_fabrication(self) -> None:
+        """A probe collision plants nothing: the run refuses (exit 2), the caller's own file is left
+        exactly as found, and no fabricated session is written into the home — the leak this pins was
+        measured when the check ran after the unrelated fabric had already been planted."""
+        code, _ = self.drive(mutate_during_resume=False, seed_probe=True)
+        self.assertEqual(code, 2, f"exit {code} for a probe collision: {self.last_stderr}")
+        sessions = self.last_home / "sessions" / "2026" / "01" / "01"
+        self.assertEqual((sessions / NATIVE_CHECK.ORACLE_PROBE_NAME).read_text(),
+                         "the caller's own file under the probe's name\n",
+                         "the run did not leave the caller's probe file as it found it")
+        self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
+                         "the refused run left the fabricated unrelated session in the home")
+
+    def test_the_planted_probe_is_removed_when_the_run_ends(self) -> None:
+        """The disclosure arm's planted artifact belongs to the run: a normal run removes it from the
+        home, so neither a caller's home nor this case's own keeps a fabricated file."""
+        code, _ = self.drive(mutate_during_resume=False)
+        self.assertEqual(code, 0, f"exit {code} for an intact run: {self.last_stderr}")
+        probe = (self.last_home / "sessions" / "2026" / "01" / "01"
+                 / NATIVE_CHECK.ORACLE_PROBE_NAME)
+        self.assertFalse(probe.exists(),
+                         "the run ended with the disclosure arm's planted artifact still in the home")
 
 
 #: This increment's evidence record: the file whose §6 and §13 passages state where the native check
@@ -1612,6 +1693,57 @@ class CodexArtifactOracle(unittest.TestCase):
                 NATIVE_CHECK.main(["--receipt", str(receipt)])
             self.assertEqual(refusal.exception.code, 2,
                              f"--receipt without --validate was accepted: {errors.getvalue()}")
+
+    def test_selftest_mutations_refuses_corpus_flags(self) -> None:
+        """The corpus mode takes none of the single-artifact flags: an invocation that also names
+        ``--validate``, ``--receipt`` or ``--disable-rule`` is refused (exit 2) rather than running the
+        corpus under a flag it would ignore."""
+        for flags in (["--validate", "any-artifact.jsonl"], ["--receipt", "any-receipt.json"],
+                      ["--disable-rule", "oracle.utf8"]):
+            with self.subTest(flags=flags):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                    NATIVE_CHECK.main(["--selftest-mutations", *flags])
+                self.assertEqual(refusal.exception.code, 2, errors.getvalue())
+                self.assertIn("--selftest-mutations runs the whole corpus", errors.getvalue())
+
+    def test_disable_rule_without_validate_is_refused(self) -> None:
+        """``--disable-rule`` turns a rule off for ``--validate``, which names the artifact the reading
+        is about: without one there is no reading to modify, and the invocation is refused (exit 2)."""
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+            NATIVE_CHECK.main(["--disable-rule", "oracle.utf8"])
+        self.assertEqual(refusal.exception.code, 2, errors.getvalue())
+        self.assertIn("--disable-rule turns a rule off for --validate", errors.getvalue())
+
+    def test_a_receipt_that_is_not_utf8_text_is_incomplete(self) -> None:
+        """A receipt whose bytes are not UTF-8 text cannot be read as one: exit 2 with the reason,
+        never a pass — the arm a receipt with a stray byte lands on."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            artifact = root / "artifact.jsonl"
+            artifact.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT))
+            not_text = root / "not-text.receipt.json"
+            not_text.write_bytes(b"\xff\xfe{}")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(not_text)])
+            self.assertEqual(code, 2, errors.getvalue())
+            self.assertIn("is not UTF-8 text", errors.getvalue())
+
+    def test_a_receipt_that_cannot_be_read_is_incomplete(self) -> None:
+        """A receipt path that cannot be opened is an input that cannot be read, the same way: exit 2
+        with the reason on stderr, never a pass."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            artifact = root / "artifact.jsonl"
+            artifact.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT))
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact),
+                                          "--receipt", str(root / "absent-receipt.json")])
+            self.assertEqual(code, 2, errors.getvalue())
+            self.assertIn("cannot be read", errors.getvalue())
 
     def test_disable_rule_turns_exactly_one_rule_off(self) -> None:
         """`--disable-rule` drops exactly the named rule's violations, through the shipped command: the

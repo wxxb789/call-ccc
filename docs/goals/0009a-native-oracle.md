@@ -5,7 +5,7 @@ acceptance.** The hold of 2026-11-21 is over, and its superseded sections (`Inte
 `Done when`) were **replaced, not reactivated** — the held text is in git history, and the superseded
 attempt (PR #19, sixteen review rounds, closed unmerged) is preserved at tag `archive/0009a-pre-rescope`.
 The oracle this goal freezes is the **reduced** one below: read-only for the rest of goal 0009 (the
-oracle lock), with the Codex judgment owned by the pinned `codex` binary.
+oracle lock), with the Codex judgment owned by the installed `codex` binary.
 **Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md);
 the decomposition's rationale, the two cross-family consults it came from, and the per-increment proof
 obligations are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md). The re-scope's
@@ -21,11 +21,13 @@ tree); this increment's plan and evidence are
 The native oracle is frozen **with no foreign-format knowledge in Python**. The offline half keeps only
 rules that are format-agnostic — **the container**: one JSON object per line, whole terminated UTF-8
 lines, no byte-order mark; **receipt integrity**: a frozen artifact's byte count, whole-file SHA-256 and
-one anchor per line, so a fixture is re-identified by its bytes in a later increment and a mutated byte
-is named by the line it moved; and **the rule registry's own closure**: the declared rule set equals the
-mutated rule set, executed by `--selftest-mutations`. **The Codex well-formedness and replay judgment
-belongs to the `codex` binary itself**: a native check runs the binary against an artifact and reports
-*its* answer (load / resume / refusal), and where the binary is absent the check prints the reason and
+one anchor per line (a receipt covers an artifact holding at least one line; the empty artifact is not
+receipt-identified by this rule), so a fixture is re-identified by its bytes in a later increment and a
+mutated byte is named by the line it moved; and **the rule registry's own closure**: the declared rule
+set equals the mutated rule set, executed by `--selftest-mutations`. **The Codex well-formedness and
+replay judgment belongs to the `codex` binary itself**: a native check runs the binary against an
+artifact and reports *its* answer (load / resume / refusal), and where the binary is absent the check
+prints the reason and
 exits non-zero — never a guess, never a Python restatement of the loader. Once merged, the oracle file is
 **read-only for the rest of goal 0009**; the conductor's oracle-lock signal enforces that over the
 reduced file.

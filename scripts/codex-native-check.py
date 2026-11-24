@@ -458,6 +458,11 @@ def drain_diagnostics(stream: Iterable[str], retained: collections.deque[str]) -
         pass
 
 
+class AppServerErrorResponse(RuntimeError):
+    """The app server answered one call with a JSON-RPC error: the harness refused that call, which is a
+    different fact from a handshake, timeout or close failure, where no answer was obtained."""
+
+
 class AppServer:
     """A minimal client for the target's own app-server protocol over stdio.
 
@@ -543,7 +548,7 @@ class AppServer:
             if message.get("id") != request_id:
                 continue  # a notification (a warning, a status change): not this call's answer
             if "error" in message:
-                raise RuntimeError(f"{method} failed: {message['error'].get('message')}")
+                raise AppServerErrorResponse(f"{method} failed: {message['error'].get('message')}")
             return message.get("result") or {}
 
     def notify(self, method: str, params: dict) -> None:
@@ -738,20 +743,30 @@ def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
 
 
 def resume_answer(codex: str, home: Path, thread_id: str) -> tuple[bool, str]:
-    """The target harness's own answer for one thread id in its store: whether it answered a session
-    with that id, and its own words either way (a refusal carries its diagnostics)."""
+    """The target harness's own answer for one artifact: whether it refused the session, and its own
+    words either way.
+
+    A JSON-RPC error answer to `thread/resume` is the harness's refusal of the artifact. A handshake,
+    timeout or close failure is no answer at all: it is reported in its own words and is *not* a
+    refusal, because a run that never obtained an answer may not record the refusal its name claims.
+    """
     server = AppServer(codex, home)
     try:
-        server.handshake()
-        loaded = server.call("thread/resume", {"threadId": thread_id})
-        thread = loaded.get("thread") or {}
-        return thread.get("id") == thread_id, (f"thread/resume answered {thread.get('id')} "
-                                               f"[{thread.get('historyMode')}] "
-                                               f"path={thread.get('path')}")
-    except RuntimeError as failure:
-        return False, f"thread/resume answered: {failure}"
+        try:
+            server.handshake()
+        except RuntimeError as failure:
+            return False, f"the harness never answered: {failure}"
+        try:
+            loaded = server.call("thread/resume", {"threadId": thread_id})
+        except AppServerErrorResponse as refusal:
+            return True, f"thread/resume answered: {refusal}"
+        except RuntimeError as failure:
+            return False, f"the harness never answered: {failure}"
     finally:
         server.close()
+    thread = loaded.get("thread") or {}
+    return False, (f"thread/resume answered {thread.get('id')} [{thread.get('historyMode')}] "
+                   f"path={thread.get('path')}")
 
 
 def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> list[str]:
@@ -788,25 +803,6 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
         print("   ", line)
 
 
-# ===================================================================================================
-# The frozen artifact oracle (goal 0009a, re-scoped): the container, receipt integrity, closure.
-#
-# The offline half asks only what an artifact's own bytes can answer: whether they are the JSONL
-# container this route writes — whole UTF-8 lines, one JSON object per line — and, where a receipt is
-# handed in, whether they are the frozen bytes that receipt names. Whether an artifact is one Codex
-# reads or resumes is the binary's own answer (the native checks above read it); nothing here models it,
-# so an artifact these rules accept is not thereby one any Codex reader can read — the disclosure the
-# goal file, this increment's evidence record and docs/harness.md state.
-#
-# This section, the rule table and `--validate` are read-only for the rest of goal 0009 (the oracle
-# lock): a fix round that moves this checker alongside production code moves both sides of "the
-# implementation satisfies the oracle" at once, which is the co-mutation goal 0009's first attempt ended
-# for (`docs/plans/0009-decomposition.md`). After goal 0009 a change is an ordinary increment: add the
-# rule and the mutation that turns its fixture red — `--selftest-mutations` asserts `ORACLE_RULES` and
-# `ORACLE_MUTATIONS` are one closed set, so a rule without a red fixture, and a mutation naming no rule,
-# both fail.
-# ===================================================================================================
-
 #: Every rule the offline oracle states: rule id → the sentence it states. The ids are this report's own
 #: vocabulary and the keys of `ORACLE_MUTATIONS`, which `--selftest-mutations` asserts to be in
 #: bijection with this table.
@@ -825,7 +821,8 @@ ORACLE_RULES: dict[str, str] = {
         "a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per "
         "line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt "
         "whose statements do not match the artifact's bytes is refused, naming the line a changed byte "
-        "moved",
+        "moved; a receipt covers an artifact holding at least one line, so the empty artifact is not "
+        "receipt-identified by this rule",
 }
 
 #: The fixtures the oracle is frozen against: one artifact that models no agent's format, and the
@@ -1150,20 +1147,6 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
     return 0 if not violations else 1
 
 
-# ===================================================================================================
-# The oracle's mutation corpus.
-#
-# `ORACLE_MUTATIONS` pairs every rule id in `ORACLE_RULES` with at least one committed fixture — the
-# frozen artifact and its receipt under `scripts/tests/testdata/codex-oracle/` — and a change that
-# removes exactly that rule from it. `--selftest-mutations` executes the closed equality over the
-# shipped command's own `--validate`/`--receipt`/`--disable-rule` path: for every declared id, the
-# positive fixture passes, the mutated one fails citing that rule alone, and the same bytes pass with
-# that rule disabled. The corpus writes nothing anywhere: each mutated pair is materialized under one
-# scratch directory, read back, and removed when the run ends. A mutation whose subject the fixture no
-# longer holds raises rather than editing nothing — a case that silently mutated nothing would read as a
-# rule nothing can break.
-# ===================================================================================================
-
 class OracleMutation(NamedTuple):
     """One negative fixture: the label a failure report names, the artifact it mutates, the receipt it
     hands in (the committed one, a mutated one, or none) and the change itself."""
@@ -1406,7 +1389,9 @@ def oracle_mutation_selftest() -> int:
 
     One line per fixture pair says its three arms held; a failure names the rule and what disagreed, and
     the exit code is 0 only when every arm of every pair held. The run creates one scratch directory and
-    removes it again; it writes nothing outside it and touches no fixture.
+    removes it again; it writes nothing outside it and touches no fixture. A mutation whose subject the
+    fixture no longer holds raises rather than editing nothing — a case that silently mutated nothing
+    would read as a rule nothing can break.
     """
     failures: list[str] = []
     declared, mutated = set(ORACLE_RULES), set(ORACLE_MUTATIONS)
@@ -1565,17 +1550,17 @@ def main(argv: list[str] | None = None) -> int:
     sessions = home / "sessions" / "2026" / "01" / "01"
     sessions.mkdir(parents=True, exist_ok=True)
     unrelated = sessions / UNRELATED_NAME
+    probe = sessions / ORACLE_PROBE_NAME
     if unrelated.exists():
         print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
         return 2
-    unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
-                                     "payload": {"id": "unrelated", "cwd": "/tmp"}}) + "\n")
-    probe = sessions / ORACLE_PROBE_NAME
     if probe.exists():
         print(f"{probe} already exists: this harness plants the oracle's frozen artifact under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
         return 2
+    unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
+                                     "payload": {"id": "unrelated", "cwd": "/tmp"}}) + "\n")
     probe.write_bytes(oracle_fixture(ORACLE_ARTIFACT))
 
     print(f"repo:        {repo}")
@@ -1596,8 +1581,9 @@ def main(argv: list[str] | None = None) -> int:
     unrelated_before = sha256(unrelated)
     # Every session the home already held — the caller's own, when --codex-home names a real home — as
     # the dashed id its file name ends with, and its bytes: a conversion must not reuse an id and must
-    # not touch a file it did not write. The two fabrications this harness planted are the run's own and
-    # are answered for where they are planted, so they are not this comparison's subject.
+    # not touch a file it did not write. The two fabrications this harness planted are in the id list
+    # (a conversion must not reuse their ids either) but not in the byte comparison, which is about the
+    # files this run did not write.
     existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in home.rglob("rollout-*.jsonl")]
     existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl")
                          if path not in (unrelated, probe)}
@@ -1614,9 +1600,9 @@ def main(argv: list[str] | None = None) -> int:
         # held only where the harness refused: a binary that accepted the artifact turns this line red,
         # which is the signal that the disclosure below the fold needs re-reading.
         offline = validate_artifact(oracle_fixture(ORACLE_ARTIFACT))
-        loaded, answer = resume_answer(codex, home, ORACLE_PROBE_ID)
+        refused, answer = resume_answer(codex, home, ORACLE_PROBE_ID)
         record("the harness refuses an artifact the offline rules accept",
-               not offline and not loaded,
+               not offline and refused,
                f"the offline rules: {'green' if not offline else sorted({v.rule for v in offline})}; "
                f"{answer}")
 
