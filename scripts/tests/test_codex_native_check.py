@@ -1345,7 +1345,25 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          "the caller's own file under the probe's name\n",
                          "the run did not leave the caller's probe file as it found it")
         self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
-                         "the refused run left the fabricated unrelated session in the home")
+                          "the refused run left the fabricated unrelated session in the home")
+
+    def test_a_refused_collision_leaves_no_scratch_tree(self) -> None:
+        """A refused run owns nothing it created: the collision guards fire before the plants, and the
+        scratch tree this run made for itself — a fixture copy and any seeded configuration — is removed
+        on the refusal path too, so a collision does not leave one mkdtemp tree per attempt in the
+        caller's temp root."""
+        with tempfile.TemporaryDirectory() as temp_root:
+            previous = tempfile.tempdir
+            tempfile.tempdir = temp_root
+            try:
+                code, _ = self.drive(mutate_during_resume=False, seed_probe=True)
+            finally:
+                tempfile.tempdir = previous
+            self.assertEqual(code, 2, f"exit {code} for a probe collision: {self.last_stderr}")
+            prefix = "ccc-native-check-"
+            left = sorted(entry.name for entry in Path(temp_root).iterdir()
+                          if entry.name.startswith(prefix) and len(entry.name) == len(prefix) + 8)
+            self.assertEqual(left, [], f"the refused run left its scratch tree(s) behind: {left}")
 
     def test_the_planted_probe_is_removed_when_the_run_ends(self) -> None:
         """The disclosure arm's planted artifact belongs to the run: a normal run removes it from the
@@ -1683,6 +1701,39 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertIn(f"nested deeper than {bound} levels",
                       NATIVE_CHECK.ORACLE_RULES["oracle.jsonl-objects"],
                       "the rule's own sentence does not state the bound the code enforces")
+
+    def test_a_bracket_inside_a_string_is_not_nesting(self) -> None:
+        """The bound is counted outside the line's string literals: a legitimate container line whose
+        string holds a great many brackets is one object like any other, and a string closed by an
+        escaped quote does not end the scan early. A pre-scan that counted brackets inside a string — or
+        that read an escaped quote as the string's own end — refuses both as "nested deeper than the
+        stated bound", a false refusal of bytes this rule admits."""
+        bound = NATIVE_CHECK.ORACLE_NESTING_BOUND
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        depth_of_brackets = "[" * (bound + 44)
+        shapes = (("brackets inside a string", json.dumps({"note": depth_of_brackets})),
+                  ("a string closed by an escaped quote",
+                   '{"note": "a\\"' + depth_of_brackets + '"}'))
+        for label, line in shapes:
+            with self.subTest(shape=label):
+                violations = self.reading(NATIVE_CHECK.oracle_replace_line(data, 2,
+                                                                           line.encode("utf-8")))
+                self.assertEqual(violations, [],
+                                 f"{label}: a line this rule admits was refused: {violations}")
+
+    def test_the_unterminated_tail_is_counted_in_the_artifact_s_own_bytes(self) -> None:
+        """`oracle.whole-lines` states a byte count: an unterminated record holding multi-byte text is
+        reported by the bytes after the last line feed, not by the decoded characters it happens to
+        hold, so a reader comparing the count against the artifact's own size gets that number."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        fed, _, _ = data.rpartition(b"\n")
+        payload = '{"note": "\u00e9\u00e9"}'.encode("utf-8")
+        violations = self.reading(fed + b"\n" + payload)
+        self.assertEqual([violation.rule for violation in violations], ["oracle.whole-lines"],
+                         f"{violations}")
+        self.assertIn(f"last {len(payload)} byte(s)", violations[0].detail, violations[0].detail)
+        self.assertNotIn(f"last {len(payload.decode('utf-8'))} byte(s)", violations[0].detail,
+                         "the tail is counted in characters, not in the artifact's own bytes")
 
     def test_an_unreadable_input_is_incomplete_never_a_pass(self) -> None:
         """The mode's third outcome: an artifact that cannot be opened, a receipt that is not JSON, and

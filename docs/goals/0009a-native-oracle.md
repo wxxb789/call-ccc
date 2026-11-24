@@ -66,8 +66,8 @@ and pass.
 - **D5 — The deletions are declared**: the deleted rule list, with each rule's fixture and mutation,
   is in the increment's evidence record (§2, derived from PR #19's diff), and
   `docs/core-design/README.md` §2's declared-debt entries for this area (`Q-0005-18`, `Q-0005-20`,
-  `Q-0003-12`, `Q-0008-10`, `Q-0005-19`) were re-read and kept with their conditions (this increment
-  touches no Go file and no other native check).
+  `Q-0003-12`, `Q-0008-10`, `Q-0005-19`, `Q-0007-13`) were re-read and kept with their conditions (this
+  increment touches no Go file and no other native check).
 
 ## Non-scope
 

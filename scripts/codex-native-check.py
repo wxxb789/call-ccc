@@ -954,7 +954,8 @@ def oracle_whole_lines(text: str) -> list[Violation]:
     """`oracle.whole-lines`: the bytes after the artifact's last line feed, where there are any."""
     if not text or text.endswith("\n"):
         return []
-    tail = len(text) - text.rfind("\n") - 1
+    raw = text.encode("utf-8")
+    tail = len(raw) - raw.rfind(b"\n") - 1
     return [Violation("oracle.whole-lines", len(oracle_lines(text)),
                       f"the artifact's last {tail} byte(s) are a record without its line feed")]
 
@@ -1569,10 +1570,12 @@ def main(argv: list[str] | None = None) -> int:
     if unrelated.exists():
         print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
+        shutil.rmtree(scratch, ignore_errors=True)
         return 2
     if probe.exists():
         print(f"{probe} already exists: this harness plants the oracle's frozen artifact under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
+        shutil.rmtree(scratch, ignore_errors=True)
         return 2
     try:
         unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",

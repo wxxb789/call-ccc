@@ -108,7 +108,7 @@ would be re-read.
   the receipt (two cases: verify, and verify-after-mutation).
 - **D5** — the deletions are declared: the deleted rule list, with each rule's fixture and mutation, is
   in this increment's evidence; and `docs/core-design/README.md` §2's declared-debt entries
-  (`Q-0005-18`, `Q-0005-20`, `Q-0003-12`, `Q-0008-10`, `Q-0005-19`) are re-read and either kept with
+  (`Q-0005-18`, `Q-0005-20`, `Q-0003-12`, `Q-0008-10`, `Q-0005-19`, `Q-0007-13`) are re-read and either kept with
   their conditions or retired. This increment touches none of those arms (no Go change, no other
   native check), so each is **kept**, and the re-read is recorded.
 

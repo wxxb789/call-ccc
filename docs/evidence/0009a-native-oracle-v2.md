@@ -85,8 +85,11 @@ sessions of 17/12/17 lines and two manifest receipts). Added in their place: `ar
 JSON objects, no agent's format) and the `artifact-receipt.json` that names its bytes.
 
 **Test cases.** The attempt's oracle class held 37 cases over the deleted rules, its manifest receipts
-and its reader model; the reduced file's oracle class holds 18, all of them over the survivors and the
-premise's two negative spaces (D2's container-valid-but-not-Codex artifact, D2's vocabulary scan), the
+and its reader model; the reduced file's oracle class holds 21 at this head — 18 through the
+simplify-apply round, the nesting-bound pair the review-fix round added, and the two the second fix
+pass added (the string-literal skip's own case and the byte-counted tail) — all of them over the
+survivors and the premise's two negative spaces (D2's container-valid-but-not-Codex artifact, D2's
+vocabulary scan), the
 D1 corpus read through the shipped command, and D4's two receipt cases. The rest of the suite
 (`ProtectedArtifactsAfterNativeVerification` and the file's other classes) is the base's own; two of its
 stubs gained the two host probes this increment's native half now makes (`codex --version`, and the
@@ -143,13 +146,13 @@ oracle: INCOMPLETE — the artifact /tmp/no-such-file.jsonl cannot be read: … 
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 59 tests in 0.354s
+Ran 62 tests in 0.347s
 OK
 ```
 
-The 48 → 57 movement is the simplify-apply round's nine added cases and the 57 → 59 movement the
-review-fix round's two (§2 names them); the run above is the review-fix round's own, on the tree this
-record describes.
+The 48 → 57 movement is the simplify-apply round's nine added cases, 57 → 59 the review-fix round's two
+and 59 → 62 the second fix pass's three (§2 names them); the run above is the second fix pass's own, on
+the tree this record describes.
 
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
 exit 0). The header it records — this run's resolved binary, the same two values the run's `--json`
@@ -181,7 +184,7 @@ the binary that owns the format refuses it. That is the re-scope's stated limit,
 half can no longer detect a Codex artifact the binary would reject, by construction — it holds no Codex
 knowledge at all. It is stated where a reader meets it: the goal file's own "What this goal does not
 claim" paragraph (under *Intended advance*) and its *Non-scope*, this
-record, the checker's own section header and module docstring, and `docs/harness.md`'s native-check
+record, and `docs/harness.md`'s native-check
 section (which is also the CI note: the gate never runs the native half — `scripts/gate.py` decides the
 offline half, and the native checks are deliberately not gate steps).
 
@@ -216,20 +219,20 @@ gate: go=/home/azureuser/.local/share/mise/installs/go/1.27.4/bin/go module=ccc 
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> /home/azureuser/.cache/ccc-upstream/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 514 tests in 9.595s (rc=0)
+  PASS     selftest    Ran 517 tests in 9.525s (rc=0)
   PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5775 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 2 row(s) verified
-  PASS     secrets     no leaks found in 221 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets     no leaks found in 228 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 16 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's two rows against the Go tests they cite. The table is the review-fix round's
+which verifies the goal's two rows against the Go tests they cite. The table is the second fix pass's
 own run, on the tree that holds this record, and it printed the unqualified `GATE: PASS`; its `selftest`
-count moved 503 → 514 across the two rounds (§2 and §3 name the eleven added cases), and its `secrets`
-count (221 files) is this worktree's own scope — the count includes untracked `__pycache__`/`bin`
-files — not a change the round made.
+count moved 503 → 517 across the three rounds (§2 and §3 name the eleven added cases and this pass's
+three), and its `secrets` count (228 files) is this worktree's own scope — the count includes untracked
+`__pycache__`/`bin` files — not a change the round made.
 
 ## What this record does not claim
 
