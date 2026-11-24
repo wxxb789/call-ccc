@@ -1,0 +1,61 @@
+# Obligation citations — goal 0009a (the native oracle, re-scoped), the machine-checked half of the
+# increment's acceptance surface (docs/goals/0009a-native-oracle.md).
+#
+# **What a row here is, exactly.** This increment makes no Go change (its Bounds), so it adds no Go
+# test; docs/conventions.md holds a citations row to be one *gate-runnable Go test* in a package
+# scripts/gate-targets.txt covers. Every row below therefore names one **surviving oracle rule** — the
+# rule ids are `scripts/codex-native-check.py`'s `ORACLE_RULES` keys — and the existing Go test that
+# already pins the same claim about this tree's own bytes: the sentence the rule restates, true of the
+# writer (and of the committed fixtures) today and re-derived by this step when the gate runs. Where
+# the rule states more than one clause, the `artifact` cell names the clause the cited test pins, and
+# the row is no claim of conjunct-level coverage of the whole sentence. A row makes no claim that a Go
+# test runs the oracle.
+#
+# The oracle's own firing is re-derived by the required `selftest` step instead:
+# `scripts/tests/test_codex_native_check.py`'s `CodexArtifactOracle` drives the shipped rule table and
+# its mutation corpus — every rule has at least one committed fixture whose mutation turns that rule
+# red and no other, every arm (positive PASS, negative FAIL citing its own rule, `--disable-rule` PASS)
+# is read through the shipped command's own `--validate`/`--receipt`/`--disable-rule` path, and the two
+# tables are asserted in bijection from both ends — the increment's D1. The fixtures are
+# `scripts/tests/testdata/codex-oracle/` (the frozen artifact and the receipt that names its bytes).
+#
+# Deliberately not covered, with the reason (form-based: a row is one Go test in a package
+# scripts/gate-targets.txt covers, so a rule whose gate re-derivation is a python case the required
+# `selftest` step runs, or a native harness run, cannot hold one):
+#   oracle.utf8, oracle.whole-lines — no Go test pins the writer's document as UTF-8 text, as opening
+#         with no byte-order mark, or as a sequence of line-feed-terminated lines: the writer emits
+#         through `json.Encoder` (whose newline is the record terminator: internal/ccc/codex_target.go)
+#         and every case that reads an installed document splits it on line feeds, but none asserts the
+#         artifact's own final byte or its encoding. Their re-derivation is the same `selftest` case's
+#         corpus — the mutations `a byte that is not UTF-8`, `a byte-order mark` and `a record left
+#         unterminated`, each turning its own rule red through the shipped command — beside the
+#         surviving corpus cases:
+#         `test_the_frozen_artifact_validates` (D4's verify case: the artifact's size, whole-file digest
+#         and per-line anchors are the committed receipt's own statements),
+#         `test_a_mutated_byte_breaks_the_receipt` (D4's second case: one same-length byte change under
+#         the unchanged receipt fails naming the line, the artifact is otherwise container-clean, and a
+#         receipt recomputed for the mutated bytes is green again),
+#         `test_the_receipt_compares_the_lines_own_bytes` (the anchors are bytes, not a reader's value:
+#         a CRLF rewrite the container rules read as whitespace is refused by the receipt),
+#         `test_the_byte_layer_ends_the_reading` (a byte-layer violation is `oracle.utf8` alone),
+#         `test_the_line_rule_is_the_whole_lines_own` (an unterminated last record is
+#         `oracle.whole-lines` alone; a blank line is no JSON object),
+#         `test_the_validate_mode_reports_a_verdict` (PASS/FAIL/INCOMPLETE with exit 0/1/2),
+#         `test_an_unreadable_input_is_incomplete_never_a_pass` (a missing artifact, a receipt that is
+#         not JSON, and a receipt document writing a member name twice all exit 2),
+#         `test_disable_rule_turns_exactly_one_rule_off` (the flag reaches the shipped reading),
+#         `test_the_validator_reads_no_file` (the validator's input is the bytes: every file-opening
+#         name refused, it still answers — D2's "source absent from the process"),
+#         `test_a_container_of_json_objects_that_is_no_agents_session_passes` and
+#         `test_the_registry_holds_no_foreign_format_vocabulary` (D2's negative space: the rules judge
+#         the container, and the frozen surface names no foreign format's vocabulary) — and
+#         `test_the_corpus_arms_run_the_shipped_command_not_the_python_validator` (the arms are the
+#         command's own).
+#   D3 — the Codex judgment is the binary's: the native check's own unflagged run is a native harness
+#         run, not a gate step; its verdicts (and the disclosure arm, where the harness refuses the
+#         artifact the offline rules accept) are quoted in §3 of docs/evidence/0009a-native-oracle-v2.md.
+#   D5 — the deletions are declared: §2 of the same record carries the deleted rule list with each
+#         rule's fixture and mutations, derived from PR #19's diff; the gate cannot hold a deleted rule.
+rule_id	test	package	artifact
+oracle.jsonl-objects	TestCodexRolloutRecordShape	./internal/ccc	0009a-native-oracle-v2.md §2-§3 (the writer's own bytes: each written line decodes as exactly one JSON object — the case's `decodeRollout` fails a line that is not one — the framing clause the rule states; the member-name-uniqueness and unpaired-surrogate clauses have no Go producer and are the corpus mutations `a line holding a member name twice` and `a line holding an unpaired surrogate escape`)
+oracle.receipt-integrity	TestFixturesMatchTheirGenerator	./internal/ccc	0009a-native-oracle-v2.md §2-§3 (a committed artifact is identified by the SHA-256 of its own bytes: the case digests the committed fixture tree and compares it file by file with what the generator writes, and a changed byte moves a digest — the frozen-bytes clause the rule states; the receipt document and its comparison have no Go producer and are the corpus's `oracle.receipt-integrity` mutations)

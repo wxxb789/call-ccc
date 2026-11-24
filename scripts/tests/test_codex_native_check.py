@@ -45,6 +45,7 @@ quote -- never about the separator this host happens to use.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -833,6 +834,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             command = [str(part) for part in cmd]
             if command[0] == go:
                 return subprocess.CompletedProcess(cmd, 0, "", "")
+            if command[0] == codex and command[1:] == ["--version"]:
+                return subprocess.CompletedProcess(cmd, 0, "codex-cli 0.test\n", "")
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
                 if command[1] == "continue":
                     conversions["made"] += 1
@@ -897,6 +900,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 if method != "thread/resume":
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
+                if session not in (thread_id, second_thread_id):
+                    # The disclosure arm's own subject: the loader holds no session for the artifact the
+                    # offline rules accept, and the harness's answer for it is its refusal.
+                    raise RuntimeError(f"the case's stub holds no session {session}")
                 second = session == second_thread_id
                 path = second_installed if second else installed
                 if copy_mutation == ("second load" if second else "first load"):
@@ -1329,6 +1336,331 @@ class RecordStatesTheChecksOwnOrder(unittest.TestCase):
         self.assertNotIn(WRONG_ORDER, document,
                          f"{RECORD.name} places the comparison ahead of both real turns: the shipped "
                          f"script takes it after the first session's turn and before the second's")
+
+
+class CodexArtifactOracle(unittest.TestCase):
+    """The offline oracle (goal 0009a, re-scoped): the container and receipt rules, their corpus, and
+    the `--validate` mode.
+
+    Every case drives the shipped module in-process, imported by path, with no harness and no source
+    session: the oracle's subject is an artifact's own bytes. The corpus lives in the shipped script
+    beside the registry and this class drives the same objects — each rule has at least one mutation
+    that removes it, each mutation turns its own rule red and no other, the two tables are in bijection,
+    and every arm is read through the shipped command's own
+    `--validate`/`--receipt`/`--disable-rule` path, so `--disable-rule` is exercised for every declared
+    rule. What the rules can no longer say is part of the subject: the registry names no foreign
+    format's vocabulary, and an artifact that is a container and no agent's session passes.
+    """
+
+    #: Spellings that belong to a foreign session format. A rule that names one is a rule about that
+    #: format — the judgment this oracle deleted — so none may appear anywhere on its frozen surface
+    #: (the ids, the sentences, the corpus's labels, the fixtures' names).
+    FOREIGN_VOCABULARY = ("codex", "rollout", "session_meta", "response_item", "event_msg",
+                          "turn_context", "compacted", "token_usage", "world_state", "call_id",
+                          "tool_call", "tool_result", "function_call", "input_text", "output_text",
+                          "input_image", "input_audio", "occurrence", "disposition", "manifest",
+                          "emitted", "omitted", "payload", "turn", "replay")
+
+    def reading(self, data: bytes, receipt: dict | None = None,
+                disabled: tuple[str, ...] = ()) -> list:
+        """One reading through the shipped validator, with or without a receipt."""
+        if receipt is None:
+            return NATIVE_CHECK.validate_artifact(data, disabled=disabled)
+        return NATIVE_CHECK.validate_artifact(data, receipt=receipt, disabled=disabled)
+
+    def test_the_frozen_artifact_validates(self) -> None:
+        """The committed artifact is green alone and with its receipt (D4's verify case), and the
+        receipt's own statements are the artifact's bytes: its size, its whole-file digest, and one
+        anchor per line over that line's own bytes with its line feed included."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        self.assertEqual(self.reading(data), [])
+        self.assertEqual(self.reading(data, receipt), [])
+        self.assertEqual(receipt["bytes"], len(data))
+        self.assertEqual(receipt["sha256"], hashlib.sha256(data).hexdigest())
+        spans = NATIVE_CHECK.oracle_line_bytes(data)
+        self.assertEqual([entry["sha256"] for entry in receipt["lines"]],
+                         [hashlib.sha256(span).hexdigest() for span in spans],
+                         "the anchors are not the lines' own bytes, line feed included")
+
+    def test_a_container_of_json_objects_that_is_no_agents_session_passes(self) -> None:
+        """D2, behaviourally: an artifact no agent's reader would read — JSON objects carrying members
+        no harness defines, no record vocabulary at all — passes the offline rules, so a schema rule
+        that crept back fails here."""
+        data = b"".join(json.dumps({"anything": f"goes {n}"}, separators=(",", ":")).encode() + b"\n"
+                        for n in range(3))
+        self.assertEqual(self.reading(data), [])
+        with tempfile.TemporaryDirectory() as scratch:
+            artifact = Path(scratch) / "artifact.jsonl"
+            artifact.write_bytes(data)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact)])
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertEqual(output.getvalue().strip().splitlines()[-1], "oracle: PASS — 3 record(s)")
+
+    def test_the_registry_holds_no_foreign_format_vocabulary(self) -> None:
+        """D2, over the frozen surface: the id set is the four container/receipt rules, and nothing the
+        registry, its sentences, the corpus's labels or the fixtures' names spell is a foreign
+        format's vocabulary."""
+        self.assertEqual(sorted(NATIVE_CHECK.ORACLE_RULES),
+                         ["oracle.jsonl-objects", "oracle.receipt-integrity", "oracle.utf8",
+                          "oracle.whole-lines"])
+        surface = " ".join(list(NATIVE_CHECK.ORACLE_RULES)
+                           + list(NATIVE_CHECK.ORACLE_RULES.values())
+                           + [f"{mutation.label} {mutation.artifact} {mutation.receipt or ''}"
+                              for mutations in NATIVE_CHECK.ORACLE_MUTATIONS.values()
+                              for mutation in mutations]
+                           + [NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT]).lower()
+        found = sorted(token for token in self.FOREIGN_VOCABULARY if token in surface)
+        self.assertEqual(found, [],
+                         f"the oracle's own surface names a foreign format's vocabulary: {found}")
+
+    def test_the_registry_and_its_corpus_are_one_closed_set(self) -> None:
+        """D1's closure, read from both ends: every declared rule has at least one mutation and every
+        mutation names a declared rule, each rule states something, and every fixture the corpus names
+        is committed (a pair naming an absent fixture would fail the command, not this reading)."""
+        self.assertEqual(set(NATIVE_CHECK.ORACLE_MUTATIONS), set(NATIVE_CHECK.ORACLE_RULES),
+                         "a rule has no mutation, or a mutation has no rule")
+        for rule, sentence in NATIVE_CHECK.ORACLE_RULES.items():
+            self.assertTrue(sentence.strip(), f"the rule {rule} states nothing")
+        for rule, mutations in sorted(NATIVE_CHECK.ORACLE_MUTATIONS.items()):
+            self.assertTrue(mutations, f"{rule} has no mutation")
+            for mutation in mutations:
+                fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / mutation.artifact
+                self.assertTrue(fixture.is_file(), f"{rule} names an absent fixture {fixture}")
+                if mutation.receipt is not None:
+                    receipt = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / mutation.receipt
+                    self.assertTrue(receipt.is_file(), f"{rule} names an absent receipt {receipt}")
+
+    def test_every_rule_has_a_mutation_that_turns_its_fixture_red(self) -> None:
+        """Every mutation changes its fixture and turns exactly its own rule red, with a detail that
+        says what was found — no other rule, so a report is a reading of one defect rather than a net
+        that catches everything at once — and with that rule disabled the same bytes are green again."""
+        for rule, mutations in sorted(NATIVE_CHECK.ORACLE_MUTATIONS.items()):
+            for mutation in mutations:
+                with self.subTest(rule=rule, mutation=mutation.label):
+                    data = NATIVE_CHECK.oracle_fixture(mutation.artifact)
+                    receipt = (NATIVE_CHECK.oracle_receipt(mutation.receipt)
+                               if mutation.receipt is not None else None)
+                    self.assertEqual(self.reading(data, receipt), [],
+                                     f"{mutation.artifact} is not green before {mutation.label!r}")
+                    before = (data, json.dumps(receipt, sort_keys=True))
+                    mutated, mutated_receipt = mutation.mutate(
+                        data, NATIVE_CHECK.oracle_receipt(mutation.receipt)
+                        if mutation.receipt is not None else None)
+                    self.assertNotEqual((mutated, json.dumps(mutated_receipt, sort_keys=True)), before,
+                                        f"the mutation {mutation.label!r} changed nothing")
+                    violations = self.reading(mutated, mutated_receipt)
+                    self.assertEqual({violation.rule for violation in violations}, {rule},
+                                     f"{mutation.label!r} on {mutation.artifact} turned "
+                                     f"{sorted({violation.rule for violation in violations})} red "
+                                     f"instead of only {rule}: {violations}")
+                    for violation in violations:
+                        self.assertTrue(violation.detail.strip(),
+                                        f"the {rule} violation says nothing: {violation}")
+                    self.assertEqual(self.reading(mutated, mutated_receipt, (rule,)), [],
+                                     f"the mutation {mutation.label!r} is still not green with "
+                                     f"`{rule}` disabled")
+
+    def test_the_corpus_arms_run_the_shipped_command_not_the_python_validator(self) -> None:
+        """The corpus's arms are the command's own: the Python validator's entry point refuses for the
+        duration, every arm judges a file on disk written under a scratch directory, and every declared
+        rule appears as the `--disable-rule` argument of at least one invocation — a corpus that
+        reached for the validator, or skipped a rule's flip, fails here rather than closing."""
+        real_main = NATIVE_CHECK.main
+        seen: list[list[str]] = []
+
+        def spy(argv):
+            seen.append(list(argv))
+            judged = Path(argv[argv.index("--validate") + 1])
+            self.assertTrue(judged.is_file(), f"an arm judged a path that is not a file on disk: {argv}")
+            return real_main(argv)
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the corpus read through the Python validator instead of the command")
+
+        output = io.StringIO()
+        with mock.patch.object(NATIVE_CHECK, "main", spy), \
+                mock.patch.object(NATIVE_CHECK, "validate_artifact", refuse), \
+                contextlib.redirect_stdout(output):
+            code = NATIVE_CHECK.oracle_mutation_selftest()
+        self.assertEqual(code, 0, f"the corpus does not close through the command: {output.getvalue()}")
+        disabled = [argv[argv.index("--disable-rule") + 1] for argv in seen
+                    if "--disable-rule" in argv]
+        self.assertEqual(sorted(set(disabled)), sorted(NATIVE_CHECK.ORACLE_RULES),
+                         f"the corpus did not exercise --disable-rule for every rule: {sorted(disabled)}")
+
+    def test_a_mutated_byte_breaks_the_receipt(self) -> None:
+        """D4's second case: one line's own byte changed under the unchanged receipt fails, naming the
+        line — and the mutated artifact is not otherwise defective, so the failure is the receipt's
+        statement and not the container's; a receipt recomputed for those bytes passes, which is the
+        verify arm's control."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        mutated, _ = NATIVE_CHECK._mutation_artifact_byte_changed(data, None)
+        self.assertNotEqual(mutated, data)
+        self.assertEqual(self.reading(mutated), [],
+                         "the mutated artifact is the container's own defect too, so this case could "
+                         "not attribute the failure to the receipt")
+        violations = self.reading(mutated, receipt)
+        self.assertEqual({violation.rule for violation in violations}, {"oracle.receipt-integrity"},
+                         f"the receipt did not answer the changed byte: {violations}")
+        self.assertIn(3, {violation.line for violation in violations},
+                      f"no violation names the line the byte moved on: {violations}")
+        recomputed = {"bytes": len(mutated), "sha256": hashlib.sha256(mutated).hexdigest(),
+                      "lines": [{"sha256": hashlib.sha256(span).hexdigest()}
+                                for span in NATIVE_CHECK.oracle_line_bytes(mutated)]}
+        self.assertEqual(self.reading(mutated, recomputed), [],
+                         "a receipt recomputed for the mutated bytes is not green")
+
+    def test_the_receipt_compares_the_lines_own_bytes(self) -> None:
+        """The anchors are bytes, not the JSON value a reader makes of them: a carriage return the
+        container rules read as whitespace is a byte the receipt sees, and the artifact is otherwise
+        clean, so the comparison is what refuses it."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT).replace(b"\n", b"\r\n")
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        self.assertEqual(self.reading(data), [], "the CRLF artifact is the container's own defect")
+        violations = self.reading(data, receipt)
+        self.assertEqual({violation.rule for violation in violations}, {"oracle.receipt-integrity"},
+                         f"the receipt did not answer the changed bytes: {violations}")
+
+    def test_the_byte_layer_ends_the_reading(self) -> None:
+        """A violation at the byte layer stops the reading — the BOM and a byte that is not UTF-8 are
+        `oracle.utf8` alone, never also a line's JSON defect — and dropping that rule hands back a
+        reading with nothing else in it, which is the closure's third arm."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        broken_byte, _ = NATIVE_CHECK._mutation_byte_not_utf8(data, None)
+        for label, broken in (("a byte-order mark", b"\xef\xbb\xbf" + data),
+                              ("a byte that is not UTF-8", broken_byte)):
+            self.assertEqual([violation.rule for violation in self.reading(broken)], ["oracle.utf8"],
+                             f"{label} is not the byte layer's own defect alone")
+            self.assertEqual(self.reading(broken, disabled=("oracle.utf8",)), [],
+                             f"{label} is not green with the rule disabled")
+
+    def test_the_line_rule_is_the_whole_lines_own(self) -> None:
+        """An artifact whose last record has no line feed is `oracle.whole-lines` alone — its last line
+        is still one JSON object — the empty artifact holds no unterminated record, and a line that is
+        no JSON document (a blank one included) is `oracle.jsonl-objects` alone."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        self.assertEqual([violation.rule for violation in self.reading(data[:-1])],
+                         ["oracle.whole-lines"])
+        self.assertEqual(self.reading(b""), [], "the empty artifact is not an unterminated record")
+        self.assertEqual([violation.rule for violation in self.reading(data + b"\n")],
+                         ["oracle.jsonl-objects"],
+                         "a blank line was skipped rather than refused as no JSON object")
+
+    def test_an_unreadable_input_is_incomplete_never_a_pass(self) -> None:
+        """The mode's third outcome: an artifact that cannot be opened, a receipt that is not JSON, and
+        a receipt document whose object writes a member name twice each exit 2 with the reason on
+        stderr — nothing was validated, so nothing may read as a pass."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            artifact = root / "artifact.jsonl"
+            artifact.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT))
+            not_json = root / "not-json.receipt.json"
+            not_json.write_text("this is not JSON", encoding="utf-8")
+            repeated = root / "repeated.receipt.json"
+            repeated.write_text('{"bytes": 1, "bytes": 2}', encoding="utf-8")
+            for label, argv in (
+                ("an artifact that cannot be opened", ["--validate", str(root / "absent.jsonl")]),
+                ("a receipt that is not JSON",
+                 ["--validate", str(artifact), "--receipt", str(not_json)]),
+                ("a receipt writing a member name twice",
+                 ["--validate", str(artifact), "--receipt", str(repeated)]),
+            ):
+                with self.subTest(input=label):
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors):
+                        code = NATIVE_CHECK.main(argv)
+                    self.assertEqual(code, 2, f"{label}: exit {code}, {errors.getvalue()}")
+                    self.assertIn("oracle: INCOMPLETE", errors.getvalue(), label)
+
+    def test_the_validate_mode_reports_a_verdict(self) -> None:
+        """The mode's own three outcomes and its JSON document: PASS (exit 0), FAIL naming the
+        violations (exit 1), and the receipt/flag refusals, with the verdict line last."""
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        receipt = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_RECEIPT
+        with tempfile.TemporaryDirectory() as scratch:
+            mutated = Path(scratch) / "mutated.jsonl"
+            mutated.write_bytes(NATIVE_CHECK._mutation_artifact_byte_changed(
+                NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT), None)[0])
+            for label, argv, want_code, want_line in (
+                ("the artifact alone", ["--validate", str(fixture)], 0, "oracle: PASS — 3 record(s)"),
+                ("the artifact with its receipt", ["--validate", str(fixture), "--receipt", str(receipt)],
+                 0, "oracle: PASS — 3 record(s)"),
+                ("a changed byte under the receipt",
+                 ["--validate", str(mutated), "--receipt", str(receipt)], 1,
+                 "oracle: FAIL — 3 record(s), 2 violation(s)"),
+            ):
+                with self.subTest(invocation=label):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        code = NATIVE_CHECK.main(argv)
+                    self.assertEqual(code, want_code, f"{label}: {output.getvalue()}")
+                    self.assertEqual(output.getvalue().strip().splitlines()[-1], want_line,
+                                     f"{label}: {output.getvalue()}")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(fixture), "--receipt", str(receipt), "--json"])
+            self.assertEqual(code, 0, output.getvalue())
+            document = json.loads(output.getvalue()[:output.getvalue().index("\noracle: ")])
+            self.assertEqual((document["verdict"], document["records"], document["violations"],
+                              document["disabled_rules"]), ("PASS", 3, [], []), document)
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                NATIVE_CHECK.main(["--receipt", str(receipt)])
+            self.assertEqual(refusal.exception.code, 2,
+                             f"--receipt without --validate was accepted: {errors.getvalue()}")
+
+    def test_disable_rule_turns_exactly_one_rule_off(self) -> None:
+        """`--disable-rule` drops exactly the named rule's violations, through the shipped command: the
+        same bytes pass again without a file being edited, an id the registry does not declare is
+        refused before any artifact is read, and the JSON document names the reading it was taken
+        under."""
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        with tempfile.TemporaryDirectory() as scratch:
+            unterminated = Path(scratch) / "unterminated.jsonl"
+            unterminated.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)[:-1])
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(unterminated)])
+            self.assertEqual(code, 1, output.getvalue())
+            self.assertIn("oracle: oracle.whole-lines line 3 —", output.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(unterminated),
+                                          "--disable-rule", "oracle.whole-lines"])
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertNotIn("oracle.whole-lines", output.getvalue())
+            self.assertEqual(output.getvalue().strip().splitlines()[-1], "oracle: PASS — 3 record(s)")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(fixture),
+                                          "--disable-rule", "oracle.nope"])
+            self.assertEqual(code, 2, f"exit {code} for an undeclared id: {errors.getvalue()}")
+            self.assertIn("names no rule this oracle declares: oracle.nope", errors.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(unterminated), "--json",
+                                          "--disable-rule", "oracle.whole-lines"])
+            document = json.loads(output.getvalue()[:output.getvalue().index("\noracle: ")])
+            self.assertEqual((code, document["disabled_rules"], document["violations"]),
+                             (0, ["oracle.whole-lines"], []), document)
+
+    def test_the_validator_reads_no_file(self) -> None:
+        """`validate_artifact`'s input is the artifact's bytes and nothing else: with every
+        file-opening name refused it still answers, which is the property that lets a reduced artifact
+        be validated with the source absent from the process (D2)."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the validator opened a file")
+
+        with mock.patch("builtins.open", refuse), mock.patch("io.open", refuse), \
+                mock.patch("os.open", refuse):
+            self.assertEqual(NATIVE_CHECK.validate_artifact(data, receipt=receipt), [])
 
 
 if __name__ == "__main__":

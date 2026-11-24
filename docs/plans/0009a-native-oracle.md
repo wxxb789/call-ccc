@@ -1,37 +1,9 @@
-# Plan — 0009a — Freeze the native oracle
+# Plan — 0009a — Freeze the native oracle *(superseded)*
 
-Contract: [`docs/goals/0009a-native-oracle.md`](../goals/0009a-native-oracle.md).
-Rationale and the full decomposition: [`docs/plans/0009-decomposition.md`](0009-decomposition.md).
-Governing design: [`docs/core-design/README.md`](../core-design/README.md).
-
-Written before implementation. The umbrella goal file [`docs/goals/0009-selective-context.md`](../goals/0009-selective-context.md)
-still carries the increment's `Done when` clauses D1–D7 and the seam's carried-disposition set (D6); this
-increment proves the subset named in its own contract, and nothing here re-opens a settled decision (the
-reference route, the refusal surface, the ID-less deferral).
-
-## Order and dependency
-
-This is increment **a of 4** of the goal-0009 decomposition. It is dispatched only after its
-prerequisite is accepted; the four are strictly ordered because each one removes a class of defect from every
-diff that follows it.
-
-## What this increment must not touch
-
-Any Go change; the manifest receipt's *producer* (0009c/0009d); the other four target routes.
-
-## Evidence
-
-`docs/evidence/0009a-citations.tsv` — discrete decisions plus the Codex native-load check. The manifest carries **discrete decisions plus this increment's native-load check** — not a
-∀-shaped claim proved by example (owner Q1 = C, 2026-11-20).
-
-## Stage order and the convergence rule
-
-`implement → gate → simplify → apply → gate → review → fix → gate → commit → push → PR → CI → machine review
-→ merge`. The conductor blocks on a convergence signal (executable-surface churn, a rising P0/P1 count
-conjoined with executable churn, or the oracle lock — a round that moves a gate/checker script alongside
-production code) and on the absolute review budget; a trip is an **abstraction-boundary failure to report**,
-never a budget to raise.
-
-## Where the implementation departed from this plan
-
-None yet.
+This file was the plan of the increment the decomposition dispatched as **a of 4**, written 2026-11-21,
+and it directed the **superseded** premise: a standalone Python specification of Codex well-formedness,
+frozen and mutated. The re-scope of 2026-11-23 replaced that premise. The increment that ships is planned
+in [`docs/plans/0009a-native-oracle-v2.md`](0009a-native-oracle-v2.md); its contract is
+[`docs/goals/0009a-native-oracle.md`](../goals/0009a-native-oracle.md); the superseded attempt's own trees
+(PR #19, closed unmerged) are preserved at tag `archive/0009a-pre-rescope`, and its earlier text of this
+file is in git history. Nothing here is a live instruction.

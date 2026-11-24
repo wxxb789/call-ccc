@@ -3117,3 +3117,61 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Settled by:** the owner's word on whether the Windows claim should be widened (it costs runner
   minutes and changes what a green Windows run proves), or an increment that lands (b) with its own
   measured run.
+
+## Q-0009a-01 — The receipt document's shape, and the bytes one anchor covers
+
+- **Status:** open (default taken: the shape below; the oracle is frozen for the rest of goal 0009, so a
+  change is that lock's own subject until goal 0009 ends, an ordinary increment after).
+- **Question:** the re-scope's premise fixes "a frozen artifact's SHA-256 plus per-line anchors" but not
+  the document's schema. What does a receipt look like, and over what bytes is an anchor taken?
+- **Options:** (a) `{"bytes": <n>, "sha256": "<64 hex>", "lines": [{"sha256": "<64 hex>"}, …]}`, each
+  anchor over the line's own bytes **including its line feed**, further members not read (taken);
+  (b) anchors as bare hex strings; (c) anchors over the line's bytes **without** the feed.
+- **Default taken:** (a). The whole-file digest identifies the frozen bytes and the per-line anchors name
+  where a change landed, which is what a later increment reads to re-identify a fixture; the feed being
+  inside the anchor keeps it a byte fact (a line without its terminator can never equal a terminated
+  one — the same byte-level claim the container rules make), while (c) would let a line's identity
+  survive a missing terminator, i.e. agree with a file `oracle.whole-lines` refuses; `bytes` gives a
+  size mismatch an answer that needs no hashing. The committed fixture pair in this increment is
+  `scripts/tests/testdata/codex-oracle/artifact.jsonl` + `artifact-receipt.json`, and the convention is
+  stated in the rule's own sentence.
+- **Reversal:** one increment that changes the schema and regenerates the committed receipts; nothing
+  else reads the document (the manifest receipt of a selection is 0009c/0009d's own, and if it should
+  share this shape that is an increment of its own).
+- **Settled by:** an increment that needs a different shape (e.g. 0009c/0009d if their receipt is to
+  carry an artifact's identity), or an owner sentence.
+
+## Q-0009a-02 — A byte-layer violation ends the reading, and dropping that rule empties it
+
+- **Status:** open (default taken: the staged reading).
+- **Question:** an artifact whose bytes are not UTF-8 text (or open with a byte-order mark) is text no
+  rule below can read. Does the oracle report the byte-layer rule alone and stop — and what does
+  `--disable-rule oracle.utf8` leave?
+- **Options:** (a) staged: the byte layer is read first and a violation there is the reading's only
+  content (no line, JSON or receipt comparison), so dropping that rule hands back an empty reading — a
+  PASS (taken); (b) continue with replacement-decoded text and report the JSON defects too; (c) treat a
+  non-text artifact as `INCOMPLETE` rather than a rule violation (the superseded checker's shape).
+- **Default taken:** (a). (b) invents text the file does not hold, and the defects it would report are
+  defects of the invented text; (c) would take the rule out of the registry, and D1 requires every
+  surviving rule's negative fixture to *cite* it (the closure's third arm is exactly this flip, which is
+  why the flip is pinned: the corpus's BOM pair passes with the rule disabled). The reading's own
+  docstring states it.
+- **Reversal:** one increment that changes the reading's shape (e.g. an `INCOMPLETE`-class answer with
+  the rule kept as a *reason*), and the corpus's two `oracle.utf8` pairs move with it.
+- **Settled by:** an increment that needs a different reading, or an owner sentence.
+
+## Q-0009a-03 — The container refuses a blank line rather than skipping it
+
+- **Status:** open (default taken: a blank line is refused).
+- **Question:** "one JSON object per line" — a line that holds no bytes (or only whitespace) is no JSON
+  document; does the container refuse it or skip it the way many line readers do?
+- **Options:** (a) refuse: every line of the artifact is exactly one JSON object, so a blank line is an
+  `oracle.jsonl-objects` violation (taken); (b) skip blank lines (the superseded checker's "every
+  non-empty line").
+- **Default taken:** (a). A skip rule is a claim about what some *reader* does with the line, and this
+  oracle exists to hold no such claims: refusal is decidable from the bytes alone, and the writer under
+  it never emits a blank line. Consequence, stated so it is not rediscovered: a file with a trailing
+  blank line is refused (`test_the_line_rule_is_the_whole_lines_own` pins it).
+- **Reversal:** one increment that adds the skip clause and the mutation that turns its fixture red; the
+  rule's sentence and the corpus move together.
+- **Settled by:** an increment whose artifacts legitimately carry blank lines, or an owner sentence.

@@ -458,6 +458,38 @@ says so.
   can grow this harness's memory with it, while the pipe stays empty so the server cannot block on it.
   Every check prints its own verdict and the script exits non-zero when one fails, so a run that could
   not do the native half says so instead of reporting a pass.
+  **The same file carries a second, offline half — the frozen artifact oracle (goal 0009a, re-scoped).**
+  `validate_artifact` — reachable as `python3 scripts/codex-native-check.py --validate <artifact>
+  [--receipt <document>] [--json]`, with `--disable-rule <RULE_ID>` and `--selftest-mutations` — judges
+  the artifact's own bytes against four format-agnostic rules and nothing else: `oracle.utf8` (valid
+  UTF-8 text, opening with no byte-order mark), `oracle.whole-lines` (whole lines: the empty artifact, or
+  bytes whose final byte is a line feed), `oracle.jsonl-objects` (every line exactly one JSON object,
+  member names unique, no unpaired surrogate escape) and `oracle.receipt-integrity` (a receipt's byte
+  count, whole-file SHA-256 and one anchor per line — the line's own bytes, line feed included — read
+  against the artifact: a mutated byte is refused, named by the line it moved). The byte layer is read
+  first, and a violation there ends the reading. **It holds no Codex knowledge**: whether an artifact is
+  one Codex reads or resumes is the binary's own answer — read by the native half above, and shown side
+  by side by its **disclosure arm**, which plants the frozen artifact under the scratch home and records
+  that the offline rules accept it while the harness refuses it (measured on 0.171.0: `thread/resume`
+  answers `rollout … is empty`). That limit is the re-scope's disclosure, not something this documentation
+  can wave away: **the gate never runs the native half** — the native checks are deliberately not gate
+  steps — so a green gate says nothing about whether any Codex reader accepts an artifact, and a native
+  run records the resolved binary (`codex --version` and its own SHA-256; no version is pinned, the owner
+  follows `latest`) beside every answer it reads. The oracle's verdict line is the last one printed —
+  `oracle: PASS` / `oracle: FAIL — …` / `oracle: INCOMPLETE — …` — with exit 0/1/2; its rules and their
+  one-sentence statements live in the script's own `ORACLE_RULES`; its committed fixtures are
+  `scripts/tests/testdata/codex-oracle/artifact.jsonl` (three JSON objects that model no agent's format)
+  and the `artifact-receipt.json` that names its bytes; and `--selftest-mutations` executes the registry
+  against its mutation corpus — every rule id, three arms each, through the command's own
+  `--validate`/`--receipt`/`--disable-rule` path — so a rule without a red fixture, or a mutation naming
+  no rule, fails. The required `selftest` step's `CodexArtifactOracle` holds the same corpus and the
+  negative space (a container-valid artifact that is no agent's session passes; the frozen surface names
+  no foreign format's vocabulary), so the gate re-derives the offline half without the binary. **This
+  section, the rule table and `--validate` are read-only for the rest of goal 0009 (the oracle lock):** a
+  fix round that moves this checker alongside production code moves both sides of "the implementation
+  satisfies the oracle" at once, which is the co-mutation both cross-family consults named as goal 0009's
+  root cause (`docs/plans/0009-decomposition.md`), and the conductor blocks it. After goal 0009, a change
+  is an ordinary increment: add the rule and the mutation that turns its fixture red.
 - `scripts/claude-native-check.py` — the target-side native verification for the Codex → Claude Code
   route, and **deliberately not a gate step** for the same reason: it needs the Claude Code binary
   installed, and its `resume` half also needs model access. The **`load` half needs no model access**: it
