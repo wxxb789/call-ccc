@@ -1419,8 +1419,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                                   and len(entry.name) == len(prefix) + 8)
                     self.assertEqual(len(kept), 1,
                                      f"a --keep run removed its own scratch tree: {kept}")
-                    self.assertIn(f"kept {temp_root}", self.last_stdout,
-                                  f"the refusal does not say where the tree it kept is: "
+                    kept_path = Path(temp_root) / kept[0]
+                    self.assertIn(f"kept {kept_path}", self.last_stdout,
+                                  f"the refusal does not say where the scratch tree it kept is: "
                                   f"{self.last_stdout!r}")
 
     def test_the_planted_probe_is_removed_when_the_run_ends(self) -> None:
@@ -1584,8 +1585,10 @@ class CodexArtifactOracle(unittest.TestCase):
 
     def test_the_registry_holds_no_foreign_format_vocabulary(self) -> None:
         """D2, over the frozen surface: the id set is the four container/receipt rules, and nothing the
-        registry, its sentences, the corpus's labels or the fixtures' names spell is a foreign
-        format's vocabulary."""
+        registry, its sentences, the corpus's labels, the fixtures' names or the fixtures' own bytes
+        spell is a foreign format's vocabulary — the committed artifact and receipt are read, not just
+        named, so a Codex-shaped fixture reappearing fails here (the claim the fixture root's own comment
+        makes)."""
         self.assertEqual(sorted(NATIVE_CHECK.ORACLE_RULES),
                          ["oracle.jsonl-objects", "oracle.receipt-integrity", "oracle.utf8",
                           "oracle.whole-lines"])
@@ -1594,7 +1597,10 @@ class CodexArtifactOracle(unittest.TestCase):
                            + [f"{mutation.label} {mutation.artifact} {mutation.receipt or ''}"
                               for mutations in NATIVE_CHECK.ORACLE_MUTATIONS.values()
                               for mutation in mutations]
-                           + [NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT]).lower()
+                           + [NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT]
+                           + [NATIVE_CHECK.oracle_fixture(name).decode("utf-8", "replace")
+                              for name in (NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT)]
+                           ).lower()
         found = sorted(token for token in self.FOREIGN_VOCABULARY if token in surface)
         self.assertEqual(found, [],
                          f"the oracle's own surface names a foreign format's vocabulary: {found}")
