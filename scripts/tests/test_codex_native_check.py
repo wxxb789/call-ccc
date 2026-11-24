@@ -1398,23 +1398,30 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             self.assertEqual(left, [], f"the refused run left its scratch tree(s) behind: {left}")
 
     def test_a_keep_run_that_refuses_keeps_and_names_its_scratch_tree(self) -> None:
-        """`--keep` is honoured on the refusal paths too: a collision with `--keep` leaves this run's tree
+        """`--keep` is honoured on both refusal paths: a collision with `--keep` leaves this run's tree
         where the run says it is, rather than removing it silently — the promise the flag's own help
-        makes, and the promise the refusal would otherwise break."""
-        with tempfile.TemporaryDirectory() as temp_root:
-            previous = tempfile.tempdir
-            tempfile.tempdir = temp_root
-            try:
-                code, _ = self.drive(mutate_during_resume=False, seed_probe=True, keep=True)
-            finally:
-                tempfile.tempdir = previous
-            self.assertEqual(code, 2, f"exit {code} for a probe collision: {self.last_stderr}")
-            prefix = "ccc-native-check-"
-            kept = sorted(entry.name for entry in Path(temp_root).iterdir()
-                          if entry.name.startswith(prefix) and len(entry.name) == len(prefix) + 8)
-            self.assertEqual(len(kept), 1, f"a --keep run removed its own scratch tree: {kept}")
-            self.assertIn(f"kept {temp_root}", self.last_stdout,
-                          f"the refusal does not say where the tree it kept is: {self.last_stdout!r}")
+        makes, and the promise a refusal would otherwise break."""
+        for label, seed_probe in (("the probe's name", True),
+                                  ("the unrelated session's name", False)):
+            with self.subTest(collision=label):
+                with tempfile.TemporaryDirectory() as temp_root:
+                    previous = tempfile.tempdir
+                    tempfile.tempdir = temp_root
+                    try:
+                        code, _ = self.drive(mutate_during_resume=False, keep=True,
+                                             seed_probe=seed_probe, seed_unrelated=not seed_probe)
+                    finally:
+                        tempfile.tempdir = previous
+                    self.assertEqual(code, 2, f"exit {code} for a {label} collision: {self.last_stderr}")
+                    prefix = "ccc-native-check-"
+                    kept = sorted(entry.name for entry in Path(temp_root).iterdir()
+                                  if entry.name.startswith(prefix)
+                                  and len(entry.name) == len(prefix) + 8)
+                    self.assertEqual(len(kept), 1,
+                                     f"a --keep run removed its own scratch tree: {kept}")
+                    self.assertIn(f"kept {temp_root}", self.last_stdout,
+                                  f"the refusal does not say where the tree it kept is: "
+                                  f"{self.last_stdout!r}")
 
     def test_the_planted_probe_is_removed_when_the_run_ends(self) -> None:
         """The disclosure arm's planted artifact belongs to the run: a normal run removes it from the
