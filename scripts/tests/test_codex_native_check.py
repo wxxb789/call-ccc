@@ -631,6 +631,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               copy_mutation: str | None = None,
               repeat_turn: bool = False,
               seed_probe: bool = False,
+              unrelated_refusal: bool = False,
               handshake_fails: bool = False,
               version_fails: bool = False
               ) -> tuple[int, dict[str, tuple[str, str]]]:
@@ -702,9 +703,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         skipped cannot read as one whose mutation nothing caught.
 
         ``seed_probe`` writes a caller's own file under the disclosure arm's probe name before ``main``
-        runs — the collision its refusal path is about; ``handshake_fails`` makes the stub app server
-        never complete the handshake, so the arm's subject becomes an answer that was never obtained;
-        and ``version_fails`` makes the stub's ``codex --version`` exit non-zero. The run's own stdout
+        runs — the collision its refusal path is about; ``unrelated_refusal`` makes the stub app server
+        answer the arm's resume with a JSON-RPC error that names neither the planted session nor its
+        file (protocol drift, not a refusal); ``handshake_fails`` makes the stub app server never
+        complete the handshake, so the arm's subject becomes an answer that was never obtained; and
+        ``version_fails`` makes the stub's ``codex --version`` exit non-zero. The run's own stdout
         and stderr are kept as ``self.last_stdout``/``self.last_stderr``, and the home it drove as
         ``self.last_home``, so a case can read what the run reported and what it left on disk after
         ``main`` returned.
@@ -921,6 +924,15 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
                 if session not in (thread_id, second_thread_id):
+                    if (not probe.is_file()
+                            or probe.read_bytes()
+                            != NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)):
+                        raise AssertionError(
+                            f"the disclosure arm's refusal was asked for session {session}, but the "
+                            f"planted artifact {probe} does not hold the frozen fixture's own bytes")
+                    if unrelated_refusal:
+                        raise NATIVE_CHECK.AppServerErrorResponse(
+                            "thread/resume failed: Invalid params: threadId is required")
                     # The disclosure arm's own subject: the loader holds no session for the artifact the
                     # offline rules accept, and the harness's answer for it is its refusal -- an error
                     # response to thread/resume, the way the real AppServer reports one.
@@ -1298,6 +1310,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"a handshake that never answered was recorded as {state}: {detail}")
         self.assertIn("the case's stub never answered initialize", detail, detail)
 
+    def test_an_error_that_names_no_planted_artifact_is_not_read_as_a_refusal(self) -> None:
+        """The refusal is established by what the harness says about *this* artifact: with the stub
+        answering an unrelated JSON-RPC error — protocol drift, no session named — the arm records its
+        FAIL carrying the harness's own words, and the run exits 1. A run that read any JSON-RPC error
+        as the refusal its name claims records a PASS here."""
+        code, results = self.drive(mutate_during_resume=False, unrelated_refusal=True)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"an error naming no planted artifact was recorded as {state}: {detail}")
+        self.assertIn("Invalid params: threadId is required", detail,
+                      f"the arm's failure does not quote the harness's own answer: {detail}")
+        self.assertEqual(code, 1, f"exit {code} for a run whose disclosure arm failed: {results}")
+
     def test_a_run_records_the_resolved_binary_and_its_digest(self) -> None:
         """D3's own line is a record: every run names the binary it resolved — the `--version` answer
         and the binary's own digest — and answers "unreadable" where either cannot be measured."""
@@ -1630,6 +1656,33 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertEqual([violation.rule for violation in self.reading(data + b"\n")],
                          ["oracle.jsonl-objects"],
                          "a blank line was skipped rather than refused as no JSON object")
+
+    def test_a_line_at_the_stated_nesting_bound_is_accepted_and_past_it_refused(self) -> None:
+        """The nesting bound is the rule's own statement, not the reading interpreter's recursion
+        limit: a line nested exactly at ``ORACLE_NESTING_BOUND`` levels is one JSON object like any
+        other, and a line one level deeper — or far deeper — is refused by `oracle.jsonl-objects`
+        alone, naming that bound, so the verdict is a function of the line's bytes. A refusal that
+        fired on the interpreter's limit instead would accept the deeper line here and answer the
+        mutation's own bytes with the interpreter's words."""
+        bound = NATIVE_CHECK.ORACLE_NESTING_BOUND
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+
+        def nested(arrays: int) -> bytes:
+            return b'{"n": ' + b"[" * arrays + b"]" * arrays + b"}"
+
+        at = NATIVE_CHECK.oracle_replace_line(data, 2, nested(bound - 1))
+        self.assertEqual(self.reading(at), [],
+                         f"a line nested at the stated bound of {bound} levels is not accepted")
+        for label, arrays in (("one level past the bound", bound),
+                              ("far past the bound", 200000)):
+            violations = self.reading(NATIVE_CHECK.oracle_replace_line(data, 2, nested(arrays)))
+            self.assertEqual([violation.rule for violation in violations], ["oracle.jsonl-objects"],
+                             f"{label}: {violations}")
+            self.assertIn(f"nested deeper than {bound} levels", violations[0].detail,
+                          f"{label}: {violations[0].detail}")
+        self.assertIn(f"nested deeper than {bound} levels",
+                      NATIVE_CHECK.ORACLE_RULES["oracle.jsonl-objects"],
+                      "the rule's own sentence does not state the bound the code enforces")
 
     def test_an_unreadable_input_is_incomplete_never_a_pass(self) -> None:
         """The mode's third outcome: an artifact that cannot be opened, a receipt that is not JSON, and

@@ -40,9 +40,12 @@ the native half).
 ## Bounds
 
 No Go change; nothing outside `scripts/codex-native-check.py`, its tests, the committed oracle fixtures
-(`scripts/tests/testdata/codex-oracle/`), the goal's `docs/evidence/0009a-citations.tsv` and this
-increment's own plan/evidence. The existing unflagged Codex acceptance keeps reporting the same verdict.
-A cited Go test must already exist and pass.
+(`scripts/tests/testdata/codex-oracle/`), the goal's `docs/evidence/0009a-citations.tsv`, this
+increment's own plan/evidence, and the documentation surfaces this increment's own description occupies
+— this goal file, `docs/goals/README.md`'s index row, `docs/harness.md`'s native-check section, the
+superseded plan stub `docs/plans/0009a-native-oracle.md` and `docs/decisions/OPEN-QUESTIONS.md`. The
+existing unflagged Codex acceptance keeps reporting the same verdict. A cited Go test must already exist
+and pass.
 
 ## Done when
 

@@ -3060,7 +3060,7 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 
 - **Status:** open (default taken: declared debt — kept, not extended, replaced by the carried reader's own
   answer or an authoritative read).
-- **Question:** `internal/ccc/route_shared.go`'s `pairReadBackMessage` matches the Codex read-back's text to the
+- **Question:** `internal/ccc/codex_install.go`'s `pairReadBackMessage` matches the Codex read-back's text to the
   records this build wrote by a **same-role subsequence** heuristic. That is a local rule about how the carried
   reader renders a record — the judgment the ownership rule gives to the reader — used where a projection cannot
   establish the pairing (both prompts projected away). It is what the swapped-prompt regression depends on.

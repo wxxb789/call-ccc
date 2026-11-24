@@ -56,7 +56,7 @@ digest, and the disclosure arm below.
 | --- | --- |
 | `oracle.utf8` | the artifact's bytes are valid UTF-8 text and its first bytes are no byte-order mark |
 | `oracle.whole-lines` | the artifact's bytes are whole lines: the empty artifact, or bytes whose final byte is a line feed — an artifact whose last bytes are an unterminated record is refused |
-| `oracle.jsonl-objects` | every non-empty line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer |
+| `oracle.jsonl-objects` | every non-empty line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer; a line nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
 | `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule |
 
 **Reading is staged.** The byte layer is read first (`oracle.utf8`): a violation there ends the reading,

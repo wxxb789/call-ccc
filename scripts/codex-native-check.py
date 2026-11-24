@@ -41,19 +41,6 @@ server that stops answering is reported as a failed check with its own diagnosti
 the run; those diagnostics are a bounded tail of bounded lines, read in bounded pieces, so a server that
 floods that pipe cannot grow this harness's memory either.
 
-**The frozen artifact oracle (goal 0009a, re-scoped).** The same file carries a second, offline half —
-the container and receipt half of the native oracle: `validate_artifact` below, reachable as
-`python3 scripts/codex-native-check.py --validate <artifact> [--receipt <document>] [--json]`, and
-`--selftest-mutations`. Its input is the artifact's own bytes and, at most, an explicit receipt that
-names them, and it holds **no Codex knowledge**: whether an artifact is one Codex reads or resumes is
-the binary's own answer, read by the native checks above (and shown by the disclosure arm below), never a
-Python restatement of the loader. The rule table and those modes are **read-only for the rest of goal
-0009** — the oracle lock: a round that moves this checker alongside production code moves both sides of
-"the implementation satisfies the oracle" at once (`docs/plans/0009-decomposition.md`). What it cannot do
-is stated where a caller meets it: an artifact the container rules accept may still be one the binary
-refuses. The oracle's modes answer with their own exit codes — 0 `oracle: PASS`, 1 `oracle: FAIL`,
-2 `oracle: INCOMPLETE` (an input that cannot be read at all) — distinct from the native checks' own.
-
     python3 scripts/codex-native-check.py
     python3 scripts/codex-native-check.py --validate artifact.jsonl --receipt artifact-receipt.json --json
     python3 scripts/codex-native-check.py --selftest-mutations
@@ -742,13 +729,16 @@ def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
     return view, kinds
 
 
-def resume_answer(codex: str, home: Path, thread_id: str) -> tuple[bool, str]:
+def resume_answer(codex: str, home: Path, thread_id: str, planted: Path) -> tuple[bool, str]:
     """The target harness's own answer for one artifact: whether it refused the session, and its own
     words either way.
 
-    A JSON-RPC error answer to `thread/resume` is the harness's refusal of the artifact. A handshake,
-    timeout or close failure is no answer at all: it is reported in its own words and is *not* a
-    refusal, because a run that never obtained an answer may not record the refusal its name claims.
+    A JSON-RPC error answer to `thread/resume` counts as the harness's refusal of the artifact only
+    where its own words name the planted session or its file: any error answer can be protocol drift or
+    a thread-store failure, so an answer that names neither is recorded as a failure in its own words
+    rather than as the refusal this check's name claims. A handshake, timeout or close failure is no
+    answer at all, and is likewise *not* a refusal, because a run that never obtained an answer may not
+    record the refusal its name claims.
     """
     server = AppServer(codex, home)
     try:
@@ -758,8 +748,11 @@ def resume_answer(codex: str, home: Path, thread_id: str) -> tuple[bool, str]:
             return False, f"the harness never answered: {failure}"
         try:
             loaded = server.call("thread/resume", {"threadId": thread_id})
-        except AppServerErrorResponse as refusal:
-            return True, f"thread/resume answered: {refusal}"
+        except AppServerErrorResponse as answer:
+            if thread_id in str(answer) or planted.name in str(answer):
+                return True, f"thread/resume answered: {answer}"
+            return False, (f"the harness answered an error that names neither the planted session "
+                           f"{thread_id} nor its file {planted.name}: {answer}")
         except RuntimeError as failure:
             return False, f"the harness never answered: {failure}"
     finally:
@@ -803,6 +796,11 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
         print("   ", line)
 
 
+#: The deepest `{`/`[` nesting one artifact line may reach before the decoder reads it: the bound
+#: `ORACLE_RULES["oracle.jsonl-objects"]` states, so a line's verdict is its own bytes rather than the
+#: reading interpreter's recursion limit (CPython's default limit covers this depth on either scanner).
+ORACLE_NESTING_BOUND = 256
+
 #: Every rule the offline oracle states: rule id → the sentence it states. The ids are this report's own
 #: vocabulary and the keys of `ORACLE_MUTATIONS`, which `--selftest-mutations` asserts to be in
 #: bijection with this table.
@@ -816,7 +814,9 @@ ORACLE_RULES: dict[str, str] = {
         "every line of the artifact is exactly one JSON object, every member name written once inside "
         "it, and no string it holds carries an unpaired surrogate escape: a repeated name and a "
         "`\\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently "
-        "for, so such a line is refused rather than read as either answer",
+        "for, so such a line is refused rather than read as either answer; a line nested deeper than "
+        f"{ORACLE_NESTING_BOUND} levels is refused as well, because that bound is this rule's own "
+        "statement rather than the reading interpreter's recursion limit",
     "oracle.receipt-integrity":
         "a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per "
         "line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt "
@@ -839,16 +839,12 @@ _NO_RECEIPT = object()
 
 
 class Violation(NamedTuple):
-    """One rule an artifact breaks: the rule's id, the line it was found on (0 for a whole-artifact or
-    receipt-side violation) and what was found."""
-
     rule: str
     line: int
     detail: str
 
 
 def oracle_digest_stated(value: object) -> str | None:
-    """The 64 lowercase hex digits a receipt's digest statement must be, or None where it is not one."""
     if isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value):
         return value
     return None
@@ -963,13 +959,42 @@ def oracle_whole_lines(text: str) -> list[Violation]:
                       f"the artifact's last {tail} byte(s) are a record without its line feed")]
 
 
+def _oracle_line_nesting(line: str) -> int:
+    """The deepest `{`/`[` nesting one line reaches, counted outside its string literals: a bracket
+    inside a string is that string's text, so the count is what `ORACLE_NESTING_BOUND` is stated over."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for character in line:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "{[":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif character in "}]":
+            depth -= 1
+    return deepest
+
+
 def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
     """One line per record: every line exactly one JSON object, read the way a strict JSON reader reads
     it — no `NaN`/`Infinity` constant, no repeated member name, no unpaired surrogate escape, and a line
-    nested past this reader's own reading refused rather than answered about this machine's stack."""
+    nested deeper than `ORACLE_NESTING_BOUND` levels refused by this rule's own bound rather than by the
+    reading interpreter's recursion limit."""
     records: list[tuple[int, dict]] = []
     violations: list[Violation] = []
     for number, line in enumerate(oracle_lines(text), start=1):
+        if _oracle_line_nesting(line) > ORACLE_NESTING_BOUND:
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        f"not JSON: nested deeper than {ORACLE_NESTING_BOUND} levels, "
+                                        f"the bound this rule states"))
+            continue
         try:
             value = json.loads(line, parse_constant=_reject_json_constant,
                                object_pairs_hook=_oracle_unique_members)
@@ -987,10 +1012,6 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
             # above, so this arm is a constant the format does not hold).
             violations.append(Violation("oracle.jsonl-objects", number, f"not JSON ({broken})"))
             continue
-        except RecursionError:
-            violations.append(Violation("oracle.jsonl-objects", number,
-                                        "not JSON: nested too deeply to read"))
-            continue
         if not isinstance(value, dict):
             violations.append(Violation("oracle.jsonl-objects", number,
                                         f"one JSON object per line, found {type(value).__name__}"))
@@ -1005,12 +1026,10 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
 
 
 def oracle_fixture(name: str) -> bytes:
-    """One committed fixture's own bytes."""
     return (ORACLE_FIXTURE_ROOT / name).read_bytes()
 
 
 def oracle_receipt(name: str) -> dict:
-    """One committed receipt, parsed."""
     return json.loads(oracle_fixture(name).decode("utf-8"))
 
 
@@ -1148,9 +1167,6 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
 
 
 class OracleMutation(NamedTuple):
-    """One negative fixture: the label a failure report names, the artifact it mutates, the receipt it
-    hands in (the committed one, a mutated one, or none) and the change itself."""
-
     label: str
     artifact: str
     receipt: str | None
@@ -1158,7 +1174,6 @@ class OracleMutation(NamedTuple):
 
 
 def oracle_replace_line(data: bytes, number: int, replacement: bytes) -> bytes:
-    """One artifact's bytes with line `number` replaced whole, its line feed kept."""
     lines = data.split(b"\n")
     lines[number - 1] = replacement
     return b"\n".join(lines)
@@ -1559,35 +1574,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{probe} already exists: this harness plants the oracle's frozen artifact under that "
               f"name and will not overwrite one that is there", file=sys.stderr)
         return 2
-    unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
-                                     "payload": {"id": "unrelated", "cwd": "/tmp"}}) + "\n")
-    probe.write_bytes(oracle_fixture(ORACLE_ARTIFACT))
-
-    print(f"repo:        {repo}")
-    print(f"codex:       {codex} ({codex_version}, sha256 {codex_digest})")
-    print(f"codex home:  {home}")
-    if seeded_report:
-        print(seeded_report)
-    print(f"source:      {source.relative_to(repo)}")
-    print(f"copy:        {copy.relative_to(scratch)} (the fixture's bytes; this is what grows)")
-    print(f"growth:      {fragment.relative_to(repo)} ({fragment.stat().st_size} bytes)")
-    print(f"scratch:     {scratch}")
-    print()
-
-    fixture_before = tree_digest(fixture_root)
-    fragment_before = sha256(fragment)
-    copy_before = sha256(copy)
-    copy_size_before = copy.stat().st_size
-    unrelated_before = sha256(unrelated)
-    # Every session the home already held — the caller's own, when --codex-home names a real home — as
-    # the dashed id its file name ends with, and its bytes: a conversion must not reuse an id and must
-    # not touch a file it did not write. The two fabrications this harness planted are in the id list
-    # (a conversion must not reuse their ids either) but not in the byte comparison, which is about the
-    # files this run did not write.
-    existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in home.rglob("rollout-*.jsonl")]
-    existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl")
-                         if path not in (unrelated, probe)}
     try:
+        unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
+                                         "payload": {"id": "unrelated", "cwd": "/tmp"}}) + "\n")
+        probe.write_bytes(oracle_fixture(ORACLE_ARTIFACT))
+
+        print(f"repo:        {repo}")
+        print(f"codex:       {codex} ({codex_version}, sha256 {codex_digest})")
+        print(f"codex home:  {home}")
+        if seeded_report:
+            print(seeded_report)
+        print(f"source:      {source.relative_to(repo)}")
+        print(f"copy:        {copy.relative_to(scratch)} (the fixture's bytes; this is what grows)")
+        print(f"growth:      {fragment.relative_to(repo)} ({fragment.stat().st_size} bytes)")
+        print(f"scratch:     {scratch}")
+        print()
+
+        fixture_before = tree_digest(fixture_root)
+        fragment_before = sha256(fragment)
+        copy_before = sha256(copy)
+        copy_size_before = copy.stat().st_size
+        unrelated_before = sha256(unrelated)
+        # Every session the home already held — the caller's own, when --codex-home names a real home — as
+        # the dashed id its file name ends with, and its bytes: a conversion must not reuse an id and must
+        # not touch a file it did not write. The two fabrications this harness planted are in the id list
+        # (a conversion must not reuse their ids either) but not in the byte comparison, which is about the
+        # files this run did not write.
+        existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in home.rglob("rollout-*.jsonl")]
+        existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl")
+                             if path not in (unrelated, probe)}
         build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"],
                     cwd=repo / "ccc")
         if build.returncode != 0:
@@ -1600,7 +1615,7 @@ def main(argv: list[str] | None = None) -> int:
         # held only where the harness refused: a binary that accepted the artifact turns this line red,
         # which is the signal that the disclosure below the fold needs re-reading.
         offline = validate_artifact(oracle_fixture(ORACLE_ARTIFACT))
-        refused, answer = resume_answer(codex, home, ORACLE_PROBE_ID)
+        refused, answer = resume_answer(codex, home, ORACLE_PROBE_ID, probe)
         record("the harness refuses an artifact the offline rules accept",
                not offline and refused,
                f"the offline rules: {'green' if not offline else sorted({v.rule for v in offline})}; "
