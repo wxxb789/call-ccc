@@ -15,9 +15,11 @@
 # `scripts/tests/test_codex_native_check.py`'s `CodexArtifactOracle` drives the shipped rule table and
 # its mutation corpus — every rule has at least one committed fixture whose mutation turns that rule
 # red (beside exactly the other rules its bytes are known to break, the pair's `also_cited`), every arm
-# (positive PASS, negative FAIL citing those, `--disable-rule` PASS or still FAIL citing exactly the
-# other rules) is read through the shipped command's own `--validate`/`--receipt`/`--disable-rule` path,
-# and the two tables are asserted in bijection from both ends — the increment's D1. The fixtures are
+# (positive PASS, negative FAIL citing those, `--disable-rule` clean of the pair's own rule — PASS where
+# every rule was still evaluated, INCOMPLETE where the disabled rule left a `needs_text` rule unjudged,
+# or still FAIL citing exactly the other rules) is read through the shipped command's own
+# `--validate`/`--receipt`/`--disable-rule` path, and the three tables (rules, input kinds, mutations)
+# are asserted in bijection from both ends — the increment's D1. The fixtures are
 # `scripts/tests/testdata/codex-oracle/` (the frozen artifact and the receipt that names its bytes).
 #
 # Deliberately not covered, with the reason (form-based: a row is one Go test in a package
@@ -38,7 +40,9 @@
 #         receipt recomputed for the mutated bytes is green again),
 #         `test_the_receipt_compares_the_lines_own_bytes` (the anchors are bytes, not a reader's value:
 #         a CRLF rewrite the container rules read as whitespace is refused by the receipt),
-#         `test_the_byte_layer_ends_the_reading` (a byte-layer violation is `oracle.utf8` alone),
+#         `test_the_byte_layer_ends_the_record_reading` (a byte-layer violation is `oracle.utf8` alone,
+#         and the text-dependent rule is reported *not evaluated*, naming `oracle.utf8`, rather than
+#         reading as a pass),
 #         `test_the_line_rule_is_the_whole_lines_own` (an unterminated last record is
 #         `oracle.whole-lines` alone; a blank line is no JSON object),
 #         `test_the_validate_mode_reports_a_verdict` (PASS/FAIL/INCOMPLETE with exit 0/1/2),
@@ -62,12 +66,17 @@
 #         `test_a_line_feed_moved_is_named_by_the_line_whose_bytes_diverged` (a moved delimiter byte
 #         changes the anchor count and the shared anchors are still compared, so the line it diverged
 #         on is named), beside the `oracle.receipt-integrity` mutations of `--selftest-mutations`
-#         (7 pairs: a changed byte under the unchanged receipt, another whole-file digest, a wrong byte
-#         count, no lines, one line fewer, another line's anchor, and a receipt that is not an object),
+#         (9 pairs: a changed byte under the unchanged receipt, another whole-file digest, a wrong byte
+#         count, no lines, one line fewer, another line's anchor, a receipt that is not an object, and
+#         the r3 round's two co-citation pairs — a receipt under a masked byte, and a receipt under an
+#         unterminated record),
 #         and the combined pair under `oracle.utf8` (`a byte that is not UTF-8 under the unchanged
 #         receipt`: a same-length byte masked under the frozen receipt cites `oracle.receipt-integrity`
 #         beside its own rule and still cites exactly it with `oracle.utf8` disabled — the receipt's
-#         comparison is over raw bytes, independent of the text layer).
+#         comparison is over raw bytes, independent of the text layer), and the same property holds for
+#         the byte-rule pairs the r3 round closed over (`oracle.whole-lines` × `oracle.receipt-integrity`
+#         and `oracle.utf8` × `oracle.whole-lines`, each declared under both rules:
+#         `test_every_pair_of_byte_rules_is_co_cited_by_a_mutation`).
 #   D3 — the Codex judgment is the binary's: the native check's own unflagged run is a native harness
 #         run, not a gate step; its verdicts (and the disclosure arm, where the harness refuses the
 #         artifact the offline rules accept) are quoted in §3 of docs/evidence/0009a-native-oracle-v2.md.

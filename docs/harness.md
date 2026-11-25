@@ -468,11 +468,18 @@ says so.
   the rule's own statement, not the reading interpreter's recursion limit) and `oracle.receipt-integrity` (a
   receipt's byte count, whole-file SHA-256 and one anchor per line — the line's own bytes, line feed included — read
   against the artifact: a mutated byte is refused, named by the line it moved; a receipt covers an
-  artifact holding at least one line, so the empty artifact is not receipt-identified by this rule). The
-  byte layer is read
-  first, and a violation there ends the *record* reading — while a supplied receipt, whose statements are
-  about the artifact's raw bytes, is compared wherever it was given, so `--disable-rule oracle.utf8`
-  drops that rule alone rather than hiding a disagreement the receipt itself reports. **It holds no Codex
+  artifact holding at least one line, so the empty artifact is not receipt-identified by this rule).
+  **Every rule is evaluated, or explicitly not evaluated.** `ORACLE_RULE_INPUTS` declares what each rule
+  reads: `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` read the artifact's own bytes
+  — the line rule included, because a decode result cannot gate a byte predicate, and the receipt
+  wherever one was given, because its statements are about raw bytes — while `oracle.jsonl-objects`
+  needs the text the byte layer answers and is reported as *not evaluated* (naming `oracle.utf8`), never
+  as an absent violation, where that layer refused. `--disable-rule` is a set subtraction from the
+  violations *after* every rule was evaluated, never a reason to skip one, so a verdict is `PASS` (exit
+  0) only where every rule was evaluated and no violation remains, `oracle: FAIL` (exit 1) where
+  violations remain, and `oracle: INCOMPLETE` (exit 2) where none remains but a rule was left unjudged —
+  `--disable-rule oracle.utf8` over non-UTF-8 bytes still cites the byte rules' own violations, or names
+  the unjudged text rule instead of handing back a pass. **It holds no Codex
   knowledge**: whether an artifact is
   one Codex reads or resumes is the binary's own answer — read by the native half above, and shown side
   by side by its **disclosure arm**, which plants the frozen artifact under the scratch home and records
@@ -487,13 +494,15 @@ says so.
   follows `latest`) beside every answer it reads, while a binary it cannot fingerprint ends the run
   INCOMPLETE, naming the unreadable half, so no verdict is attributed to a binary its own header could
   not name. The oracle's verdict line is the last one printed —
-  `oracle: PASS` / `oracle: FAIL — …` / `oracle: INCOMPLETE — …` — with exit 0/1/2; its rules and their
+  `oracle: PASS` / `oracle: FAIL — …` / `oracle: INCOMPLETE — …` — with exit 0/1/2, and INCOMPLETE is
+  both an input the command could not read and a reading where a rule was left unjudged; its rules and their
   one-sentence statements live in the script's own `ORACLE_RULES`; its committed fixtures are
   `scripts/tests/testdata/codex-oracle/artifact.jsonl` (three JSON objects that model no agent's format)
   and the `artifact-receipt.json` that names its bytes; and `--selftest-mutations` executes the registry
   against its mutation corpus — every rule id, three arms each, through the command's own
   `--validate`/`--receipt`/`--disable-rule` path — so a rule without a red fixture, or a mutation naming
-  no rule, fails. The required `selftest` step's `CodexArtifactOracle` holds the same corpus and the
+  no rule, fails, and for every pair of byte-reading rules the corpus holds one mutation whose bytes
+  violate both, declared in each rule's own arm, so disabling either still cites the other. The required `selftest` step's `CodexArtifactOracle` holds the same corpus and the
   negative space (a container-valid artifact that is no agent's session passes; the frozen surface names
   no foreign format's vocabulary), so the gate re-derives the offline half without the binary. **This
   section, the rule table and `--validate` are read-only for the rest of goal 0009 (the oracle lock):** a

@@ -56,17 +56,22 @@ digest, and the disclosure arm below.
 | --- | --- |
 | `oracle.utf8` | the artifact's bytes are valid UTF-8 text and its first bytes are no byte-order mark |
 | `oracle.whole-lines` | the artifact's bytes are whole lines: the empty artifact, or bytes whose final byte is a line feed — an artifact whose last bytes are an unterminated record is refused |
-| `oracle.jsonl-objects` | every non-empty line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer; a line nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
+| `oracle.jsonl-objects` | every line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer; a line nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
 | `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule |
 
-**Reading is staged.** The byte layer is read first (`oracle.utf8`): a violation there ends the *record*
-reading, because nothing beyond the bytes can be read as JSON. Then the line layer
-(`oracle.whole-lines`) and the per-line JSON layer (`oracle.jsonl-objects`), and, wherever a receipt is
-handed in, the comparison (`oracle.receipt-integrity`) — over the artifact's raw bytes, so it is taken
-even where the text layer failed (the r2 round's refinement: `--disable-rule oracle.utf8` drops the
-UTF-8 rule alone rather than hiding the receipt's own disagreement). A mutation crafted for one rule
-leaves the earlier layers green and the later ones untouched — which is what the corpus's own mutations
-are shaped for and what `--selftest-mutations` proves.
+**Every rule is evaluated, or explicitly `NotEvaluated`.** `ORACLE_RULE_INPUTS` declares what each rule
+reads: `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` are `on_bytes` — evaluated
+against the artifact's own bytes, the line rule included (a decode result cannot gate a byte predicate),
+and the receipt wherever one was handed in (the r2 round's refinement: its disagreement survives the
+text layer's failure) — while `oracle.jsonl-objects` is `needs_text`: where the byte layer answered no
+text it is `NotEvaluated(blocked_by="oracle.utf8")`, a result the report shows by name rather than an
+absent violation. `--disable-rule` is a set subtraction from the violation list *after* every rule was
+evaluated, never a reason to skip one; a verdict is `PASS` only where every rule was evaluated and no
+violation remains, `FAIL` where violations remain, and `INCOMPLETE` (exit 2) where none remains but a
+rule was left unjudged (the r3 round's seam: the pre-fix reading answered PASS over an unterminated
+record whose byte rule the decode failure had skipped). The corpus is part of the seam: for every pair
+of byte rules one mutation violates both, declared in each rule's arm, so disabling either still cites
+the other (`test_every_pair_of_byte_rules_is_co_cited_by_a_mutation`).
 
 **The artifact fixture is not a Codex session.** `scripts/tests/testdata/codex-oracle/artifact.jsonl` is
 three JSON objects that model no agent's format, committed with its receipt
@@ -86,8 +91,9 @@ never a pass.
 `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — <reason>` with exit 0/1/2;
 `--selftest-mutations` runs the corpus (three arms per mutation: the positive fixture passes, the
 mutation cites its own rule beside every other rule its bytes are known to break, and `--disable-rule`
-turns its own rule off — green, or still failing citing exactly those others) through the shipped
-command's own path, on mutated bytes written under one scratch directory.
+turns its own rule off — clean of that rule, green where every rule was still evaluated, INCOMPLETE
+where the disabled rule left a `needs_text` rule unjudged, or still failing citing exactly those others)
+through the shipped command's own path, on mutated bytes written under one scratch directory.
 
 **The disclosure arm (native half).** The check plants the oracle's frozen artifact under its scratch
 home's sessions tree, asks the target's own app server to resume it, and records the pair — *the

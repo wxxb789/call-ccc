@@ -53,8 +53,11 @@ and pass.
   and `--selftest-mutations` proves the declared rule set equals the mutated rule set **over the
   survivors only** — each pair's three arms: the positive fixture passes; the mutation fails citing that
   rule (and, where its bytes are known to break another rule too, exactly those, the pair's `also_cited`
-  set); and with `--disable-rule` for the pair's own rule the same bytes pass, or still fail citing
-  exactly the other rule its bytes break.
+  set); and with `--disable-rule` for the pair's own rule the same bytes carry no violation of that rule
+  — a pass where every rule was still evaluated, INCOMPLETE naming the rule the disabled one left
+  unjudged where it was not, or still fail citing exactly the other rules its bytes break. The corpus
+  holds that independence for every pair of byte-reading rules: one mutation violates both, declared in
+  each rule's own arm, so disabling either still cites the other.
 - **D2 — The offline oracle holds no foreign-format knowledge**, stated testably: the rule registry
   names no Codex member, event type, record kind or ordering, and an artifact that is well-formed as a
   **container** but wrong as a **Codex** artifact passes the offline rules (a case that fails if any

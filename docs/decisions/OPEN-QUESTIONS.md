@@ -3283,3 +3283,39 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Reversal:** (b) — one increment that restores the name predicate and re-points the four negative
   cases; R2-2's finding would reopen with it.
 - **Settled by:** the owner, or the increment that gives the harness-answer reading another consumer.
+
+## Q-0009a-08 — The reading evaluated, refined: every rule evaluated or explicitly `NotEvaluated` (supersedes Q-0009a-02's evaluation clause)
+
+- **Status:** resolved (operator disposition, 2026-11-25, r3 fix round R3-2 and the round's seam mandate;
+  the clause it supersedes is Q-0009a-02's "a violation there is the reading's only content (no line,
+  JSON or receipt comparison), so dropping that rule hands back an empty reading — a PASS").
+- **Question:** the staged reading left two shapes open and the r3 lane's cross-family pass found both.
+  A violation at the byte layer ends the *record* reading (settled in r2), but does it also gate the
+  *line* rule — a predicate over the artifact's bytes — and what does `--disable-rule oracle.utf8` leave
+  when the text a `needs_text` rule reads was never answered? Measured pre-fix: `b'{"note":"\xff"}`
+  (no final line feed, not UTF-8 text) answered **PASS** with only `oracle.utf8` disabled, hiding a
+  violation its own last byte proves.
+- **Options:** (a) every rule is evaluated or explicitly `NotEvaluated`: `oracle.whole-lines` reads the
+  artifact's own bytes (a decode result cannot gate it); `oracle.jsonl-objects` declares `needs_text`
+  and is `NotEvaluated(blocked_by="oracle.utf8")` where no text was answered; `--disable-rule` is a set
+  subtraction *after* evaluation; a verdict is PASS only where every rule was evaluated and no violation
+  remains, `oracle: INCOMPLETE` (exit 2) where none remains but a rule was left unjudged (taken);
+  (b) the pre-fix staging, where the decode result gated the line rule and the filter could hand back a
+  PASS over a demonstrable violation (refused by R3-2); (c) answer INCOMPLETE whenever the text layer
+  failed, byte-rule violations included (refused: the byte rules' violations are decidable from the
+  bytes and are what the finding's artifact proves).
+- **Default taken:** (a). The byte rules are predicates over bytes, so nothing about the text layer may
+  gate them; the one dependency that is real (`oracle.jsonl-objects` needs text) is declared and shown
+  as a result rather than as an absent violation; and the verdict vocabulary now keeps its own promise —
+  PASS only where every stated rule judged the bytes. The corpus is part of the seam: for every pair of
+  byte-reading rules one mutation violates both, declared in each rule's own arm, so disabling either
+  still cites the other (`test_every_pair_of_byte_rules_is_co_cited_by_a_mutation`; the pairs are
+  utf8×whole-lines, utf8×receipt-integrity, whole-lines×receipt-integrity), and R3-2's own bytes are
+  pinned through the shipped command by `test_a_disabled_utf8_rule_still_cites_the_line_rule`. This
+  *strengthens* the frozen oracle (more artifacts refused, and PASS now requires more), so the oracle
+  lock's co-mutation concern does not arise; the operator dispositioned it as this increment's fix
+  round.
+- **Reversal:** (b) — one increment that restores the gate and re-points the two cases above; R3-2's
+  finding would reopen with it.
+- **Settled by:** the owner, or an increment that gives the byte layer and the text layer one shared
+  reading for another reason.

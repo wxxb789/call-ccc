@@ -23,13 +23,20 @@ step or CI workflow changes.
 | `oracle.jsonl-objects` | every line exactly one JSON object, member names unique, no unpaired surrogate escape; a line nested deeper than 256 levels is refused by the rule's own stated bound, not by the reading interpreter's recursion limit; integers are read by their written digits, never converted, so the interpreter's integer-conversion limit decides no verdict |
 | `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes — the anchors the two sides share are compared even where the counts differ, so a moved delimiter byte still names the line it diverged on (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
 
-The reading is staged — the byte layer first, where a violation ends the *record* reading — and a
-supplied receipt, whose statements are about the artifact's raw bytes, is compared wherever one was
-given, so `--disable-rule oracle.utf8` drops that rule alone rather than hiding a disagreement the
-receipt itself reports. The receipt is a
+The reading: **every rule is evaluated, or explicitly `NotEvaluated`.** `ORACLE_RULE_INPUTS` declares
+what each rule reads — `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` read the
+artifact's own bytes (the line rule included: the pre-r3 reading gated it on the decoded text, so a
+masked byte in an unterminated record hid the line rule's own violation), the receipt wherever one was
+given (the r2 round's refinement) — while `oracle.jsonl-objects` is `needs_text` and is reported as *not
+evaluated* (naming `oracle.utf8`), never as an absent violation, where the byte layer answered no text.
+`--disable-rule` is a set subtraction *after* evaluation, never a reason to skip one: a verdict is PASS
+only where every rule was evaluated and no violation remains, FAIL where violations remain, and
+INCOMPLETE (exit 2) where none remains but a rule was left unjudged. The corpus is part of the seam —
+for every pair of byte rules one mutation violates both, declared in each rule's own arm, so disabling
+either still cites the other. The receipt is a
 committed document beside the frozen artifact (`scripts/tests/testdata/codex-oracle/artifact.jsonl` +
 `artifact-receipt.json`), and `--selftest-mutations` proves the declared set equals the mutated set —
-**4 rules, 17 fixture pairs, each with its three arms** (a pair whose bytes are known to break a second
+**4 rules, 22 fixture pairs, each with its three arms** (a pair whose bytes are known to break a second
 rule names it, the pair's `also_cited` set, and still cites exactly it with the pair's own rule
 disabled; §3). The fixture models no agent's format on
 purpose: it is the artifact a case proves the rules accept while the binary refuses it (§4).
@@ -52,7 +59,23 @@ I/O failure naming the path, and a refusal of a same-named file elsewhere each f
 fingerprint resolves the executable before hashing or launching it and requires a real `--version`
 answer (the `(no diagnostics)` placeholder is not one); and every read of the caller's home bytes and
 every harness invocation answers by name — INCOMPLETE where the run cannot proceed without it, the
-check's own FAIL where it can — instead of an exception out of the run (§3, §6).
+check's own FAIL where it can — instead of an exception out of the run (§3, §6). The 2026-11-25 **r3
+fix round** (the same lane's third pass, under a root-cause consult's mandate: three invariants that
+lived only in comments are now typed seams) replaced the plant/cleanup flag pair with one `ForeignHome`
+ownership object — a path is recorded the instant its exclusive create succeeds and removed whatever
+happens next, a *failed write after the reservation* no longer strangles the next run, a removal that
+fails is INCOMPLETE by name, and the directories this run created to hold its fabrications are recorded
+and removed too; gave every harness interaction one result vocabulary (`Thread` / `OtherError` /
+`NoAnswer`, with `Refusal` built only by the one sentence matcher from a JSON-RPC error message, and a
+pipe that dropped under the client folded at the client object so a caller's `finally` cannot replace
+an answer already in hand); and re-shaped the oracle reading per §1's paragraph above. The tests moved
+to the same seams: the drive's app-server stub now answers `thread/read` *replies* the shipped
+extraction reads, the ownership object's record-before-write and named-removal contract has its own
+unit cases, and `call`/`notify`/`close` are driven against a real broken pipe; six whole-suite
+mutations (one per seam shape) each turn the suite red, where every one of them stayed green at the
+head this round started from (§3). The ownership object's one declared residual is stated on it: a kill
+between the exclusive create and process exit leaves a file no `finally` runs for, answered by the next
+run's collision refusal rather than swept.
 
 ## 2. The deletion list
 
@@ -89,16 +112,22 @@ reader-answerable shapes — is not Codex's), with its five framing mutations ca
 Codex call ids, so the pair is re-shaped onto the new fixture's own note string as `a line holding an
 unpaired surrogate escape`.
 
-**Added** (the premise's other two subjects): `oracle.utf8` (3 pairs: `a byte that is not UTF-8`,
+**Added** (the premise's other two subjects): `oracle.utf8` (4 pairs: `a byte that is not UTF-8`,
 `a byte-order mark`, and — added by the 2026-11-25 r2 round — `a byte that is not UTF-8 under the
 unchanged receipt`, a *same-length* masked byte whose receipt disagreement (`also_cited`:
-`oracle.receipt-integrity`) survives dropping `oracle.utf8`), `oracle.whole-lines` (1 pair: `a record
-left unterminated`),
-`oracle.receipt-integrity` (7 pairs: `an artifact byte changed under an unchanged receipt`,
+`oracle.receipt-integrity`) survives dropping `oracle.utf8`; plus, added by the r3 round,
+`a byte that is not UTF-8 in an unterminated record`, whose `also_cited` is `oracle.whole-lines` — the
+pair the r3 finding measured a reading answering PASS for), `oracle.whole-lines` (3 pairs: `a record
+left unterminated`, the r3 round's `a record left unterminated beside a masked byte` (`also_cited`:
+`oracle.utf8`) and `a record left unterminated under the unchanged receipt` (`also_cited`:
+`oracle.receipt-integrity`)),
+`oracle.receipt-integrity` (9 pairs: `an artifact byte changed under an unchanged receipt`,
 `a receipt that states another whole-file digest`, `a receipt whose byte count is wrong`,
 `a receipt naming no lines`, `a receipt naming one line fewer`,
-`a receipt whose last anchor is another line's`, `a receipt that is not an object`). Corpus now: 4 rules,
-17 pairs.
+`a receipt whose last anchor is another line's`, `a receipt that is not an object`, and the r3 round's
+`a receipt under a masked byte` (`also_cited`: `oracle.utf8`) and `a receipt under an unterminated
+record` (`also_cited`: `oracle.whole-lines`)). Corpus now: 4 rules, 22 pairs, and every pair of
+byte-reading rules is co-cited in both directions.
 
 **Fixtures.** Deleted with their subjects: `scripts/tests/testdata/codex-oracle/session.jsonl`,
 `reduced.jsonl`, `session-media.jsonl`, `session-receipt.json`, `reduced-receipt.json` (three synthetic
@@ -146,7 +175,23 @@ elsewhere); the two seam classes `ExclusivePlantClaim` (the exclusive-create con
 collision) and `HarnessThatCannotBeStarted` (a binary that cannot be started records a named answer);
 and, in the oracle class, `test_a_receipt_still_answers_a_byte_the_text_layer_cannot_read`. Two existing
 cases gained arms with it: the corpus case now reads every pair's `also_cited` set, and the closed-set
-case asserts each co-citation is declared and is not the pair's own rule.
+case asserts each co-citation is declared and is not the pair's own rule. The 2026-11-25 **r3 round**
+adds eleven (the narrowed suite moves 82 → 93): in `ProtectedArtifactsAfterNativeVerification`, the
+failed-write case (the reservation survives the failure, the partial file is removed, and a retry's own
+plant finds the name free), the refused-removal case (INCOMPLETE by name, exit 2, reported once, the
+file reported rather than pretended away), the dropped-pipe disclosure arm (`NoAnswer` at the arm's
+resume is a FAIL in the transport's own words, never the refusal the check's name claims), and the
+text-only view-reply case — whose stub now answers `thread/read` *replies* and no longer stands in for
+`thread_view`, so the shipped extraction runs inside every drive case (the removed stub was a finding of
+its own); the seam unit classes `ForeignHomeOwnership` (the exclusive-create contract, the held-name
+collision, the record-before-write rollback and the named removal; renamed from `ExclusivePlantClaim`)
+and `BrokenPipeAtTheClientSeam` (a
+real pipe whose read end is closed: `call`, `notify` and `close` fold it, and `close` raises nothing a
+caller's `finally` would lose an answer to); `ThreadViewExtraction` (the extraction's own cases: the
+kinds are the items' types, a kind word in message text is not a kind); and, in the oracle class,
+`test_a_disabled_utf8_rule_still_cites_the_line_rule` (R3-2's own bytes, through the command) and
+`test_every_pair_of_byte_rules_is_co_cited_by_a_mutation`, beside the byte-layer case rewritten for the
+not-evaluated contract and the closed-set case's input-kind assertions.
 
 **Documentation.** The attempt's `docs/harness.md` paragraph describing sixteen rules and the manifest
 receipt is replaced by the reduced oracle's description plus the disclosure (§4); its AGENTS.md edits of
@@ -161,9 +206,10 @@ text is in git history and the attempt's own trees at the tag.
 own `--validate`/`--receipt`/`--disable-rule` path):
 
 ```
-oracle.selftest: PASS — 4 rule(s), 17 fixture pair(s): positive PASS, negative FAIL (each citing its own
-rule; a pair whose bytes break another rule names it too), --disable-rule PASS (still citing those others
-where the bytes break them)
+oracle.selftest: PASS — 4 rule(s), 22 fixture pair(s): positive PASS, negative FAIL (each citing its own
+rule; a pair whose bytes break another rule names it too), --disable-rule clean of the pair's own rule
+(still citing those others where the bytes break them, INCOMPLETE where the disabled rule left a
+needs_text rule unjudged)
 ```
 
 **The verdict paths**, with real exit codes:
@@ -183,7 +229,8 @@ $ python3 scripts/codex-native-check.py --validate <scratch>/any.jsonl          
 oracle: PASS — 3 record(s)                                                    # exit 0
 $ python3 scripts/codex-native-check.py --validate <scratch>/bad.jsonl             # a 0xFF first byte
 oracle: oracle.utf8 — the artifact is not UTF-8 text: byte 0xff at offset 0
-oracle: FAIL — 0 record(s), 1 violation(s)                                    # exit 1
+oracle: oracle.jsonl-objects — not evaluated: oracle.utf8 answered no text to judge
+oracle: FAIL — 0 record(s), 1 violation(s), 1 rule(s) not evaluated           # exit 1
 $ python3 scripts/codex-native-check.py --validate <scratch>/no-such-file.jsonl
 oracle: INCOMPLETE — the artifact <scratch>/no-such-file.jsonl cannot be read: …   # exit 2
 $ python3 scripts/codex-native-check.py --validate <scratch>/big.jsonl             # {"n": <5,000 nines>}
@@ -201,8 +248,9 @@ oracle: FAIL — 1 record(s), 5 violation(s)                                    
 The last two commands are the 2026-11-24 round's reading fixes, re-measured: a 5,000-digit integer is one
 JSON object on an interpreter whose conversion limit is 4,300 digits, and a moved delimiter byte is
 refused with the line whose bytes diverged rather than only with the file's digest and the count. The
-2026-11-25 r2 round's own reading fix is one more pair of paths over the same bytes — a *same-length*
-0xFF byte masked into the frozen artifact's first line, under the receipt the frozen bytes earned:
+2026-11-25 r2 round's own reading fix is one more block of paths over the same bytes — a *same-length*
+0xFF byte masked into the frozen artifact's first line, under the receipt the frozen bytes earned (the
+outputs below are the r3 round's own, re-measured on this record's tree):
 
 ```
 $ python3 scripts/codex-native-check.py --validate <scratch>/masked.jsonl \
@@ -210,36 +258,53 @@ $ python3 scripts/codex-native-check.py --validate <scratch>/masked.jsonl \
 oracle: oracle.receipt-integrity — the receipt states sha256 855ccca11024…, the artifact's bytes are sha256 bd31b20dd855…
 oracle: oracle.utf8 — the artifact is not UTF-8 text: byte 0xff at offset 17
 oracle: oracle.receipt-integrity line 1 — the line's bytes are sha256 57b328a054d7…, the receipt's anchor is sha256 402041d785c7…
-oracle: FAIL — 0 record(s), 3 violation(s)                                    # exit 1
+oracle: oracle.jsonl-objects — not evaluated: oracle.utf8 answered no text to judge
+oracle: FAIL — 0 record(s), 3 violation(s), 1 rule(s) not evaluated           # exit 1
 $ python3 scripts/codex-native-check.py --validate <scratch>/masked.jsonl \
     --receipt scripts/tests/testdata/codex-oracle/artifact-receipt.json --disable-rule oracle.utf8
 oracle: oracle.receipt-integrity — the receipt states sha256 855ccca11024…, the artifact's bytes are sha256 bd31b20dd855…
 oracle: oracle.receipt-integrity line 1 — the line's bytes are sha256 57b328a054d7…, the receipt's anchor is sha256 402041d785c7…
-oracle: FAIL — 0 record(s), 2 violation(s)                                    # exit 1
+oracle: oracle.jsonl-objects — not evaluated: oracle.utf8 answered no text to judge
+oracle: FAIL — 0 record(s), 2 violation(s), 1 rule(s) not evaluated           # exit 1
 $ python3 scripts/codex-native-check.py --validate <scratch>/masked.jsonl \
     --receipt scripts/tests/testdata/codex-oracle/artifact-receipt.json \
     --disable-rule oracle.utf8 --disable-rule oracle.receipt-integrity
-oracle: PASS — 0 record(s)                                                    # exit 0
+oracle: oracle.jsonl-objects — not evaluated: oracle.utf8 answered no text to judge
+oracle: INCOMPLETE — 0 record(s), 1 rule(s) not evaluated                     # exit 2
 ```
 
-The middle command is the fix: before it, the byte-layer violation skipped the receipt comparison
+The middle command is the r2 fix: before it, the byte-layer violation skipped the receipt comparison
 entirely, the filter then dropped the only surviving violation, and these bytes **passed** with only
-`oracle.utf8` disabled (measured: `exit 0`); now the receipt's own two statements stand, and the pair is
-green only with the receipt dropped too.
+`oracle.utf8` disabled (measured: `exit 0`); now the receipt's own two statements stand. The r3 round
+changes the third arm: with both byte rules dropped the reading no longer answers PASS — the
+text-dependent rule was never judged, and a verdict is PASS only where every rule was evaluated — so it
+names the unjudged rule and exits INCOMPLETE (2), which is the seam the r3 finding was about (the
+pre-r3 reading answered PASS over bytes whose final byte was not a line feed; §1's paragraph and
+`--disable-rule oracle.utf8`'s middle arm above hold the line rule's violation standing).
 
 **The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §6):
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 82 tests in 0.439s
+Ran 94 tests in 0.583s
 OK
 ```
 
+> **Operator correction (2026-11-26 ~01:10 CST, after this stage's report).** The fingerprint fix above
+> `resolve()`d the `--codex` path. On this host `codex` is a **mise shim** — a symlink to the `mise`
+> binary that dispatches on `argv[0]` — so resolving it launched `mise` itself, whose `--version` is
+> mise's and whose `app-server` is not Codex's: the native run exited **1** and the disclosure arm was
+> answered by nothing. The path is now made absolute with `os.path.abspath` (**never** `resolve()`d),
+> pinned by `test_a_symlinked_shim_is_launched_through_its_own_path` (measured: the case fails with
+> `resolve()` restored and passes without it). Re-measured on the corrected tree: `GATE: PASS`,
+> `selftest` 549, the narrowed suite 94, native `--json` exit 0 (27 passed / 0 failed / 2 skipped,
+> `codex-cli 0.172.0`).
+
 The 48 → 57 movement is the simplify-apply round's nine added cases, 57 → 59 the review-fix round's two,
 59 → 62 the second fix pass's three and 62 → 64 the third pass's two (the unrelated-name guard's own
-refusal path and the `--keep` refusal), 64 → 69 the cross-family review round's five, and 69 → 82 the
-2026-11-25 r2 round's thirteen (§2 names them); the run above is that round's own, on the tree this
-record describes.
+refusal path and the `--keep` refusal), 64 → 69 the cross-family review round's five, 69 → 82 the
+2026-11-25 r2 round's thirteen, and 82 → 93 the 2026-11-25 r3 round's eleven (§2 names them); the run
+above is the r3 round's own, on the tree this record describes.
 
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
 exit 0). The header it records — this run's resolved binary, the same two values the run's `--json`
@@ -255,6 +320,10 @@ model access and no prompt flag was passed) — and the disclosure arm's own lin
 ```
 PASS: the harness refuses an artifact the offline rules accept — the offline rules: green; thread/resume answered: thread/resume failed: failed to read thread: thread-store internal error: failed to read session metadata <scratch>/codex-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl: rollout at <scratch>/codex-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl is empty
 ```
+
+The r3 round re-ran that command on this record's tree: the same resolved version and digest, the same
+`27 check(s) passed, 0 failed, 2 skipped`, exit 0, and the arm's PASS above re-measured verbatim (the
+scratch path was this run's own) — the seam replacements move nothing the binary answers.
 
 The r2 round reads that arm and this run strictly: the arm's PASS requires the harness's measured
 refusal sentence about the *exact* planted path (`rollout at <the planted path> is empty`) — this answer
@@ -309,7 +378,10 @@ No new entry is owed: the surviving rules judge no foreign format, and the arm t
 read of the binary's own answer, which is what the ownership rule asks for. The defaults this increment
 took where the brief was silent are recorded in `docs/decisions/OPEN-QUESTIONS.md` as `Q-0009a-01`–`05`,
 with the 2026-11-25 r2 round's two refinements appended as `Q-0009a-06` (the staged reading's receipt
-clause, superseding `Q-0009a-02`'s) and `Q-0009a-07` (the refusal criterion, superseding `Q-0009a-05`).
+clause, superseding `Q-0009a-02`'s) and `Q-0009a-07` (the refusal criterion, superseding `Q-0009a-05`),
+and the r3 round's reading supersession as `Q-0009a-08` (every rule evaluated or explicitly
+`NotEvaluated`; `--disable-rule` a subtraction after evaluation, superseding `Q-0009a-02`'s evaluation
+clause).
 
 ## 6. The gate, on the state this increment leaves
 
@@ -323,7 +395,7 @@ gate: go=<go 1.27.4> module=ccc targets=./cmd/ccc/... ./internal/ccc/...
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 537 tests in 9.608s (rc=0)
+  PASS     selftest    Ran 549 tests in 17.839s (rc=0)
   PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5775 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
   PASS     secrets     no leaks found in 230 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -331,12 +403,12 @@ GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
-corpus's 17 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's row against the Go test it cites. The table is the 2026-11-25 r2 round's own
+corpus's 22 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
+which verifies the goal's row against the Go test it cites. The table is the 2026-11-25 r3 round's own
 run, on the tree that holds this record, and it printed the unqualified `GATE: PASS`; its `selftest`
-count moved 503 → 519 across the four rounds, → 524 in the cross-family review round and → 537 in the r2
-round (§2 and §3 name the added cases), and its `secrets` count (230 files) is this worktree's own scope
-— the
+count moved 503 → 519 across the four rounds, → 524 in the cross-family review round, → 537 in the r2
+round and → 548 in the r3 round (§2 and §3 name the added cases), and its `secrets` count (230 files) is
+this worktree's own scope — the
 count includes untracked `__pycache__`/`bin` files — not a change the round made.
 
 ## What this record does not claim

@@ -8,7 +8,11 @@ that decides whether a shell reads the line as the assignment at all), and the o
 source session and the planted session are compared **after** the harness's own native stages (``main``
 driven with its subprocess and app-server seams replaced by stubs). A third subject is driven the same
 way: the app server's diagnostics drainer, whose retained lines are bounded
-(``new_diagnostics``/``drain_diagnostics``).
+(``new_diagnostics``/``drain_diagnostics``). The increment's other seams carry their own classes in the
+same style: the ownership object every plant goes through (``ForeignHomeOwnership``), the client seam
+folding a dropped pipe (``BrokenPipeAtTheClientSeam``), the shipped view extraction
+(``ThreadViewExtraction``), and the offline oracle's rules, corpus and ``--validate`` mode
+(``CodexArtifactOracle``).
 
 The resume-invocation check is the harness's own rule about the line a caller pastes or an agent runs: it
 must name the data directory the session was installed into, because Codex takes that directory from
@@ -50,6 +54,7 @@ import importlib.util
 import io
 import json
 import os
+import queue
 import shlex
 import shutil
 import subprocess
@@ -646,6 +651,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               keep: bool = False,
               unrelated_refusal: bool = False,
               handshake_fails: bool = False,
+              probe_no_answer: bool = False,
               probe_accepted: bool = False,
               probe_lookup_miss: bool = False,
               probe_other_artifact: bool = False,
@@ -655,9 +661,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               version_output_empty: bool = False,
               codex_digest_unreadable: bool = False,
               relative_codex: bool = False,
+              codex_is_a_symlink: bool = False,
               unreadable_home_entry: str | None = None,
               installed_unreadable: bool = False,
               race_plant_at: str | None = None,
+              plant_write_fails_at: str | None = None,
+              unlink_fails_at: str | None = None,
+              view_reply: str = "typed",
               raises_at: str | None = None,
               dangling_symlink_at: str | None = None
               ) -> tuple[int, dict[str, tuple[str, str]]]:
@@ -735,6 +745,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         file appears when this run's plant first reaches that name, the shape two overlapping runs
         against one home produce, so the plant must treat it as a collision and leave it byte for byte
         (``RACE_PLANT_TEXT``) rather than truncate it or remove it later;
+        ``plant_write_fails_at`` (``"probe"`` or ``"unrelated"``) makes that plant's own *write* fail
+        after its exclusive create reserved the name — the window the ownership object exists for — so
+        the run must report the failure by name, remove the reserved file, and leave no leftover a retry
+        would meet; ``unlink_fails_at`` (``"probe"`` or ``"unrelated"``) makes the removal of that
+        fabrication fail, so the run must report INCOMPLETE naming the path and answer exit 2 rather than
+        a verdict that outruns the leftover;
         ``dangling_symlink_at``
         (``"probe"`` or ``"unrelated"``) plants a caller's *dangling symlink* there instead, whose
         target the run must neither follow nor delete — the collision shape a guard asking ``exists()``
@@ -748,6 +764,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         refusal of a same-named file in another directory;
         ``handshake_fails`` makes the stub app server never
         complete the handshake, so the arm's subject becomes an answer that was never obtained;
+        ``probe_no_answer`` makes the arm's resume answer `NoAnswer` (the shape a harness that exited
+        after the handshake produces), so the arm must record the failure as no answer rather than as
+        the refusal its name claims;
+        ``view_reply`` is what the stub answers `thread/read` with: ``"typed"`` (items whose own
+        ``type`` fields are the kinds the shipped extraction reads) or ``"text-only"`` (a reply whose
+        message text spells the expected kind words while no item of those types exists, so a reading of
+        the rendered lines answers kinds the reply does not hold);
         ``probe_accepted`` makes it answer the arm's resume with a thread of the planted session's own,
         so the arm's subject becomes an answer that accepted the artifact; ``version_fails`` makes
         the stub's ``codex --version`` exit non-zero, ``version_output_empty`` makes it succeed with no
@@ -816,7 +839,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             (repo / "codex").write_text("the repository's decoy codex binary\n")
         else:
             codex = str(scratch / "codex")
-            if codex_digest_unreadable:
+            if codex_is_a_symlink:
+                # A mise shim's own shape: the name on PATH is a symlink to another binary and the
+                # harness is chosen by argv[0]. Following the link launches the target, whose
+                # `--version` is its own and whose `app-server` is not this harness's.
+                (scratch / "codex-real").write_text("the case's real stub codex binary\n")
+                Path(codex).symlink_to(scratch / "codex-real")
+            elif codex_digest_unreadable:
                 Path(codex).mkdir()
             else:
                 Path(codex).write_text("the case's stub codex binary\n")
@@ -1066,17 +1095,24 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             raise AssertionError(f"the case's stub was asked for an unexpected command: {command}")
 
         class FakeAppServer:
-            """The app server this case never starts: it answers the loader with the installed file."""
+            """The app server this case never starts: it answers the loader with the installed file and
+            the view with a `thread/read` reply of its own.
+
+            The reply is a *reply*: the shipped `thread_view` extraction reads it, so a case that changes
+            what the reply lists -- or one whose message text spells an expected kind without an item of
+            that type existing -- exercises the shipped reading instead of standing in for its result.
+            """
 
             def __init__(self, binary, home):
                 self.binary, self.home = binary, home
 
-            def handshake(self) -> None:
+            def handshake(self):
                 if handshake_fails:
-                    raise RuntimeError("the case's stub never answered initialize")
+                    return NATIVE_CHECK.NoAnswer("the case's stub never answered initialize")
+                return None
 
-            def call(self, method: str, params: dict) -> dict:
-                if method != "thread/resume":
+            def call(self, method: str, params: dict):
+                if method not in ("thread/resume", "thread/read"):
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
                 if session not in (thread_id, second_thread_id):
@@ -1086,56 +1122,76 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         raise AssertionError(
                             f"the disclosure arm's refusal was asked for session {session}, but the "
                             f"planted artifact {probe} does not hold the frozen fixture's own bytes")
+                    if probe_no_answer:
+                        return NATIVE_CHECK.NoAnswer(
+                            "the case's stub dropped its pipe after the handshake")
                     if probe_accepted:
-                        return {"thread": {"id": session, "path": str(probe),
-                                           "historyMode": "paginated", "cwd": "/tmp"}}
+                        return NATIVE_CHECK.Thread(
+                            {"thread": {"id": session, "path": str(probe),
+                                        "historyMode": "paginated", "cwd": "/tmp"}})
                     if unrelated_refusal:
-                        raise NATIVE_CHECK.AppServerErrorResponse(
+                        return NATIVE_CHECK.OtherError(
                             "thread/resume failed: Invalid params: threadId is required")
                     if probe_lookup_miss:
-                        raise NATIVE_CHECK.AppServerErrorResponse(
+                        return NATIVE_CHECK.OtherError(
                             f"thread/resume failed: no session {session} is known to this store")
                     if probe_other_artifact:
-                        raise NATIVE_CHECK.AppServerErrorResponse(
+                        return NATIVE_CHECK.OtherError(
                             f"thread/resume failed: failed to read session metadata {planted}: "
                             f"rollout at {planted} is empty")
                     if probe_open_error:
-                        raise NATIVE_CHECK.AppServerErrorResponse(
+                        return NATIVE_CHECK.OtherError(
                             f"thread/resume failed: failed to read session metadata {probe}: failed to "
                             f"open {probe}: Permission denied (os error 13)")
                     if probe_same_name_elsewhere:
                         elsewhere = Path("/elsewhere") / probe.name
-                        raise NATIVE_CHECK.AppServerErrorResponse(
+                        return NATIVE_CHECK.OtherError(
                             f"thread/resume failed: failed to read session metadata {elsewhere}: "
                             f"rollout at {elsewhere} is empty")
                     # The disclosure arm's own subject: the loader holds no session for the artifact the
                     # offline rules accept, and the harness's answer for it is its refusal — the shape
                     # the real binary was measured answering (`rollout at <path> is empty`), naming the
                     # rollout it could not read rather than a session id.
-                    raise NATIVE_CHECK.AppServerErrorResponse(
+                    return NATIVE_CHECK.OtherError(
                         f"thread/resume failed: failed to read thread: thread-store internal error: "
                         f"failed to read session metadata {probe}: rollout at {probe} is empty")
                 second = session == second_thread_id
                 path = second_installed if second else installed
+                if method == "thread/read":
+                    if view_reply == "text-only":
+                        # The expected kind appears only inside message text: a reading that rendered the
+                        # lines and looked for the words there answers the kinds it sees here, where a
+                        # reading of the items' own `type` fields answers none of them.
+                        text = "userMessage agentMessage"
+                        if second:
+                            text = f"{GROWTH_QUESTION} {GROWTH_ANSWER} {text}"
+                        items = [{"type": "reasoning", "text": text}]
+                    else:
+                        question = GROWTH_QUESTION if second else "the case's own question"
+                        answer = GROWTH_ANSWER if second else "the case's own answer"
+                        if second and not include_growth_in_second:
+                            question = "a question without the appended turn"
+                            answer = "an answer without the appended turn"
+                        items = [
+                            {"type": "userMessage",
+                             "content": [{"type": "text", "text": question}]},
+                            {"type": "agentMessage", "text": answer},
+                        ]
+                    return NATIVE_CHECK.Thread({"thread": {
+                        "id": session, "historyMode": "legacy",
+                        "turns": [{"id": f"{session}-turn", "items": items}]}})
                 if copy_mutation == ("second load" if second else "first load"):
                     # The copy the conversions read, changed while the target harness's own loader runs:
                     # for the second session that is after the second conversion and its own comparison, so
                     # only the comparison that runs last can catch it; for the first it is before the
                     # growth, so the changed bytes would become every later comparison's baseline.
                     same_length_swap(converted_copy["second" if second else "first"])
-                return {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
-                                   "cwd": "/tmp"}}
+                return NATIVE_CHECK.Thread(
+                    {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
+                                "cwd": "/tmp"}})
 
             def close(self) -> None:
                 pass
-
-        def fake_thread_view(server, thread):
-            lines = [f"thread {thread} (the case's stub's own view)"]
-            if str(thread) == second_thread_id and include_growth_in_second:
-                # The target's own view of the later session: the turn the source gained, as the harness
-                # itself lists it.
-                lines += [f"    userMessage: {GROWTH_QUESTION}", f"    agentMessage: {GROWTH_ANSWER}"]
-            return lines, ["userMessage", "agentMessage"]
 
         def fake_which(name, *args, **kwargs):
             if name != "codex":
@@ -1152,29 +1208,71 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         race_path = None
         if race_plant_at is not None:
             race_path = {"probe": probe, "unrelated": planted}[race_plant_at]
+        write_fails_path = None
+        if plant_write_fails_at is not None:
+            write_fails_path = {"probe": probe, "unrelated": planted}[plant_write_fails_at]
+        unlink_fails_path = None
+        if unlink_fails_at is not None:
+            unlink_fails_path = {"probe": probe, "unrelated": planted}[unlink_fails_at]
         claimed = {"fired": False}
+        failed_write = {"fired": False}
         real_open = Path.open
+        real_unlink = Path.unlink
 
-        def racing_open(self, *args, **kwargs):
+        class WriteFailsHandle:
+            """The handle a plant receives where this case makes its write fail: the name is already
+            reserved (the real exclusive create ran), and the write raises after closing it, so the
+            partial file the reservation left behind is what cleanup has to answer for."""
+
+            def __init__(self, handle):
+                self._handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._handle.close()
+                return False
+
+            def write(self, data):
+                self._handle.close()
+                raise OSError("the case's write failed after the name was reserved")
+
+        def case_open(self, *args, **kwargs):
             # The other writer wins the race the moment this run's plant reaches the name: the file is
             # there before the open that would create or truncate it, whatever that open is.
             if race_path is not None and not claimed["fired"] and Path(self) == race_path:
                 claimed["fired"] = True
                 with real_open(race_path, "wb") as handle:
                     handle.write(RACE_PLANT_TEXT)
-            return real_open(self, *args, **kwargs)
+            handle = real_open(self, *args, **kwargs)
+            if write_fails_path is not None and not failed_write["fired"] and Path(self) == write_fails_path:
+                failed_write["fired"] = True
+                return WriteFailsHandle(handle)
+            return handle
 
-        open_patch = (mock.patch.object(Path, "open", racing_open) if race_path is not None
-                      else contextlib.nullcontext())
+        def case_unlink(self, *args, **kwargs):
+            if unlink_fails_path is not None and Path(self) == unlink_fails_path:
+                raise PermissionError(f"the case's own removal of {self} is refused")
+            return real_unlink(self, *args, **kwargs)
+
+        patches = []
+        if race_path is not None or write_fails_path is not None:
+            patches.append(mock.patch.object(Path, "open", case_open))
+        if unlink_fails_path is not None:
+            patches.append(mock.patch.object(Path, "unlink", case_unlink))
         cwd_before = os.getcwd()
         if relative_codex:
             os.chdir(caller_binary.parent)
         try:
-            with open_patch, mock.patch.object(NATIVE_CHECK, "run", fake_run), \
-                    mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer), \
-                    mock.patch.object(NATIVE_CHECK, "thread_view", fake_thread_view), \
-                    mock.patch("shutil.which", fake_which), \
-                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                stack.enter_context(mock.patch.object(NATIVE_CHECK, "run", fake_run))
+                stack.enter_context(mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer))
+                stack.enter_context(mock.patch("shutil.which", fake_which))
+                stack.enter_context(contextlib.redirect_stdout(stdout))
+                stack.enter_context(contextlib.redirect_stderr(stderr))
                 code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
                                           "--codex-home", str(home)] + prompts
                                          + (["--keep"] if keep else []))
@@ -1730,6 +1828,99 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertFalse(probe.exists(),
                          "the run ended with the disclosure arm's planted artifact still in the home")
 
+    def test_a_write_that_fails_after_the_reservation_leaves_no_leftover(self) -> None:
+        """R3-1's window: the exclusive create reserved the name and the write then failed.
+
+        The stub makes the probe plant's own write raise after the real `O_EXCL` create succeeded, so
+        the name is reserved and the file is partial. The run must answer INCOMPLETE naming the path,
+        remove the partial file, and leave the home as it found it: the retry arm below plants the same
+        name again and finds it free, the state the finding measured the pre-fix run breaking (the
+        partial file stayed, and the next run refused the fixed probe name as a collision).
+        """
+        code, results = self.drive(mutate_during_resume=False, plant_write_fails_at="probe")
+        sessions = self.last_home / "sessions" / "2026" / "01" / "01"
+        probe = sessions / NATIVE_CHECK.ORACLE_PROBE_NAME
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
+        self.assertIn("INCOMPLETE", self.last_stderr, self.last_stderr)
+        self.assertIn(str(probe), self.last_stderr,
+                      f"the failure does not name the path whose write failed: {self.last_stderr!r}")
+        self.assertIn("cannot be written", self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "the failed write came out as a traceback")
+        self.assertFalse(probe.exists(), "the failed write left its reserved name behind")
+        self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
+                         "the failed run left its other fabrication behind")
+        self.assertFalse((self.last_home / "sessions" / "2026").exists(),
+                         "the failed run left the tree it created for its fabrications behind")
+        self.assertEqual(results, {}, f"the INCOMPLETE run recorded checks: {sorted(results)}")
+        # The retry arm: the same name, a fresh owner -- nothing of the failed run is left to meet.
+        retry = NATIVE_CHECK.ForeignHome()
+        planted, failure = retry.plant(probe, b"a retry's own bytes\n")
+        self.assertEqual((planted, failure), (True, ""),
+                         "a retry's plant still meets a leftover under the reserved name")
+        retry.remove_all()
+
+    def test_a_fabrication_the_run_cannot_remove_is_incomplete_by_name(self) -> None:
+        """A removal that fails is INCOMPLETE naming the path, never a verdict that outruns it.
+
+        The stub makes the run's own removal of the probe refuse. Every check the run made is green, so
+        a run that swallowed the failure would exit 0 while the home still held this harness's file;
+        with the ownership object the failure is reported once, by name, and the run answers 2. The file
+        stays where the removal could not take it -- reported, not pretended away.
+        """
+        code, results = self.drive(mutate_during_resume=False, unlink_fails_at="probe")
+        probe = self.last_home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
+        self.assertEqual(self.last_stderr.count("INCOMPLETE"), 1,
+                         f"the removal failure was not reported exactly once: {self.last_stderr!r}")
+        self.assertIn(str(probe), self.last_stderr, self.last_stderr)
+        self.assertIn("cannot be removed", self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "the refused removal came out as a traceback")
+        self.assertTrue(probe.exists(),
+                        "the run reported the fabrication removed while it is still there")
+        self.assertEqual(sorted(name for name, (state, _) in results.items() if state == "FAIL"), [],
+                         f"the run's checks contain a failure that is not the leftover: {results}")
+
+    def test_a_dropped_pipe_on_the_probe_resume_is_not_read_as_a_refusal(self) -> None:
+        """No answer is not a refusal, at the arm's own later call too.
+
+        The stub completes the handshake and then answers the arm's resume with `NoAnswer` -- the shape
+        a harness that exited after replying to `initialize` produces, where the next write or read on
+        its pipe fails. The arm must record FAIL carrying "never answered" and the transport failure's
+        own words, not its refusal names, and the run exits 1 rather than letting the failure out of
+        ``main``: R3-3 measured the pre-fix arm's exception escaping here, before it recorded anything.
+        """
+        code, results = self.drive(mutate_during_resume=False, probe_no_answer=True)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"a dropped pipe was recorded as {state}: {detail}")
+        self.assertIn("never answered", detail, detail)
+        self.assertIn("the case's stub dropped its pipe after the handshake", detail, detail)
+        self.assertEqual(code, 1, f"exit {code} for a run whose disclosure arm failed: {results}")
+
+    def test_a_view_whose_kinds_appear_only_in_message_text_is_not_read_as_typed(self) -> None:
+        """R3-4's drive pin: the item kinds the checks require come from the reply's own item types.
+
+        The stub answers `thread/read` with a reply whose only item is a `reasoning` item whose *text*
+        spells `userMessage` and `agentMessage`, and whose second-session text also holds the appended
+        turn's words, so the words in the text cannot make the two kind checks pass while the appended
+        words are found. A shipped extraction that stopped collecting kinds answers the first check red
+        too; one that read the kinds out of the rendered lines turns this case's expected failure set
+        into a green pair, which fails the case's own assertion.
+        """
+        code, results = self.drive(mutate_during_resume=False, view_reply="text-only")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the target's own view lists the converted turns",
+                                 "the target's own view of the second session lists the appended turn"]),
+                         f"a reply whose kinds appear only in message text was answered differently: "
+                         f"{results}")
+        self.assertIn("the appended turn's own words are in its own view",
+                      results["the target's own view of the second session lists the appended turn"][1])
+        self.assertEqual(code, 1, f"exit {code} for a run whose view checks failed: {results}")
+
     def test_a_file_racing_the_plant_is_neither_clobbered_nor_deleted(self) -> None:
         """Two runs against one --codex-home: the second must not clobber or remove the first's file.
 
@@ -1880,15 +2071,29 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("no --version answer", self.last_stderr, self.last_stderr)
         self.assertEqual(results, {}, f"a run with no fingerprint recorded checks: {sorted(results)}")
 
+    def test_a_symlinked_shim_is_launched_through_its_own_path(self) -> None:
+        """A `--codex` that is a symlink (a mise shim's shape) is not followed to its target.
+
+        A mise shim is a symlink to the `mise` binary and dispatches on argv[0]; `resolve()`ing it lands
+        on `mise` itself, whose `--version` is its own and whose `app-server` is not this harness's, so
+        the disclosure arm is answered by nothing. The header names the path `which()` returned, the way
+        the harness itself is launched.
+        """
+        code, results = self.drive(mutate_during_resume=False, codex_is_a_symlink=True)
+        self.assertIn(f"{self.last_codex} (codex-cli 0.test", self.last_stdout,
+                      "the run named a binary other than the path it launches")
+        self.assertEqual(code, 0, f"exit {code}: {self.last_stderr!r}")
+
     def test_the_fingerprint_pairs_one_executable_with_its_own_version(self) -> None:
         """A relative `--codex` under another `--repo` fingerprints the file it will launch.
 
         ``which()`` can preserve a relative PATH entry, and the pre-fix digest was read from the
         process's own directory while `--version` ran from the repository: the header paired the
         caller's binary's sha256 with the repository's decoy's version -- measured: `which('codex') ->
-        './codex'`, digest of the caller's file, `codex-cli 0.repo` from the decoy. The fix resolves the
-        executable first, so the header names the caller's file with its own version and digest: the
-        three facts about the one file every invocation below drives.
+        './codex'`, digest of the caller's file, `codex-cli 0.repo` from the decoy. The fix makes the
+        executable's path absolute first (never `resolve()`d -- see the shim case), so the header names
+        the caller's file with its own version and digest: the three facts about the one file every
+        invocation below drives.
         """
         code, results = self.drive(mutate_during_resume=False, relative_codex=True)
         caller_digest = hashlib.sha256(Path(self.last_codex).read_bytes()).hexdigest()
@@ -1937,15 +2142,19 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(code, 1, f"exit {code} for a run whose disclosure arm failed: {results}")
 
 
-class ExclusivePlantClaim(unittest.TestCase):
-    """The plant is the reservation, and only what this run created is ever removed.
+class ForeignHomeOwnership(unittest.TestCase):
+    """The exclusive create is the reservation, and only what this run created is ever removed.
 
     The collision shapes a host without symlink privileges cannot stage -- a name under a dangling link,
     an unreadable entry -- all meet the exclusive create as `FileExistsError`; the first case drives
     that answer through the seam for every one of them, asserting the create asks for exclusivity and
     writes nothing, so the guards are pinned on every platform rather than on the hosts that can make a
-    link. The drive-level cases above are the behavioural halves: the race pins the ownership, and the
-    dangling-link case is the integration arm where the host can stage the link itself.
+    link. The drive-level cases above are the behavioural halves (the race pins the ownership, the
+    failed write pins the rollback, the refused removal pins the INCOMPLETE answer); the unit cases here
+    are the seam's own mutation pins: the path is recorded before the write, so a write that fails after
+    the name is reserved is still removed by the same object -- a cleanup consulting a caller's success
+    flag would leave the partial file -- and a removal that fails is answered by name instead of
+    swallowed or raised.
     """
 
     def test_the_plant_asks_for_exclusive_creation_and_writes_nothing(self) -> None:
@@ -1961,7 +2170,8 @@ class ExclusivePlantClaim(unittest.TestCase):
                 return real_open(self, *args, **kwargs)
 
             with mock.patch.object(Path, "open", refusing_open):
-                self.assertFalse(NATIVE_CHECK.plant_exclusively(target, b"this run's bytes\n"),
+                self.assertEqual(NATIVE_CHECK.ForeignHome().plant(target, b"this run's bytes\n"),
+                                 (False, ""),
                                  "a create that met a held name did not answer as a collision")
             self.assertEqual(modes, ["xb"],
                              f"the plant did not ask for an exclusive create: {modes}")
@@ -1970,18 +2180,177 @@ class ExclusivePlantClaim(unittest.TestCase):
     def test_the_create_is_the_reservation_on_a_held_name(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
+            owner = NATIVE_CHECK.ForeignHome()
             claimed = root / "planted.jsonl"
-            self.assertTrue(NATIVE_CHECK.plant_exclusively(claimed, b"this run's bytes\n"))
+            self.assertEqual(owner.plant(claimed, b"this run's bytes\n"), (True, ""))
             self.assertEqual(claimed.read_bytes(), b"this run's bytes\n")
-            self.assertFalse(NATIVE_CHECK.plant_exclusively(claimed, b"another writer's bytes\n"),
+            self.assertEqual(owner.plant(claimed, b"another writer's bytes\n"), (False, ""),
                              "a second create under a held name was not a collision")
             self.assertEqual(claimed.read_bytes(), b"this run's bytes\n",
                              "the collision wrote over the file it found")
             held = root / "a-directory"
             held.mkdir()
-            self.assertFalse(NATIVE_CHECK.plant_exclusively(held, b"x"),
+            self.assertEqual(owner.plant(held, b"x"), (False, ""),
                              "a directory at the name was not a collision")
             self.assertTrue(held.is_dir(), "the directory was replaced by a file")
+            self.assertEqual(owner.remove_all(), [])
+            self.assertFalse(claimed.exists(), "the removal left this run's own file behind")
+
+    def test_a_write_that_fails_after_the_reservation_is_removed_by_the_owner(self) -> None:
+        """The seam's own mutation pin: a cleanup that omits a recorded path fails this case.
+
+        The handle hands the plant an exclusive create that already succeeded and then raises from the
+        write -- the window R3-1 was about, where a caller-set success flag never becomes true. The
+        owner answers the failure by name, and because it recorded the path at the instant the create
+        returned, `remove_all` removes the partial file: a cleanup consulting the caller's flag instead
+        leaves it (measured at head: the file stayed, and the next run met its fixed probe name as a
+        collision).
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / "planted.jsonl"
+            real_open = Path.open
+
+            class WriteFailsHandle:
+                def __init__(self, handle):
+                    self._handle = handle
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    self._handle.close()
+                    return False
+
+                def write(self, data):
+                    self._handle.close()
+                    raise OSError("the case's write failed after the name was reserved")
+
+            def failing_open(self, *args, **kwargs):
+                handle = real_open(self, *args, **kwargs)
+                if Path(self) == target:
+                    return WriteFailsHandle(handle)
+                return handle
+
+            owner = NATIVE_CHECK.ForeignHome()
+            with mock.patch.object(Path, "open", failing_open):
+                planted, failure = owner.plant(target, b"this run's bytes\n")
+            self.assertFalse(planted, "a write that failed was answered as a completed plant")
+            self.assertIn("cannot be written", failure, failure)
+            self.assertTrue(target.exists(),
+                            "the case's own premise: the reservation left a partial file")
+            self.assertEqual(owner.remove_all(), [])
+            self.assertFalse(target.exists(),
+                             "the owner did not remove the path it recorded before the write")
+
+    def test_a_removal_that_fails_is_named_not_swallowed(self) -> None:
+        """The other mutation pin: a cleanup that drops the failure, or one that raises it, fails here.
+
+        The unlink refuses while the removal runs, so `remove_all` has to answer the failure naming the
+        path -- the contract the run's own INCOMPLETE exit code stands on -- and the recorded paths are
+        answered once: the second call answers nothing, and the file stays where the removal could not
+        take it.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / "planted.jsonl"
+            owner = NATIVE_CHECK.ForeignHome()
+            self.assertEqual(owner.plant(target, b"this run's bytes\n"), (True, ""))
+            real_unlink = Path.unlink
+
+            def refusing_unlink(self, *args, **kwargs):
+                if Path(self) == target:
+                    raise PermissionError("the case refuses the removal")
+                return real_unlink(self, *args, **kwargs)
+
+            with mock.patch.object(Path, "unlink", refusing_unlink):
+                problems = owner.remove_all()
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn(str(target), problems[0], problems[0])
+            self.assertIn("cannot be removed", problems[0], problems[0])
+            self.assertTrue(target.exists(), "the removal took a path it reported as unstuck")
+            self.assertEqual(owner.remove_all(), [],
+                             "a second removal answered something: the paths were not answered once")
+            self.assertTrue(target.exists())
+
+
+class ThreadViewExtraction(unittest.TestCase):
+    """The item kinds a view check reads are the reply's own item types, never its message text.
+
+    The drive cases exercise this through `load_and_view` and the stubbed `thread/read` reply; these
+    cases pin the shipped extraction itself, so a kind word a message body happens to spell cannot be
+    answered as an item of that type, and the text a reply holds is still rendered into the lines the
+    checks search for dialogue.
+    """
+
+    def test_the_kinds_are_the_items_own_types(self) -> None:
+        reply = {"thread": {"id": "t", "historyMode": "legacy", "turns": [
+            {"id": "turn-1", "items": [
+                {"type": "userMessage", "content": [{"type": "text", "text": "a question"}]},
+                {"type": "agentMessage", "text": "an answer"},
+            ]},
+        ]}}
+        lines, kinds = NATIVE_CHECK.thread_view(reply)
+        self.assertEqual(kinds, ["userMessage", "agentMessage"])
+        self.assertIn("    userMessage: a question", "\n".join(lines))
+        self.assertIn("    agentMessage: an answer", "\n".join(lines))
+
+    def test_a_kind_word_in_message_text_is_not_a_kind(self) -> None:
+        reply = {"thread": {"id": "t", "historyMode": "legacy", "turns": [
+            {"id": "turn-1", "items": [
+                {"type": "reasoning", "text": "userMessage and agentMessage are words in this text"},
+            ]},
+        ]}}
+        lines, kinds = NATIVE_CHECK.thread_view(reply)
+        self.assertEqual(kinds, ["reasoning"],
+                         "the extraction answered the words a message holds as item types")
+        self.assertIn("userMessage and agentMessage are words in this text", "\n".join(lines))
+
+
+class BrokenPipeAtTheClientSeam(unittest.TestCase):
+    """A pipe that dropped under the client is `NoAnswer` at the seam, never an exception out of it.
+
+    R3-3's shape: the harness exits after the handshake, and the next write to its stdin fails. The
+    client object owns the pipe, so `call`, `notify` and `close` fold that failure. The case drives
+    them against a *real* pipe whose read end is already closed -- the write's own failure, with no
+    process to race -- and the stub process only has to answer the three names `close` calls, so no
+    subprocess starts here: measured at head, the same write raised `BrokenPipeError` out of `call`,
+    `notify` and `close` alike, and out of a caller's `finally` it would have replaced an answer that
+    was already in hand.
+    """
+
+    def test_the_three_interactions_fold_a_broken_pipe(self) -> None:
+        read_end, write_end = os.pipe()
+        os.close(read_end)
+        stdin = os.fdopen(write_end, "w")
+        self.addCleanup(stdin.close)
+
+        class ExitedProcess:
+            def __init__(self):
+                self.stdin = stdin
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        server = NATIVE_CHECK.AppServer.__new__(NATIVE_CHECK.AppServer)
+        server.next_id = 0
+        server.process = ExitedProcess()
+        server.responses = queue.Queue()
+        server.diagnostics = NATIVE_CHECK.new_diagnostics()
+        answer = server.call("thread/resume", {"threadId": "x"})
+        self.assertIsInstance(answer, NATIVE_CHECK.NoAnswer,
+                              f"a broken input pipe was not answered as NoAnswer: {answer!r}")
+        self.assertIn("input pipe failed", answer.reason, answer.reason)
+        answer = server.notify("initialized", {})
+        self.assertIsInstance(answer, NATIVE_CHECK.NoAnswer,
+                              f"a broken input pipe was not answered as NoAnswer: {answer!r}")
+        # The `finally` arm: a close that raised here would replace whatever answer the caller held.
+        server.close()
+        self.assertTrue(stdin.closed, "close did not close the pipe it owns")
 
 
 class HarnessThatCannotBeStarted(unittest.TestCase):
@@ -2158,21 +2527,30 @@ class CodexArtifactOracle(unittest.TestCase):
                           "input_image", "input_audio", "occurrence", "disposition", "manifest",
                           "emitted", "omitted", "payload", "turn", "replay")
 
-    def reading(self, data: bytes, receipt: dict | None = None,
-                disabled: tuple[str, ...] = ()) -> list:
-        """One reading through the shipped validator, with or without a receipt."""
+    def validate(self, data: bytes, receipt: dict | None = None,
+                 disabled: tuple[str, ...] = ()) -> "NATIVE_CHECK.OracleReading":
+        """One reading through the shipped validator, its own result object."""
         if receipt is None:
             return NATIVE_CHECK.validate_artifact(data, disabled=disabled)
         return NATIVE_CHECK.validate_artifact(data, receipt=receipt, disabled=disabled)
 
+    def reading(self, data: bytes, receipt: dict | None = None,
+                disabled: tuple[str, ...] = ()) -> list:
+        """The violations of one reading through the shipped validator."""
+        return self.validate(data, receipt, disabled).violations
+
     def test_the_frozen_artifact_validates(self) -> None:
         """The committed artifact is green alone and with its receipt (D4's verify case), and the
         receipt's own statements are the artifact's bytes: its size, its whole-file digest, and one
-        anchor per line over that line's own bytes with its line feed included."""
+        anchor per line over that line's own bytes with its line feed included. Green is the reading
+        where *every* rule judged the bytes -- a rule the reading could not judge is not a pass."""
         data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
         receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
         self.assertEqual(self.reading(data), [])
         self.assertEqual(self.reading(data, receipt), [])
+        self.assertTrue(self.validate(data, receipt).passed,
+                        "the frozen artifact is not a full pass: "
+                        f"{self.validate(data, receipt)}")
         self.assertEqual(receipt["bytes"], len(data))
         self.assertEqual(receipt["sha256"], hashlib.sha256(data).hexdigest())
         spans = NATIVE_CHECK.oracle_line_bytes(data)
@@ -2208,6 +2586,8 @@ class CodexArtifactOracle(unittest.TestCase):
                           "oracle.whole-lines"])
         surface = " ".join(list(NATIVE_CHECK.ORACLE_RULES)
                            + list(NATIVE_CHECK.ORACLE_RULES.values())
+                           + list(NATIVE_CHECK.ORACLE_RULE_INPUTS)
+                           + list(NATIVE_CHECK.ORACLE_RULE_INPUTS.values())
                            + [f"{mutation.label} {mutation.artifact} {mutation.receipt or ''}"
                               for mutations in NATIVE_CHECK.ORACLE_MUTATIONS.values()
                               for mutation in mutations]
@@ -2224,10 +2604,15 @@ class CodexArtifactOracle(unittest.TestCase):
 
     def test_the_registry_and_its_corpus_are_one_closed_set(self) -> None:
         """D1's closure, read from both ends: every declared rule has at least one mutation and every
-        mutation names a declared rule, each rule states something, and every fixture the corpus names
-        is committed (a pair naming an absent fixture would fail the command, not this reading)."""
+        mutation names a declared rule, each rule states something and declares what it reads
+        (`on_bytes` or `needs_text`), and every fixture the corpus names is committed (a pair naming an
+        absent fixture would fail the command, not this reading)."""
         self.assertEqual(set(NATIVE_CHECK.ORACLE_MUTATIONS), set(NATIVE_CHECK.ORACLE_RULES),
                          "a rule has no mutation, or a mutation has no rule")
+        self.assertEqual(set(NATIVE_CHECK.ORACLE_RULE_INPUTS), set(NATIVE_CHECK.ORACLE_RULES),
+                         "a rule has no declared input, or an input names no rule")
+        self.assertEqual(set(NATIVE_CHECK.ORACLE_RULE_INPUTS.values()), {"on_bytes", "needs_text"},
+                         "a rule declares an input kind outside the two the reading implements")
         for rule, sentence in NATIVE_CHECK.ORACLE_RULES.items():
             self.assertTrue(sentence.strip(), f"the rule {rule} states nothing")
         for rule, mutations in sorted(NATIVE_CHECK.ORACLE_MUTATIONS.items()):
@@ -2243,6 +2628,25 @@ class CodexArtifactOracle(unittest.TestCase):
                                   f"{rule} / {mutation.label!r} co-cites an undeclared rule {other}")
                 self.assertNotIn(rule, mutation.also_cited,
                                  f"{rule} / {mutation.label!r} co-cites its own rule")
+
+    def test_every_pair_of_byte_rules_is_co_cited_by_a_mutation(self) -> None:
+        """The corpus property the byte rules' independence stands on: a pair of `on_bytes` rules has a
+        mutation whose bytes violate both, declared in *each* rule's own arm, so disabling either still
+        cites the other. The reading evaluates every byte rule before the disabled set is subtracted;
+        this is the corpus half, and a new byte rule without its co-citation pair fails here."""
+        byte_rules = sorted(rule for rule, kind in NATIVE_CHECK.ORACLE_RULE_INPUTS.items()
+                            if kind == "on_bytes")
+        for index, first in enumerate(byte_rules):
+            for second in byte_rules[index + 1:]:
+                with self.subTest(pair=(first, second)):
+                    self.assertTrue(
+                        any(second in mutation.also_cited
+                            for mutation in NATIVE_CHECK.ORACLE_MUTATIONS[first]),
+                        f"no {first} mutation has bytes that also break {second}")
+                    self.assertTrue(
+                        any(first in mutation.also_cited
+                            for mutation in NATIVE_CHECK.ORACLE_MUTATIONS[second]),
+                        f"no {second} mutation has bytes that also break {first}")
 
     def test_every_rule_has_a_mutation_that_turns_its_fixture_red(self) -> None:
         """Every mutation changes its fixture and turns its own rule red, with a detail that
@@ -2371,18 +2775,68 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertIn(("oracle.receipt-integrity", 0), named,
                       f"the count mismatch is no longer reported: {violations}")
 
-    def test_the_byte_layer_ends_the_reading(self) -> None:
-        """A violation at the byte layer stops the reading — the BOM and a byte that is not UTF-8 are
-        `oracle.utf8` alone, never also a line's JSON defect — and dropping that rule hands back a
-        reading with nothing else in it, which is the closure's third arm."""
+    def test_the_byte_layer_ends_the_record_reading(self) -> None:
+        """A violation at the byte layer ends the *record* reading — the BOM and a byte that is not
+        UTF-8 are `oracle.utf8` alone, never also a line's JSON defect — while dropping that rule hands
+        back a reading whose violations are empty and whose text-dependent rule is `NotEvaluated`: not a
+        pass, and shown as such, because the bytes were never judged for the JSON rule (the state the
+        command answers INCOMPLETE for, exit 2)."""
         data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
         broken_byte, _ = NATIVE_CHECK._mutation_byte_not_utf8(data, None)
         for label, broken in (("a byte-order mark", b"\xef\xbb\xbf" + data),
                               ("a byte that is not UTF-8", broken_byte)):
-            self.assertEqual([violation.rule for violation in self.reading(broken)], ["oracle.utf8"],
+            reading = self.validate(broken)
+            self.assertEqual([violation.rule for violation in reading.violations], ["oracle.utf8"],
                              f"{label} is not the byte layer's own defect alone")
-            self.assertEqual(self.reading(broken, disabled=("oracle.utf8",)), [],
-                             f"{label} is not green with the rule disabled")
+            self.assertEqual(reading.records, [], f"{label}: a record was read past the byte layer")
+            self.assertEqual(reading.not_evaluated,
+                             [NATIVE_CHECK.NotEvaluated("oracle.jsonl-objects", "oracle.utf8")],
+                             f"{label}: the rule the bytes left unjudged is not named")
+            self.assertFalse(reading.passed, f"{label}: a reading that judged no text passed")
+            disabled = self.validate(broken, disabled=("oracle.utf8",))
+            self.assertEqual(disabled.violations, [],
+                             f"{label}: dropping the rule left another rule's violation standing")
+            self.assertEqual(disabled.not_evaluated, reading.not_evaluated,
+                             f"{label}: dropping the rule changed what was left unjudged")
+            self.assertFalse(disabled.passed,
+                             f"{label}: a reading with an unjudged rule passed after the subtraction")
+
+    def test_a_disabled_utf8_rule_still_cites_the_line_rule(self) -> None:
+        """R3-2's own artifact, through the command: ``b'{"note":"\\xff"}'`` with no final line feed.
+
+        The bytes are not UTF-8 *and* their last byte is not a line feed. Both byte rules are evaluated
+        before the disabled set is subtracted, so `--disable-rule oracle.utf8` still cites
+        `oracle.whole-lines` and exits 1 — the pre-fix reading answered PASS here, hiding a violation
+        its own bytes prove. Dropping both byte rules is not a pass either: the text-dependent rule was
+        not judged, and the command answers INCOMPLETE (exit 2) naming it.
+        """
+        data = b'{"note":"\xff"}'
+        self.assertEqual([violation.rule for violation in self.reading(data)],
+                         ["oracle.utf8", "oracle.whole-lines"])
+        reading = self.validate(data, disabled=("oracle.utf8",))
+        self.assertEqual([violation.rule for violation in reading.violations], ["oracle.whole-lines"])
+        self.assertEqual(reading.not_evaluated,
+                         [NATIVE_CHECK.NotEvaluated("oracle.jsonl-objects", "oracle.utf8")])
+        with tempfile.TemporaryDirectory() as scratch:
+            artifact = Path(scratch) / "masked-no-lf.jsonl"
+            artifact.write_bytes(data)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact),
+                                          "--disable-rule", "oracle.utf8"])
+            self.assertEqual(code, 1, f"exit {code}: {output.getvalue()}")
+            self.assertIn("oracle: oracle.whole-lines", output.getvalue())
+            self.assertNotIn("oracle: oracle.utf8 —", output.getvalue(),
+                             "the disabled rule is still cited as a violation")
+            self.assertIn("not evaluated: oracle.utf8 answered no text", output.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact),
+                                          "--disable-rule", "oracle.utf8",
+                                          "--disable-rule", "oracle.whole-lines"])
+            self.assertEqual(code, 2, f"exit {code}: {output.getvalue()}")
+            self.assertTrue(output.getvalue().strip().splitlines()[-1].startswith("oracle: INCOMPLETE"),
+                            output.getvalue())
 
     def test_a_receipt_still_answers_a_byte_the_text_layer_cannot_read(self) -> None:
         """`--disable-rule oracle.utf8` drops the byte layer, not the receipt.
@@ -2660,7 +3114,9 @@ class CodexArtifactOracle(unittest.TestCase):
 
         with mock.patch("builtins.open", refuse), mock.patch("io.open", refuse), \
                 mock.patch("os.open", refuse):
-            self.assertEqual(NATIVE_CHECK.validate_artifact(data, receipt=receipt), [])
+            reading = NATIVE_CHECK.validate_artifact(data, receipt=receipt)
+            self.assertEqual(reading.violations, [])
+            self.assertEqual(reading.not_evaluated, [])
 
 
 if __name__ == "__main__":
