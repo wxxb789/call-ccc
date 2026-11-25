@@ -844,7 +844,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 # harness is chosen by argv[0]. Following the link launches the target, whose
                 # `--version` is its own and whose `app-server` is not this harness's.
                 (scratch / "codex-real").write_text("the case's real stub codex binary\n")
-                Path(codex).symlink_to(scratch / "codex-real")
+                try:
+                    Path(codex).symlink_to(scratch / "codex-real")
+                except (OSError, NotImplementedError):
+                    self.skipTest("this host cannot create a symlink")
             elif codex_digest_unreadable:
                 Path(codex).mkdir()
             else:

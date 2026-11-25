@@ -838,6 +838,13 @@ class ForeignHome:
         except FileExistsError:
             return False, ""
         except OSError as failure:
+            # A create can fail with a platform's own answer for a name that is held rather than with
+            # `FileExistsError`: a directory answers `PermissionError` and a *dangling* symlink answers
+            # `FileNotFoundError` on Windows. `lexists` asks the name rather than what it points at, so a
+            # held name is a collision here too (nothing is written through a link, and only a file this
+            # run created is ever removed) while a create that failed for any other reason still names it.
+            if os.path.lexists(path):
+                return False, ""
             return False, f"{path} cannot be created: {failure}"
         self._files.append(path)
         try:
