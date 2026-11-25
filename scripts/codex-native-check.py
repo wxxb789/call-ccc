@@ -833,6 +833,13 @@ class ForeignHome:
         failed, with the path already recorded for `remove_all` either way.
         """
         self._create_parents(path.parent)
+        # The name is asked first, and before the create: a *dangling* symlink holds the name while
+        # `exists()` sees nothing, and a platform whose exclusive create follows the link (measured on
+        # Windows) would write through it and create the target. `lexists` asks the name itself. The
+        # exclusive create below is still the atomic reservation; this is the portable answer for entries
+        # the platform's own create would follow.
+        if os.path.lexists(path):
+            return False, ""
         try:
             handle = path.open("xb")
         except FileExistsError:
