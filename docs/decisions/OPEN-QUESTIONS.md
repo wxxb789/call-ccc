@@ -3230,3 +3230,56 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Reversal:** (b) — one increment that restores the id-or-name predicate and re-points the two stub
   cases; the review round's finding would reopen with it.
 - **Settled by:** the owner, or the increment that gives the harness-answer reading another consumer.
+
+## Q-0009a-06 — The staged reading refined: a receipt is compared against the raw bytes whatever the text layer says (supersedes Q-0009a-02's receipt clause)
+
+- **Status:** resolved (operator disposition, 2026-11-25, r2 fix round R2-4; the clause it supersedes is
+  Q-0009a-02's "a violation there is the reading's only content (no line, JSON or receipt comparison)").
+- **Question:** an artifact whose bytes are not UTF-8 text still *has* bytes, and a supplied receipt
+  states things about them. Should a byte-layer violation hide the receipt's own disagreement — making
+  `--disable-rule oracle.utf8` hand back a PASS over a receipt the same bytes contradict — or is the
+  receipt compared independently of the text reading?
+- **Options:** (a) the receipt is compared against the artifact's raw bytes wherever one is supplied, and
+  a byte-layer violation ends only the *record* reading (taken); (b) the pre-fix staging, where a
+  byte-layer violation skipped the receipt comparison (refused by R2-4: it contradicts the flag's "drop
+  exactly this rule" promise and D4's byte-integrity claim — measured: one 0xFF byte under the unchanged
+  receipt **passed** with only `oracle.utf8` dropped).
+- **Default taken:** (a). The receipt's statements are about bytes, not about text the oracle can decode,
+  so decoding is not part of their comparison. The corpus gains one pair beside it
+  (`oracle.utf8` — `a byte that is not UTF-8 under the unchanged receipt`, whose `also_cited` arm pins
+  that `--disable-rule oracle.utf8` still fails citing `oracle.receipt-integrity` alone), and
+  `CodexArtifactOracle.test_a_receipt_still_answers_a_byte_the_text_layer_cannot_read` drives the same
+  shape in-process. This *strengthens* the frozen oracle (more artifacts refused, never fewer), so the
+  oracle lock's co-mutation concern does not arise; the operator dispositioned it as this increment's
+  fix round.
+- **Reversal:** one increment that restores the skip and re-points the combined pair; R2-4's finding
+  would reopen with it.
+- **Settled by:** the owner, or an increment that gives the byte layer and the receipt one shared
+  reading for another reason.
+
+## Q-0009a-07 — The refusal criterion refined: a read-and-reject of the *exact* planted artifact (supersedes Q-0009a-05)
+
+- **Status:** resolved (owner answer 2026-11-25, Q1 = B — the criterion keys on the artifact's file name
+  — refined by this increment's r2 fix round, R2-2: the name must be attached to a refusal of *this*
+  artifact's bytes rather than to any error mentioning the path).
+- **Question:** Q-0009a-05 required the harness's own answer to name the planted rollout. A basename
+  match is still not evidence of a *read*: `permission denied opening <probe path>` names the artifact
+  and the harness never opened it, and a refusal of a same-named file in another directory names the
+  same basename while being about another artifact. What exactly must the answer be?
+- **Options:** (a) the harness's measured refusal sentence about the **exact planted path**
+  (`REFUSAL_SENTENCE`: `rollout at <the planted path> is empty`, measured on 0.171.0, the version every
+  run records) — a lookup miss, an I/O failure naming the path, and a refusal of a same-named file
+  elsewhere each fail the arm, in their own words (taken); (b) any error containing the artifact's file
+  name (the pre-fix behaviour — refused: R2-2 measured an open error and a same-name-elsewhere answer
+  both recorded PASS); (c) classify the harness's error prose into refusals and I/O failures (refused:
+  the arm reads the binary's own answer, and a private taxonomy of its errors would re-derive a foreign
+  judgment this repository may not keep).
+- **Default taken:** (a). The arm's PASS is evidence the harness read this artifact's bytes and rejected
+  them; a Codex release that rewords the sentence turns the arm red and a human re-reads the binary's new
+  answer beside the version the run records — the disclosure arm's contract, not a silent pass. The
+  cases pin both new negative shapes (`test_an_open_error_naming_the_artifact_is_not_read_as_the_refusal`,
+  `test_a_refusal_of_a_same_name_elsewhere_is_not_read_as_the_refusal`) beside the two Q-0009a-05 cases
+  and the passing arm quoting the measured answer.
+- **Reversal:** (b) — one increment that restores the name predicate and re-points the four negative
+  cases; R2-2's finding would reopen with it.
+- **Settled by:** the owner, or the increment that gives the harness-answer reading another consumer.

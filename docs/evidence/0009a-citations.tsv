@@ -14,9 +14,10 @@
 # The oracle's own firing is re-derived by the required `selftest` step instead:
 # `scripts/tests/test_codex_native_check.py`'s `CodexArtifactOracle` drives the shipped rule table and
 # its mutation corpus — every rule has at least one committed fixture whose mutation turns that rule
-# red and no other, every arm (positive PASS, negative FAIL citing its own rule, `--disable-rule` PASS)
-# is read through the shipped command's own `--validate`/`--receipt`/`--disable-rule` path, and the two
-# tables are asserted in bijection from both ends — the increment's D1. The fixtures are
+# red (beside exactly the other rules its bytes are known to break, the pair's `also_cited`), every arm
+# (positive PASS, negative FAIL citing those, `--disable-rule` PASS or still FAIL citing exactly the
+# other rules) is read through the shipped command's own `--validate`/`--receipt`/`--disable-rule` path,
+# and the two tables are asserted in bijection from both ends — the increment's D1. The fixtures are
 # `scripts/tests/testdata/codex-oracle/` (the frozen artifact and the receipt that names its bytes).
 #
 # Deliberately not covered, with the reason (form-based: a row is one Go test in a package
@@ -62,7 +63,11 @@
 #         changes the anchor count and the shared anchors are still compared, so the line it diverged
 #         on is named), beside the `oracle.receipt-integrity` mutations of `--selftest-mutations`
 #         (7 pairs: a changed byte under the unchanged receipt, another whole-file digest, a wrong byte
-#         count, no lines, one line fewer, another line's anchor, and a receipt that is not an object).
+#         count, no lines, one line fewer, another line's anchor, and a receipt that is not an object),
+#         and the combined pair under `oracle.utf8` (`a byte that is not UTF-8 under the unchanged
+#         receipt`: a same-length byte masked under the frozen receipt cites `oracle.receipt-integrity`
+#         beside its own rule and still cites exactly it with `oracle.utf8` disabled — the receipt's
+#         comparison is over raw bytes, independent of the text layer).
 #   D3 — the Codex judgment is the binary's: the native check's own unflagged run is a native harness
 #         run, not a gate step; its verdicts (and the disclosure arm, where the harness refuses the
 #         artifact the offline rules accept) are quoted in §3 of docs/evidence/0009a-native-oracle-v2.md.

@@ -59,13 +59,14 @@ digest, and the disclosure arm below.
 | `oracle.jsonl-objects` | every non-empty line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer; a line nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
 | `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule |
 
-**Reading is staged.** The byte layer is read first (`oracle.utf8`): a violation there ends the reading,
-because nothing beyond the bytes can be read at all — the same fail-closed stance the superseded checker
-took toward a non-UTF-8 input (there `INCOMPLETE`). Then the line layer (`oracle.whole-lines`) and the
-per-line JSON layer (`oracle.jsonl-objects`), then, where a receipt is handed in, the comparison
-(`oracle.receipt-integrity`). A mutation crafted for one rule must therefore leave the earlier layers
-green and the later ones untouched — which is what the corpus's own mutations are shaped for and what
-`--selftest-mutations` proves.
+**Reading is staged.** The byte layer is read first (`oracle.utf8`): a violation there ends the *record*
+reading, because nothing beyond the bytes can be read as JSON. Then the line layer
+(`oracle.whole-lines`) and the per-line JSON layer (`oracle.jsonl-objects`), and, wherever a receipt is
+handed in, the comparison (`oracle.receipt-integrity`) — over the artifact's raw bytes, so it is taken
+even where the text layer failed (the r2 round's refinement: `--disable-rule oracle.utf8` drops the
+UTF-8 rule alone rather than hiding the receipt's own disagreement). A mutation crafted for one rule
+leaves the earlier layers green and the later ones untouched — which is what the corpus's own mutations
+are shaped for and what `--selftest-mutations` proves.
 
 **The artifact fixture is not a Codex session.** `scripts/tests/testdata/codex-oracle/artifact.jsonl` is
 three JSON objects that model no agent's format, committed with its receipt
@@ -84,15 +85,18 @@ never a pass.
 **CLI.** `--validate <artifact> [--receipt <document>] [--disable-rule <RULE_ID>] [--json]` prints
 `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — <reason>` with exit 0/1/2;
 `--selftest-mutations` runs the corpus (three arms per mutation: the positive fixture passes, the
-mutation turns exactly its own rule red, `--disable-rule` turns it green) through the shipped command's
-own path, on mutated bytes written under one scratch directory.
+mutation cites its own rule beside every other rule its bytes are known to break, and `--disable-rule`
+turns its own rule off — green, or still failing citing exactly those others) through the shipped
+command's own path, on mutated bytes written under one scratch directory.
 
 **The disclosure arm (native half).** The check plants the oracle's frozen artifact under its scratch
 home's sessions tree, asks the target's own app server to resume it, and records the pair — *the
 offline rules accept these bytes and the harness refuses them* — with the harness's own words in the
 detail (measured on 0.171.0: `thread/resume` answers `failed to read session metadata … is empty`). The
-arm is a check that can fail: a binary that accepted the artifact would turn it red, and the disclosure
-would be re-read.
+refusal is read as one only where that measured sentence is about the *exact* planted path (the r2
+round's refinement: an id-only lookup miss, an I/O failure naming the path, and a refusal of a
+same-named file elsewhere each fail the arm). The arm is a check that can fail: a binary that accepted
+the artifact would turn it red, and the disclosure would be re-read.
 
 ## Acceptance (the goal file's `Done when`)
 

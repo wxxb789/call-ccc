@@ -51,8 +51,10 @@ and pass.
 
 - **D1 — Every surviving offline rule has its own negative fixture.** One mutation per rule at minimum,
   and `--selftest-mutations` proves the declared rule set equals the mutated rule set **over the
-  survivors only** — each pair's three arms: the positive fixture passes, the mutation fails citing that
-  rule alone, and the same bytes pass with `--disable-rule` for it.
+  survivors only** — each pair's three arms: the positive fixture passes; the mutation fails citing that
+  rule (and, where its bytes are known to break another rule too, exactly those, the pair's `also_cited`
+  set); and with `--disable-rule` for the pair's own rule the same bytes pass, or still fail citing
+  exactly the other rule its bytes break.
 - **D2 — The offline oracle holds no foreign-format knowledge**, stated testably: the rule registry
   names no Codex member, event type, record kind or ordering, and an artifact that is well-formed as a
   **container** but wrong as a **Codex** artifact passes the offline rules (a case that fails if any
