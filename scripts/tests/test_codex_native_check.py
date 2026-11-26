@@ -55,6 +55,7 @@ import io
 import json
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -660,7 +661,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               unlink_fails: bool = False,
               view_reply: str = "typed",
               raises_at: str | None = None,
-              dangling_symlink: bool = False
+              dangling_symlink: bool = False,
+              lexical_codex: bool = False,
+              turn_exit_code: int | None = None
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
 
@@ -747,6 +750,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         ``type`` fields are the kinds the shipped extraction reads) or ``"text-only"`` (a reply whose
         message text spells the expected kind words while no item of those types exists, so a reading of
         the rendered lines answers kinds the reply does not hold);
+        ``lexical_codex`` gives ``--codex`` a path that holds a ``..`` component after a directory —
+        ``<scratch>/alias/../codex`` — and has ``which`` answer the same path, so a run that normalized
+        the path it launches (``abspath``'s lexical collapse) is visible in the argv[0] the stub
+        records; ``turn_exit_code`` makes the stub's turn process *answer* non-zero without growing the
+        session, the arm beside the timeout that asks whether the run's own turn count follows the
+        predicate its check records;
         ``unreadable_home_entry`` (``"directory"`` or ``"link"``) puts an entry under the home whose
         name matches ``rollout-*.jsonl`` and whose bytes cannot be read — a directory, or a dangling
         link — so the snapshot of the sessions a conversion must not touch cannot be taken; and
@@ -805,6 +814,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         go = str(scratch / "go")
         codex = str(scratch / "codex")
         Path(codex).write_text("the case's stub codex binary\n")
+        codex_argument = "codex"
+        which_answer: str | None = None
+        if lexical_codex:
+            # A `..` after a directory: the path's own traversal and its lexical collapse are different
+            # strings, so a run that launched the collapsed form would be visible in the stub's argv[0].
+            (scratch / "alias" / "sub").mkdir(parents=True)
+            codex_argument = str(scratch / "alias" / ".." / "codex")
+            which_answer = codex_argument
 
         thread_id = "01a1e000-0000-7000-8000-000000000002"
         second_thread_id = "01a1e000-0000-7000-8000-000000000004"
@@ -875,8 +892,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             root = Path((env or {}).get("CLAUDE_PROJECTS_DIR", str(scratch / "source")))
             return root / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl"
 
-        def document_for(which: str, env: dict | None) -> dict:
-            """One conversion's stub document: its own session id, path and boundary of the copy's bytes."""
+        def document_for(which: str, env: dict | None, binary: str) -> dict:
+            """One conversion's stub document: its own session id, path and boundary of the copy's bytes.
+
+            ``binary`` is the ``--target-binary`` the harness handed this conversion, so the document's
+            reported invocations are the words the harness will compare with its own resolved path.
+            """
             copy = source_copy(env)
             boundary = {"state": "taken", "detail": "the case's stub boundary", "path": str(copy),
                         "bytes": copy.stat().st_size, "sha256": NATIVE_CHECK.sha256(copy),
@@ -887,8 +908,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 boundary.update(second_boundary or {})
             session, path = ((thread_id, installed) if which == "first"
                              else (second_thread_id, second_installed))
-            resume_arguments = [codex, "resume", session]
-            exec_resume_arguments = [codex, "exec", "resume", session, "<prompt>"]
+            resume_arguments = [binary, "resume", session]
+            exec_resume_arguments = [binary, "exec", "resume", session, "<prompt>"]
             user_messages, assistant_messages = (1, 1) if which == "first" else (2, 2)
             return {
                 "conversion": {
@@ -936,6 +957,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         #: cannot guess its name).
         converted_copy: dict[str, Path] = {}
 
+        #: The argv[0] of every codex invocation the stub was asked for: the path this run resolved and
+        #: launched, which the lexical-codex case reads back against the path it handed in.
+        turn_paths: list[str] = []
+
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
             if raises_at is not None:
@@ -967,7 +992,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         # mutated file's own -- what fails is the comparison against the earlier bytes, not
                         # a report that disagrees with the file it describes.
                         same_length_swap(converted_copy[which])
-                    document = document_for(which, env)
+                    document = document_for(which, env,
+                                            command[command.index("--target-binary") + 1])
                     path = Path(document["target_session"]["path"])
                     path.parent.mkdir(parents=True, exist_ok=True)
                     body = json.dumps({"type": "session_meta"}) + "\n"
@@ -999,6 +1025,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 # its own subcommand, so a run that spells the binary differently (a relative `--codex`
                 # the run did not resolve, the very defect the relative-codex case pins) still reaches
                 # the turn rather than failing inside this fixture first.
+                turn_paths.append(command[0])
+                if turn_exit_code is not None:
+                    return subprocess.CompletedProcess(cmd, turn_exit_code, "",
+                                                       "the stub turn refused\n")
                 second = second_thread_id in command
                 turned = second_installed if second else installed
                 if second or not installed_unreadable:
@@ -1080,9 +1110,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 pass
 
         def fake_which(name, *args, **kwargs):
-            if name != "codex":
+            # Asked by name or by path (`--codex` may be either), the harness is answered the codex
+            # stub; only the Go toolchain is answered its own name.
+            if name == "go":
                 return go
-            return codex
+            return which_answer if which_answer is not None else codex
 
         prompts = ["--resume-prompt", "answer only from this conversation"]
         if repeat_turn:
@@ -1153,7 +1185,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 stack.enter_context(mock.patch("shutil.which", fake_which))
                 stack.enter_context(contextlib.redirect_stdout(stdout))
                 stack.enter_context(contextlib.redirect_stderr(stderr))
-                code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
+                code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", codex_argument,
                                           "--codex-home", str(home)] + prompts
                                          + (["--keep"] if keep else []))
             results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
@@ -1165,6 +1197,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.last_stdout, self.last_stderr, self.last_home = stdout.getvalue(), stderr.getvalue(), home
         self.last_scratch = run_scratch
         self.last_planted = planted
+        self.last_turn_paths = turn_paths
+        self.last_codex_argument = codex_argument
         return code, results
 
     def test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison(self) -> None:
@@ -1740,6 +1774,96 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                          f"the unanswering turn was not recorded as a failure: {results}")
         self.assertIn("real turn(s) run: 0", self.last_stdout,
                       "a turn that never answered was counted as run")
+
+    def test_a_turn_that_exited_non_zero_without_growing_the_session_is_not_counted(self) -> None:
+        """The count is the predicate the turn's own check records, for the answer as well as the silence.
+
+        ``turn_exit_code`` makes the turn's process *answer* non-zero and leave the session's bytes
+        alone — the shape of a harness that refuses the turn. The check records FAIL (its own predicate:
+        exit zero and a grown session) and the run's count must say zero: counting the *attempt* would
+        print one real turn where the check the run stands on answered no, which is the half of the
+        round-5 finding the timeout arm above does not reach.
+        """
+        code, results = self.drive(mutate_during_resume=False, turn_exit_code=3)
+        state, detail = results.get("a real turn continues from the installed session", ("missing", ""))
+        self.assertEqual(state, "FAIL", f"the refused turn was not recorded as a failure: {results}")
+        self.assertIn("exit 3", detail, detail)
+        self.assertIn("real turn(s) run: 0", self.last_stdout,
+                      "a turn whose process answered non-zero was counted as run")
+        self.assertEqual(code, 1, f"exit {code}: {self.last_stderr!r}")
+
+    def test_a_codex_argument_with_a_lexical_shortcut_is_not_rewritten(self) -> None:
+        """The path this run launches is the path the caller handed in, not its lexical collapse.
+
+        ``--codex <scratch>/alias/../codex`` traverses ``alias`` and then ``..``; ``abspath`` would
+        collapse that lexically to ``<scratch>/codex`` — a different name, and where ``alias`` is a
+        symlink a different file. Every codex invocation the stub sees must carry the path as given, so
+        a run that normalized it fails here even though its stubs answer every command.
+        """
+        code, _ = self.drive(mutate_during_resume=False, lexical_codex=True)
+        self.assertEqual(code, 0, f"exit {code}: {self.last_stderr!r}")
+        self.assertTrue(self.last_turn_paths, "the run made no turn, so nothing was launched")
+        self.assertNotEqual(os.path.abspath(self.last_codex_argument), self.last_codex_argument,
+                            "this case's path has no lexical collapse for the assertion to be about")
+        for launched in self.last_turn_paths:
+            self.assertEqual(launched, self.last_codex_argument,
+                             "the run launched a path other than the one the caller's path traverses")
+            self.assertTrue(os.path.exists(launched),
+                            f"the launched path does not name an existing file: {launched}")
+
+
+class LaunchPathResolution(unittest.TestCase):
+    """The path the check launches is the path the caller's own path names.
+
+    A `which()` answer can preserve a relative PATH entry (`./codex`), so the run has to make it
+    absolute; it must do so without normalizing a component, because `abspath` collapses `alias/..`
+    lexically where the filesystem follows `alias` first — a path that resolved to the installed
+    executable can be rewritten to a name that does not exist, or to another file's name at that path.
+    A launcher shim is not `resolve()`d either: it dispatches on `argv[0]`.
+    """
+
+    def test_a_relative_path_is_anchored_without_a_component_being_normalized(self) -> None:
+        """Every relative shape keeps its own components; the answer is absolute either way."""
+        cwd = os.getcwd()
+        for given in ("codex", "./codex", "alias/../codex", "a//b/codex"):
+            with self.subTest(path=given):
+                answered = NATIVE_CHECK.absolute_launch_path(given)
+                self.assertEqual(answered, os.path.join(cwd, given),
+                                 f"{given!r} was not anchored to the process's own directory unchanged")
+                self.assertTrue(os.path.isabs(answered), answered)
+
+    def test_an_absolute_path_is_answered_unchanged(self) -> None:
+        """An absolute path — a `..` component included — is not touched at all."""
+        for given in (os.path.join(os.sep, "opt", "bin", "codex"),
+                      os.path.join(os.sep, "opt", "alias", "..", "codex")):
+            with self.subTest(path=given):
+                self.assertEqual(NATIVE_CHECK.absolute_launch_path(given), given)
+
+    def test_a_lexical_collapse_would_name_another_file(self) -> None:
+        """The two forms differ on the filesystem: the traversal finds the executable, the collapse not.
+
+        This is the measured shape `abspath` breaks: `alias` is a symlink into `real/sub`, so
+        `alias/../codex` traverses to `real/codex`, while the collapsed `abspath` answer names
+        `<root>/codex`, which does not exist. Staging it needs the host to make a symlink; the string
+        pins above are the host-independent half, so a host without the privilege skips this arm.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "real" / "sub").mkdir(parents=True)
+            (root / "real" / "codex").write_text("the executable's own bytes\n")
+            try:
+                (root / "alias").symlink_to(root / "real" / "sub")
+            except (OSError, NotImplementedError):
+                self.skipTest("this host cannot create a symlink")
+            given = os.path.join(str(root), "alias", "..", "codex")
+            self.assertTrue(os.path.exists(given),
+                            "the path's own traversal does not name the staged executable")
+            self.assertFalse(os.path.exists(os.path.abspath(given)),
+                             "the lexical collapse names the executable too, so this case's premise "
+                             "does not hold on this host")
+            answered = NATIVE_CHECK.absolute_launch_path(given)
+            self.assertEqual(answered, given)
+            self.assertTrue(os.path.exists(answered), answered)
 
 
 class ForeignHomeOwnership(unittest.TestCase):
@@ -2339,6 +2463,35 @@ class CodexArtifactOracle(unittest.TestCase):
         self.assertIn("oracle.jsonl-objects", output.getvalue(),
                       f"the corpus failure does not name the unjudged rule: {output.getvalue()}")
 
+    def test_the_corpus_notices_a_verdict_field_that_disagrees_with_the_reading(self) -> None:
+        """The corpus reads the machine-readable verdict the command emits, not only its exit code.
+
+        A report whose `verdict` member were a constant would leave an arm's exit code honest and its
+        JSON document lying to a consumer that reads the field. This case rewrites that member — and
+        nothing else — in every emitted document while the reading, the violations and the exit codes
+        stay the shipped ones, so a corpus that checked only codes and cited rules closes green; with
+        the field asserted against each arm's declared expectation, the negative arms' rewritten
+        `PASS` turns the run red.
+        """
+        real_report = NATIVE_CHECK.oracle_report
+
+        def verdict_always_pass(artifact, receipt, as_json, disabled=frozenset()):
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                code = real_report(artifact, receipt, as_json, disabled)
+            print(re.sub(r'"verdict": "[A-Z]+"', '"verdict": "PASS"', stream.getvalue()), end="")
+            return code
+
+        output = io.StringIO()
+        with mock.patch.object(NATIVE_CHECK, "oracle_report", verdict_always_pass), \
+                contextlib.redirect_stdout(output):
+            code = NATIVE_CHECK.oracle_mutation_selftest()
+        self.assertEqual(code, 1,
+                         f"the corpus closed green with a verdict field that disagrees with the "
+                         f"reading: {output.getvalue()}")
+        self.assertIn("verdict 'PASS'", output.getvalue(),
+                      f"the corpus failure does not name the verdict it read: {output.getvalue()}")
+
     def test_a_mutated_byte_breaks_the_receipt(self) -> None:
         """D4's second case: one line's own byte changed under the unchanged receipt fails, naming the
         line — and the mutated artifact is not otherwise defective, so the failure is the receipt's
@@ -2612,6 +2765,48 @@ class CodexArtifactOracle(unittest.TestCase):
                     self.assertEqual(output.getvalue().strip().splitlines()[-1], want_line,
                                      f"{label}: {output.getvalue()}")
 
+    def test_a_receipt_document_nested_past_the_stated_bound_is_refused_by_name(self) -> None:
+        """A receipt's own byte statement decides a nested document, not the reading interpreter.
+
+        The rule reads three members; a document nesting an *ignored* member past
+        ``ORACLE_NESTING_BOUND`` — the shape measured answering PASS on Python 3.15 and
+        `RecursionError`/INCOMPLETE on 3.11, because the whole document was materialized — is refused
+        by the bound the rule states, before any member is read. A document nested exactly at the bound
+        is read like any other, and the ignored member passes within it.
+        """
+        bound = NATIVE_CHECK.ORACLE_NESTING_BOUND
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        frozen = (NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_RECEIPT) \
+            .read_text(encoding="utf-8").rstrip("\n")
+        self.assertTrue(frozen.endswith("}"), frozen[-80:])
+
+        def with_ignored_member(arrays: int) -> str:
+            return frozen[:-1] + ', "metadata": ' + "[" * arrays + "]" * arrays + "}"
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            at_bound = root / "at-bound.receipt.json"
+            at_bound.write_text(with_ignored_member(bound - 1), encoding="utf-8")
+            deep = root / "deep.receipt.json"
+            deep.write_text(with_ignored_member(2000), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(fixture), "--receipt", str(at_bound)])
+            self.assertEqual(code, 0, f"a receipt at the stated bound was refused: {output.getvalue()}")
+            self.assertEqual(output.getvalue().strip().splitlines()[-1], "oracle: PASS — 3 record(s)",
+                             output.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(fixture), "--receipt", str(deep)])
+            self.assertEqual(code, 1, f"exit {code}: {output.getvalue()}")
+            self.assertIn("oracle: oracle.receipt-integrity — the receipt document is nested deeper "
+                          f"than {bound} levels", output.getvalue())
+            self.assertEqual(output.getvalue().strip().splitlines()[-1],
+                             "oracle: FAIL — 3 record(s), 1 violation(s)", output.getvalue())
+        self.assertIn(f"nested deeper than {bound} levels",
+                      NATIVE_CHECK.ORACLE_RULES["oracle.receipt-integrity"],
+                      "the rule's own sentence does not state the bound the code enforces")
+
     def test_the_unterminated_tail_is_counted_in_the_artifact_s_own_bytes(self) -> None:
         """`oracle.whole-lines` states a byte count: an unterminated record holding multi-byte text is
         reported by the bytes after the last line feed, not by the decoded characters it happens to
@@ -2701,6 +2896,26 @@ class CodexArtifactOracle(unittest.TestCase):
                     NATIVE_CHECK.main(["--selftest-mutations", *flags])
                 self.assertEqual(refusal.exception.code, 2, errors.getvalue())
                 self.assertIn("--selftest-mutations runs the whole corpus", errors.getvalue())
+
+    def test_the_offline_modes_refuse_a_native_turn_flag(self) -> None:
+        """A native-turn flag on an offline mode is refused by name, never accepted and dropped.
+
+        ``--resume-prompt``/``--repeat-resume-prompt`` ask a native run for a real turn; ``--validate``
+        and ``--selftest-mutations`` run no harness at all, so the combination is refused (exit 2) with
+        the flag named. Pre-fix the command returned the mode's own verdict, ran no turn, and said
+        nothing — a caller could ask for a turn and read a report that answered a different request.
+        """
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        for argv in (["--validate", str(fixture), "--resume-prompt", "a question"],
+                     ["--validate", str(fixture), "--repeat-resume-prompt", "a question"],
+                     ["--selftest-mutations", "--repeat-resume-prompt", "a question"]):
+            with self.subTest(argv=argv[:2]):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                    NATIVE_CHECK.main(argv)
+                self.assertEqual(refusal.exception.code, 2, errors.getvalue())
+                self.assertIn("runs no harness turn", errors.getvalue())
+                self.assertIn("--resume-prompt", errors.getvalue())
 
     def test_disable_rule_without_validate_is_refused(self) -> None:
         """``--disable-rule`` turns a rule off for ``--validate``, which names the artifact the reading

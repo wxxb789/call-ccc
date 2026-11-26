@@ -759,6 +759,18 @@ def read_text_or_failure(path: Path) -> tuple[str, str]:
         return "", f"{path} cannot be read: {failure}"
 
 
+def absolute_launch_path(path: str) -> str:
+    """The path made absolute without a component of it being normalized.
+
+    A relative path is anchored to the process's own directory and an already absolute one is answered
+    unchanged, so the answer is what the caller's path traverses. `abspath` instead collapses `alias/..`
+    lexically where the filesystem follows `alias` first, so a path that resolved to the executable can
+    be rewritten to a name that does not exist or to another file's name at that path. A launcher shim
+    is not `resolve()`d either: it dispatches on `argv[0]`.
+    """
+    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+
+
 class ForeignHome:
     """The files and directories this run fabricated inside a caller-named home, and their exclusive
     create.
@@ -1017,8 +1029,10 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
     approvals) and belong to the check, not to the reported command; what the check answers is whether
     the turn ran and the session it names grew. A session whose bytes cannot be measured, and a turn
     that did not start or did not finish (`turn_answer`'s own `NoAnswer`), are this check's own named
-    failures rather than exceptions out of the run. The answer says whether the turn ran: the run's own
-    count of turns is the turns whose process answered, never the prompt flags a caller passed.
+    failures rather than exceptions out of the run. The answer is whether the turn *ran* — a verified
+    continuation: the process exited zero and the session it names grew — which is the same predicate
+    the check records, so the run's own count of turns is the turns that ran, never the prompt flags a
+    caller passed and never a process that answered non-zero without continuing anything.
     """
     try:
         session_before = session_file.stat().st_size
@@ -1033,19 +1047,21 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
         session_after = session_file.stat().st_size
     except OSError as failure:
         record(check_name, False, f"the session's bytes cannot be measured after the turn: {failure}")
-        return True
-    record(check_name, turn.returncode == 0 and session_after > session_before,
-           f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
+        return False
+    ran = turn.returncode == 0 and session_after > session_before
+    record(check_name, ran, f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
     print()
     print(TURN_OUTPUT_MARKER)
     for line in (turn.stdout or turn.stderr).splitlines():
         print("   ", line)
-    return True
+    return ran
 
 
-#: The deepest `{`/`[` nesting one artifact line may reach before the decoder reads it: the bound
-#: `ORACLE_RULES["oracle.jsonl-objects"]` states, so a line's verdict is its own bytes rather than the
-#: reading interpreter's recursion limit (CPython's default limit covers this depth on either scanner).
+#: The deepest `{`/`[` nesting one text may reach before the decoder reads it — an artifact line, or the
+#: receipt document: the bound `ORACLE_RULES["oracle.jsonl-objects"]` and
+#: `ORACLE_RULES["oracle.receipt-integrity"]` state, so a text's verdict is its own bytes rather than
+#: the reading interpreter's recursion limit (CPython's default limit covers this depth on either
+#: scanner).
 ORACLE_NESTING_BOUND = 256
 
 #: Every rule the offline oracle states: rule id → the sentence it states. The ids are this report's own
@@ -1069,7 +1085,9 @@ ORACLE_RULES: dict[str, str] = {
         "line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt "
         "whose statements do not match the artifact's bytes is refused, naming the line a changed byte "
         "moved; a receipt covers an artifact holding at least one line, so the empty artifact is not "
-        "receipt-identified by this rule",
+        "receipt-identified by this rule; a receipt document nested deeper than "
+        f"{ORACLE_NESTING_BOUND} levels is refused as well, because that bound is this rule's own "
+        "statement rather than the reading interpreter's recursion limit",
 }
 
 #: What every declared rule reads: the artifact's raw bytes (`on_bytes`), or the text the byte layer
@@ -1094,6 +1112,16 @@ ORACLE_RECEIPT = "artifact-receipt.json"
 #: The sentinel for "no receipt was supplied": a *supplied* document that reads `null` is a receipt that
 #: is not an object, which `oracle.receipt-integrity` refuses — not an absent receipt.
 _NO_RECEIPT = object()
+
+
+class _OracleReceiptPastBound:
+    """A receipt document nested deeper than `ORACLE_NESTING_BOUND`: refused by `oracle.receipt-integrity`'s
+    own stated bound rather than by the reading interpreter's recursion limit, and never materialized —
+    the member a document nests that deep inside may be one this rule does not read at all, and a
+    document's verdict is its own bytes."""
+
+
+_ORACLE_RECEIPT_PAST_BOUND = _OracleReceiptPastBound()
 
 
 class Violation(NamedTuple):
@@ -1271,12 +1299,13 @@ def oracle_whole_lines(data: bytes) -> list[Violation]:
                       f"the artifact's last {tail} byte(s) are a record without its line feed")]
 
 
-def _oracle_line_nesting(line: str) -> int:
-    """The deepest `{`/`[` nesting one line reaches, counted outside its string literals: a bracket
-    inside a string is that string's text, so the count is what `ORACLE_NESTING_BOUND` is stated over."""
+def _oracle_nesting_depth(text: str) -> int:
+    """The deepest `{`/`[` nesting one text — a line, or the receipt document — reaches, counted outside
+    its string literals: a bracket inside a string is that string's text, so the count is what
+    `ORACLE_NESTING_BOUND` is stated over."""
     depth = deepest = 0
     in_string = escaped = False
-    for character in line:
+    for character in text:
         if in_string:
             if escaped:
                 escaped = False
@@ -1304,7 +1333,7 @@ def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
     records: list[tuple[int, dict]] = []
     violations: list[Violation] = []
     for number, line in enumerate(oracle_lines(text), start=1):
-        if _oracle_line_nesting(line) > ORACLE_NESTING_BOUND:
+        if _oracle_nesting_depth(line) > ORACLE_NESTING_BOUND:
             violations.append(Violation("oracle.jsonl-objects", number,
                                         f"not JSON: nested deeper than {ORACLE_NESTING_BOUND} levels, "
                                         f"the bound this rule states"))
@@ -1353,8 +1382,14 @@ def oracle_receipt_violations(data: bytes, receipt: object) -> list[Violation]:
     """`oracle.receipt-integrity`: the receipt's own statements, read against the artifact's bytes.
 
     Further members than the three the rule names are not read: a receipt is the three statements it is
-    asked for, and a statement this oracle does not know is not one it may compare.
+    asked for, and a statement this oracle does not know is not one it may compare. A document nested
+    past the bound the rule states arrives as that sentinel — refused without a member of it being
+    read — so no member the rule does not read can move the verdict with the reading interpreter.
     """
+    if receipt is _ORACLE_RECEIPT_PAST_BOUND:
+        return [Violation("oracle.receipt-integrity", 0,
+                          f"the receipt document is nested deeper than {ORACLE_NESTING_BOUND} levels, "
+                          f"the bound this rule states")]
     if not isinstance(receipt, dict):
         return [Violation("oracle.receipt-integrity", 0,
                           f"a receipt is a JSON object, found {type(receipt).__name__}")]
@@ -1451,10 +1486,13 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
     It reads the artifact's bytes and, when one is named, the receipt's — nothing else, ever. An input
     it cannot read at all ends as `oracle: INCOMPLETE` (exit 2), never as a pass: a file that cannot be
     opened, a receipt document that is not UTF-8 or not JSON, and a document whose object writes a
-    member name twice are all such inputs. A reading where a rule was not evaluated and none was
-    violated is `oracle: INCOMPLETE` (exit 2) too, naming the rule and what blocked it: PASS is for a
-    reading where every rule was evaluated and the violation set is empty. The verdict line is the last
-    one printed, and `--json` adds the machine-readable document above it.
+    member name twice are all such inputs. A receipt document nested deeper than the bound its rule
+    states is that rule's own refusal — a violation, answered from the document's bytes before a member
+    of it is read — so an ignored member's depth cannot move the verdict with the reading interpreter. A
+    reading where a rule was not evaluated and none was violated is `oracle: INCOMPLETE` (exit 2) too,
+    naming the rule and what blocked it: PASS is for a reading where every rule was evaluated and the
+    violation set is empty. The verdict line is the last one printed, and `--json` adds the
+    machine-readable document above it.
     """
     try:
         data = artifact.read_bytes()
@@ -1465,10 +1503,7 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
     document: object = _NO_RECEIPT
     if receipt is not None:
         try:
-            document = json.loads(receipt.read_bytes().decode("utf-8"),
-                                  parse_constant=_reject_json_constant,
-                                  object_pairs_hook=_oracle_unique_members,
-                                  parse_int=_OracleInteger)
+            text = receipt.read_bytes().decode("utf-8")
         except UnicodeDecodeError as failure:
             print(f"oracle: INCOMPLETE — the receipt {receipt} is not UTF-8 text: {failure}",
                   file=sys.stderr)
@@ -1477,10 +1512,18 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
             print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}",
                   file=sys.stderr)
             return 2
-        except (ValueError, RecursionError) as failure:
-            print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}",
-                  file=sys.stderr)
-            return 2
+        if _oracle_nesting_depth(text) > ORACLE_NESTING_BOUND:
+            document = _ORACLE_RECEIPT_PAST_BOUND
+        else:
+            try:
+                document = json.loads(text,
+                                      parse_constant=_reject_json_constant,
+                                      object_pairs_hook=_oracle_unique_members,
+                                      parse_int=_OracleInteger)
+            except (ValueError, RecursionError) as failure:
+                print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}",
+                      file=sys.stderr)
+                return 2
     reading = oracle_reading(data, receipt=document, disabled=disabled)
     verdict = "PASS" if reading.passed else ("FAIL" if reading.violations else "INCOMPLETE")
     if as_json:
@@ -1761,9 +1804,13 @@ def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path
     differs from it and fails citing **only** `rule` plus the rules its bytes are declared to break;
     (c) the same mutated pair with `--disable-rule` for `rule` cites exactly those others and no
     violation of its own — a pass where every rule was still evaluated, INCOMPLETE where the disabled
-    rule was the one whose refusal left a `needs_text` rule unjudged. The mutated bytes are materialized
-    under `work`, the only place this run writes, so both negative arms judge the bytes a caller of the
-    command would supply. The second half of the answer describes arm (c) for the caller's own line.
+    rule was the one whose refusal left a `needs_text` rule unjudged. Every arm asserts the document's
+    own machine-readable `verdict` against the arm's declared expectation — the field a consumer reads,
+    never the exit code standing in for it — and the declared unjudged set on **both** negative arms,
+    so a report that stopped saying `FAIL`, or stopped carrying the not-evaluated rules, turns the
+    corpus red instead of agreeing with itself. The mutated bytes are materialized under `work`, the
+    only place this run writes, so both negative arms judge the bytes a caller of the command would
+    supply. The second half of the answer describes arm (c) for the caller's own line.
     """
     try:
         data = oracle_fixture(mutation.artifact)
@@ -1776,9 +1823,10 @@ def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path
     code, document, problem = _oracle_cli_reading(positive_argv)
     if problem is not None:
         return f"the positive fixture: {problem}", ""
-    if code != 0 or document["violations"] or document["not_evaluated"]:
-        return (f"the positive fixture is not green (exit {code}, citing {_cited(document)}, "
-                f"not evaluated {_unjudged(document)}): "
+    if code != 0 or document["verdict"] != "PASS" or document["violations"] \
+            or document["not_evaluated"]:
+        return (f"the positive fixture is not green (exit {code}, verdict {document['verdict']!r}, "
+                f"citing {_cited(document)}, not evaluated {_unjudged(document)}): "
                 + "; ".join(f"{violation['rule']} line {violation['line']} — {violation['detail']}"
                             for violation in document["violations"])), ""
     before = (data, json.dumps(receipt, sort_keys=True) if receipt is not None else None)
@@ -1801,9 +1849,16 @@ def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path
         return f"the negative fixture: {problem}", ""
     cited = _cited(document)
     expected = sorted({rule, *mutation.also_cited})
-    if code != 1 or cited != expected:
-        return (f"the negative fixture turned {cited} red instead of exactly {expected} (exit {code}): "
+    if code != 1 or document["verdict"] != "FAIL" or cited != expected:
+        return (f"the negative fixture turned {cited} red instead of exactly {expected} "
+                f"(exit {code}, verdict {document['verdict']!r}): "
                 + "; ".join(f"{violation['rule']} line {violation['line']} — {violation['detail']}"
+                            for violation in document["violations"])), ""
+    expected_unjudged = sorted(mutation.unjudged)
+    if _unjudged(document) != expected_unjudged:
+        return (f"the negative fixture reads {_unjudged(document)} as not evaluated instead of "
+                f"{expected_unjudged} (exit {code}, {document['verdict']}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']}"
                             for violation in document["violations"])), ""
     code, document, problem = _oracle_cli_reading(negative_argv + ["--disable-rule", rule])
     if problem is not None:
@@ -1814,16 +1869,17 @@ def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path
                 f"{sorted(mutation.also_cited)} (exit {code}): "
                 + "; ".join(f"{violation['rule']} line {violation['line']}"
                             for violation in document["violations"])), ""
-    expected_unjudged = sorted(mutation.unjudged)
     if _unjudged(document) != expected_unjudged:
         return (f"the negative fixture with `--disable-rule {rule}` reads {_unjudged(document)} as not "
                 f"evaluated instead of {expected_unjudged} (exit {code}, {document['verdict']}): "
                 + "; ".join(f"{violation['rule']} line {violation['line']}"
                             for violation in document["violations"])), ""
     expected_code = 1 if mutation.also_cited else (2 if mutation.unjudged else 0)
-    if code != expected_code:
+    expected_verdict = {1: "FAIL", 2: "INCOMPLETE", 0: "PASS"}[expected_code]
+    if code != expected_code or document["verdict"] != expected_verdict:
         return (f"the negative fixture with `--disable-rule {rule}` exited {code} where the reading is "
-                f"{document['verdict']} (citing {cited}, not evaluated {_unjudged(document)}): "
+                f"{document['verdict']} instead of {expected_verdict} (citing {cited}, not evaluated "
+                f"{_unjudged(document)}): "
                 + "; ".join(f"{violation['rule']} line {violation['line']}"
                             for violation in document["violations"])), ""
     if mutation.also_cited:
@@ -1937,12 +1993,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.validate is not None or args.receipt is not None or args.disable_rule:
             parser.error("--selftest-mutations runs the whole corpus and takes none of --validate, "
                          "--receipt or --disable-rule")
+        if args.resume_prompt or args.repeat_resume_prompt:
+            parser.error("--selftest-mutations runs the offline corpus: it runs no harness turn and "
+                         "takes no --resume-prompt or --repeat-resume-prompt")
         return oracle_mutation_selftest()
     if args.receipt is not None and args.validate is None:
         parser.error("--receipt names the receipt of the artifact --validate is given")
     if args.disable_rule and args.validate is None:
         parser.error("--disable-rule turns a rule off for --validate, which names the artifact")
     if args.validate is not None:
+        if args.resume_prompt or args.repeat_resume_prompt:
+            parser.error("--validate reads one artifact and runs no harness turn: it takes no "
+                         "--resume-prompt or --repeat-resume-prompt")
         disabled = frozenset(args.disable_rule)
         unknown = sorted(disabled - set(ORACLE_RULES))
         if unknown:
@@ -1971,10 +2033,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     # One executable serves every harness invocation below: a `which()` answer can preserve a relative
     # PATH entry (`./codex`), and the process this run launches would then depend on where this one
-    # stands. Made absolute here, but deliberately *not* `resolve()`d: a mise shim is a symlink to the
-    # `mise` binary itself and dispatches on argv[0], so following the link launches `mise` (whose
-    # `app-server` is not Codex's) instead of the harness.
-    codex = os.path.abspath(codex)
+    # stands. Made absolute without a component being normalized -- never `abspath`, whose lexical
+    # `..`-collapse can name another file -- and deliberately *not* `resolve()`d: a mise shim is a
+    # symlink to the `mise` binary itself and dispatches on argv[0], so following the link launches
+    # `mise` (whose `app-server` is not Codex's) instead of the harness.
+    codex = absolute_launch_path(codex)
     go = shutil.which("go")
     if go is None:
         print("go is not on PATH: this harness builds ccc with the Go toolchain", file=sys.stderr)

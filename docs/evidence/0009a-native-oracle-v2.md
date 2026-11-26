@@ -15,12 +15,15 @@ footprint kept moving — move out into [goal 0009e](../goals/0009e-native-check
 reviewed starting point is tag `archive/0009a-r16-native-arm` (head `768df19`). The round history in
 §1–§3 below is **the pre-re-cut tree's** — kept because it is where the moved features' fixes and the
 oracle's own rounds were measured — while every count and quoted run the re-cut changes is
-**re-measured on the re-cut tree** and marked as such. 0009a now ships: the offline oracle (unchanged),
-the native load and real-turn checks (the base's own, minus the two moved additions), and the three
-round-5 findings that live in the shipped half — the corpus's declared unjudged rules, the receipt's
-three-member read, and the turn count. Every diff that fixes a reproducible defect of a surviving path
-is kept: the dangling-symlink crash in a caller's `--codex-home`, the portable held-name rule for the
-exclusive create, and the `os.path.abspath` (never `resolve()`) launch rule. The moved decisions are
+**re-measured on the re-cut tree** and marked as such. 0009a now ships: the offline oracle (unchanged by
+the re-cut; the 2026-11-26 r7 fix round's two reading refinements — the receipt document's stated bound
+and the corpus's own verdict assertions — are §1 and §3), the native load and real-turn checks (the
+base's own, minus the two moved additions), and the three round-5 findings that live in the shipped half
+— the corpus's declared unjudged rules, the receipt's three-member read, and the turn count. Every diff
+that fixes a reproducible defect of a surviving path is kept: the dangling-symlink crash in a caller's
+`--codex-home`, the portable held-name rule for the exclusive create, and the launch rule for a shim —
+the path is never `resolve()`d, and since the r7 round it is made absolute without a component being
+normalized (§3). The moved decisions are
 `Q-0009a-05`, `-07` and `-09`, and the re-cut itself is `Q-0009a-10`
 (`docs/decisions/OPEN-QUESTIONS.md`).
 
@@ -39,7 +42,7 @@ step or CI workflow changes.
 | `oracle.utf8` | valid UTF-8 text, opening with no byte-order mark |
 | `oracle.whole-lines` | whole lines: the empty artifact, or bytes whose final byte is a line feed |
 | `oracle.jsonl-objects` | every line exactly one JSON object, member names unique, no unpaired surrogate escape; a line nested deeper than 256 levels is refused by the rule's own stated bound, not by the reading interpreter's recursion limit; integers are read by their written digits, never converted, so the interpreter's integer-conversion limit decides no verdict |
-| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes — the anchors the two sides share are compared even where the counts differ, so a moved delimiter byte still names the line it diverged on (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
+| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes — the anchors the two sides share are compared even where the counts differ, so a moved delimiter byte still names the line it diverged on; a receipt document nested deeper than 256 levels is refused by the rule's own stated bound, not by the reading interpreter's recursion limit (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
 
 The reading: **every rule is evaluated, or explicitly `NotEvaluated`.** `ORACLE_RULE_INPUTS` declares
 what each rule reads — `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` read the
@@ -386,11 +389,11 @@ pre-r3 reading answered PASS over bytes whose final byte was not a line feed; §
 `--disable-rule oracle.utf8`'s middle arm above hold the line rule's violation standing).
 
 **The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §6). At the
-r5 (pre-re-cut) head it ran 96 tests; **re-measured on the re-cut tree**:
+r5 (pre-re-cut) head it ran 96 tests; **re-measured on the r7 round's tree**:
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 82 tests in 0.497s
+Ran 90 tests in 0.571s
 OK
 ```
 
@@ -419,10 +422,36 @@ subject moved with the artifact), and the run above is the r5 round's own, on th
 describes. **The re-cut moves it 96 → 82** — sixteen cases removed with the moved features, the two
 refusal-path collision cases collapsed into one, six cases narrowed to the surviving plant site, and
 three pins added for the shipped half's round-5 findings (§2's "The re-cut's own test movement") — and
-the whole discovery in §6 is correspondingly **537** tests against 551 at the r5 head.
+the whole discovery in §6 is correspondingly **537** tests against 551 at the r5 head. The **r7 fix
+round** moves it 82 → 90 — its eight cases: R6-1's launch-path pins (three unit cases and one
+drive case), R6-2's past-bound receipt, R6-3's verdict-lying corpus mutant, R6-4's non-zero turn and
+R6-5's offline-mode refusal — and the whole discovery in §6 is correspondingly **545** tests.
+
+**The r7 fix round's arms** (2026-11-26, on this record's tree; each finding's case was measured red
+before its fix):
+
+```
+$ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-oracle/artifact.jsonl \
+    --receipt <scratch>/deep.receipt.json      # the frozen receipt + a 2,000-level *ignored* member
+oracle: oracle.receipt-integrity — the receipt document is nested deeper than 256 levels, the bound this rule states
+oracle: FAIL — 3 record(s), 1 violation(s)                                     # exit 1
+# pre-fix the same document answered PASS (exit 0) on Python 3.15 and INCOMPLETE (exit 2) on 3.11:
+# the member the rule does not read decided the verdict with the reading interpreter (R6-2).
+$ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-oracle/artifact.jsonl \
+    --resume-prompt "a question"               # an offline mode handed a native-turn flag
+codex-native-check.py: error: --validate reads one artifact and runs no harness turn: it takes no --resume-prompt or --repeat-resume-prompt
+                                                                               # exit 2 (R6-5; pre-fix: PASS, no turn, no diagnostic)
+`--selftest-mutations` refuses the same combination by name (exit 2). The suite's own halves: the corpus
+rewritten to say `verdict: PASS` on every emitted document closes **red** (R6-3; pre-fix it closed
+green), a turn whose process answered non-zero without growing its session prints
+`real turn(s) run: 0` (R6-4; pre-fix: 1), and the run hands the stub the `--codex` path it was given —
+`<root>/alias/../codex`, never its lexical collapse (R6-1; pre-fix the stub saw `<root>/codex`, a name
+the traversal does not reach). The lock-boundary finding (R6-6) is a documentation change: the two goal
+files now state the same boundary (the offline oracle, not the whole file), in the form `Q-0009a-13`
+records.
 
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
-**re-measured on the re-cut tree**, exit 0). The header names the launched binary alone — the version and
+**re-measured on the r7 round's tree**, exit 0). The header names the launched binary alone — the version and
 digest pairing moved out with the fingerprint — and the run's own count is the base's minus the moved
 check line:
 
@@ -511,7 +540,7 @@ gate: go=<go 1.27.4> module=ccc targets=./cmd/ccc/... ./internal/ccc/...
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 537 tests in 10.624s (rc=0)
+  PASS     selftest    Ran 545 tests in 10.266s (rc=0)
   PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5776 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified…
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
   PASS     secrets     no leaks found in 231 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -520,11 +549,12 @@ GATE: PASS
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 22 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's row against the Go test it cites. The table is **re-measured on the re-cut
-tree** (2026-11-26), whose `selftest` count is 537 against 551 at the r5 head (§2/§3 name the moved
+which verifies the goal's row against the Go test it cites. The table is **re-measured on the r7 round's
+tree** (2026-11-26), whose `selftest` count is 545 against 551 at the r5 head (§2/§3 name the moved
 cases; the whole discovery's counts moved 503 → 519 across the four rounds, → 524 in the cross-family
-review round, → 537 in the r2 round, → 548 in the r3 round, → 549 in the r4 round and → 551 in the r5
-round, whose 96-test narrowed suite the re-cut moves to 82). Its `secrets` count (231
+review round, → 537 in the r2 round, → 548 in the r3 round, → 549 in the r4 round, → 551 in the r5
+round, whose 96-test narrowed suite the re-cut moves to 82 and the r7 fix round to 90; the whole
+discovery moves 537 → 545). Its `secrets` count (231
 files) is
 this worktree's own scope — the
 count includes untracked `__pycache__`/`bin` files — not a change the re-cut made.

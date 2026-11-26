@@ -61,9 +61,10 @@ narrower surface:
 
 `scripts/codex-native-check.py`, `scripts/tests/test_codex_native_check.py`, this goal's own
 plan/evidence, and the documentation lines its own description occupies. **No Go change, no gate step,
-no CI change, no `AGENTS.md` edit.** The offline oracle (0009a's shipped half) is read-only here: this
-increment adds no oracle rule, moves no frozen fixture, and its changes to the check are confined to the
-native half and the shared seams it stands on.
+no CI change, no `AGENTS.md` edit.** The lock 0009a states is about the **offline oracle** — the rule
+table and its corpus, the committed fixtures and the `--validate` reading — not about the whole file:
+this increment adds no oracle rule, moves no frozen fixture, and its changes to the check are confined
+to the native half and the shared seams it stands on, with no production code in the round.
 
 ## Non-scope
 

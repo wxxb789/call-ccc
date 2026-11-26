@@ -10,8 +10,9 @@ five cross-family review rounds returned defects in the same three classes, the 
 rather than hardened again; the reviewed starting point of the moved work is tag
 `archive/0009a-r16-native-arm` (`768df19`), and the re-cut is recorded in
 [`docs/decisions/OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md) (`Q-0009a-10`). The oracle this
-goal freezes is the **reduced** one below: read-only for the rest of goal 0009 (the oracle lock), with
-the Codex judgment owned by the installed `codex` binary.
+goal freezes is the **reduced** one below — the offline half alone, read-only for the rest of goal 0009
+(the oracle lock, whose boundary is stated under *Intended advance*), with the Codex judgment owned by
+the installed `codex` binary.
 **Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md);
 the decomposition's rationale, the two cross-family consults it came from, and the per-increment proof
 obligations are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md). The re-scope's
@@ -34,9 +35,14 @@ set equals the mutated rule set, executed by `--selftest-mutations`. **The Codex
 replay judgment belongs to the `codex` binary itself**: a native check runs the binary against an
 artifact and reports *its* answer (the loader's own `thread/resume`/`thread/read`, and a real turn where
 a prompt flag asks for one), and where the binary is absent the check prints the reason and
-exits non-zero — never a guess, never a Python restatement of the loader. Once merged, the oracle file is
-**read-only for the rest of goal 0009**; the conductor's oracle-lock signal enforces that over the
-reduced file.
+exits non-zero — never a guess, never a Python restatement of the loader. Once merged, the **offline
+oracle** — the rule table and its corpus (`ORACLE_RULES`/`ORACLE_MUTATIONS`), the committed fixtures
+under `scripts/tests/testdata/codex-oracle/`, and the `--validate` reading — is **read-only for the rest
+of goal 0009** (the oracle lock); the same file's native half stays the native half, and the conductor's
+oracle-lock signal is the mechanism: it blocks a fix round that moves this checker alongside production
+code, the co-mutation that would move both sides of "the implementation satisfies the oracle" at once.
+After goal 0009, a change to the oracle is an ordinary increment — add the rule and the mutation that
+turns its fixture red.
 
 **What this goal does not claim.** The offline half **cannot** detect a Codex artifact the binary would
 reject — by construction, because it holds no Codex knowledge at all. That limit is disclosed here, in
@@ -50,9 +56,10 @@ No Go change; nothing outside `scripts/codex-native-check.py`, its tests, the co
 (`scripts/tests/testdata/codex-oracle/`), the goal's `docs/evidence/0009a-citations.tsv`, this
 increment's own plan/evidence, and the documentation surfaces this increment's own description occupies
 — this goal file, `docs/goals/README.md`'s index row, `docs/harness.md`'s native-check section, the
-superseded plan stub `docs/plans/0009a-native-oracle.md` and `docs/decisions/OPEN-QUESTIONS.md`. The
-existing unflagged Codex acceptance keeps reporting the same verdict. A cited Go test must already exist
-and pass.
+superseded plan stub `docs/plans/0009a-native-oracle.md`, `docs/decisions/OPEN-QUESTIONS.md` and the
+moved work's own goal file `docs/goals/0009e-native-check-hardening.md` (whose lock statement this
+goal's own must agree with). The existing unflagged Codex acceptance keeps reporting the same verdict. A
+cited Go test must already exist and pass.
 
 ## Done when
 

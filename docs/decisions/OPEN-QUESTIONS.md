@@ -3387,3 +3387,71 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   surface) and to bound the diff that premise could not.
 - **Settled by:** the owner, or 0009e's own acceptance showing the moved features can be reviewed to a
   clean verdict on their narrower surface.
+
+## Q-0009a-11 — A receipt document past the rule's stated nesting bound
+
+- **Status:** resolved (r7 fix round, finding R6-2, 2026-11-26 — this increment's own bounded round
+  after the re-cut).
+- **Question:** the receipt rule reads three members, but the document was materialized whole: a valid
+  2,000-level array under an *ignored* member raised `RecursionError` on Python 3.11 (an unchanged
+  receipt answered INCOMPLETE) and parsed on 3.15 (the same receipt answered PASS), so a member the rule
+  does not read decided the verdict with the reading interpreter. Read the three members without
+  materializing the rest, or bound the document?
+- **Options:** (a) a reader that skips ignored members and decodes only the three it reads (refused: it
+  would decode foreign structure member by member and still needs a bound for the members it does read
+  and for `lines`'s own entries); (b) give the document the same stated bound the artifact line rule
+  carries (`ORACLE_NESTING_BOUND`, 256), counted on the document's bytes before any member is
+  materialized, so a document past it is refused by `oracle.receipt-integrity`'s own sentence (taken).
+- **Default taken:** (b). `oracle_receipt_violations` refuses the past-bound sentinel by name; within the
+  bound an ignored member still passes (the 5,000-digit integer, a 255-level array), and past it the
+  same document answers the stated refusal on every interpreter (measured: exit 1 naming the bound on
+  Python 3.11/3.12/3.14/3.15, where the pre-fix answers were INCOMPLETE on 3.11 and PASS on 3.15). A
+  deep *ignored* member past the bound is still refused: the bound is the rule's own statement, and the
+  reading never consults the member.
+- **Reversal:** (a) — one increment that reads the three members without bounding the document, with the
+  case for a past-bound *read* member moved with it.
+- **Settled by:** the owner, or an increment that gives the receipt document another reader with a
+  reason to stream it.
+
+## Q-0009a-12 — The launch path keeps every component it was given (refines Q-0009a-10's launch clause)
+
+- **Status:** resolved (r7 fix round, finding R6-1, 2026-11-26).
+- **Question:** `main` made the `which()` answer absolute with `os.path.abspath`, which collapses
+  `alias/..` lexically: a `--codex` path or PATH entry that traverses a symlinked directory can be
+  rewritten to a name that does not exist, or to another file's name at that path (measured on this
+  host: `alias/../codex` traverses to the executable, while `abspath` names `<root>/codex`, which is
+  absent). Refuse such a path by name, or keep its traversal?
+- **Options:** (a) refuse a supplied path whose lexical and traversed forms differ (refused: a PATH entry
+  holding `..` is legal, and the refusal would be about the caller's spelling rather than about what the
+  run launches); (b) make the path absolute without normalizing a component — a relative path anchored to
+  the process's own directory, an absolute one answered unchanged (taken).
+- **Default taken:** (b). `absolute_launch_path` is the one site; `resolve()` stays forbidden (a mise
+  shim dispatches on `argv[0]` — the pre-r7 rule this clause refines). Pinned by `LaunchPathResolution`'s
+  cases and the drive case that reads the argv[0] the stub was launched with (pre-fix probe: the run
+  launched the collapsed `<root>/codex` while the caller's own path named the executable).
+- **Reversal:** (a) — one increment that refuses the differing spellings by name, with the drive case
+  moved from "not rewritten" to "refused".
+- **Settled by:** the owner, or a platform whose PATH semantics make the traversal-preserving answer
+  wrong.
+
+## Q-0009a-13 — The oracle lock's boundary: the offline oracle, not the whole file
+
+- **Status:** resolved (r7 fix round, finding R6-6, 2026-11-26 — decided from the mechanism: the
+  conductor's oracle-lock rule in `docs/plans/0009-decomposition.md`, instrument #3).
+- **Question:** the goal file called "the oracle file" read-only for the rest of goal 0009, while 0009e
+  (whose prerequisite 0009a is) changes that same file's native half: the two goal files required the
+  operator to pick which contract to break.
+- **Options:** (a) a file-wide lock with 0009e carrying a declared exception (refused: the mechanism the
+  instrument states is narrower — it blocks a fix round that moves a gate/checker script **alongside
+  production code** — and 0009e ships no production code, so a file-wide lock would forbid work the
+  mechanism admits); (b) the lock is the **offline oracle** — the rule table and its corpus, the
+  committed fixtures and the `--validate` reading (taken).
+- **Default taken:** (b), stated the same way in both goal files; `docs/harness.md`'s native-check
+  section ("this section, the rule table and `--validate`"), the decomposition plan's A2-1 row ("the
+  validator … read-only for the rest of goal 0009") and instrument #3 already agreed with it, and the
+  umbrella file states no lock of its own, so there is nothing there to contradict. The lock ends when
+  goal 0009 ends.
+- **Reversal:** (a) — one increment that widens the lock to the whole file and gives 0009e its declared
+  exception and removal condition.
+- **Settled by:** the owner, or a later increment that needs a *rule* change during goal 0009 — under
+  the lock that is an escalation, not an iteration.

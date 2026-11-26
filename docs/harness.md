@@ -468,7 +468,9 @@ says so.
   the rule's own statement, not the reading interpreter's recursion limit) and `oracle.receipt-integrity` (a
   receipt's byte count, whole-file SHA-256 and one anchor per line — the line's own bytes, line feed included — read
   against the artifact: a mutated byte is refused, named by the line it moved; a receipt covers an
-  artifact holding at least one line, so the empty artifact is not receipt-identified by this rule).
+  artifact holding at least one line, so the empty artifact is not receipt-identified by this rule; a
+  receipt document nested deeper than 256 levels is refused too — that bound is the rule's own statement,
+  not the reading interpreter's recursion limit).
   **Every rule is evaluated, or explicitly not evaluated.** `ORACLE_RULE_INPUTS` declares what each rule
   reads: `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` read the artifact's own bytes
   — the line rule included, because a decode result cannot gate a byte predicate, and the receipt

@@ -56,7 +56,7 @@ is otherwise untouched (the re-cut below removed the two report additions the fi
 | `oracle.utf8` | the artifact's bytes are valid UTF-8 text and its first bytes are no byte-order mark |
 | `oracle.whole-lines` | the artifact's bytes are whole lines: the empty artifact, or bytes whose final byte is a line feed — an artifact whose last bytes are an unterminated record is refused |
 | `oracle.jsonl-objects` | every line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer; a line nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
-| `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule |
+| `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule; a receipt document nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
 
 **Every rule is evaluated, or explicitly `NotEvaluated`.** `ORACLE_RULE_INPUTS` declares what each rule
 reads: `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` are `on_bytes` — evaluated
@@ -101,7 +101,8 @@ fingerprint**. Both are removed from this increment and moved to [goal
 0009e](../goals/0009e-native-check-hardening.md), whose reviewed starting point is tag
 `archive/0009a-r16-native-arm` (head `768df19`). What this increment now ships under D3 is the native
 check **without** them: the loader's own answers and the real-turn checks the base carried, with the
-`os.path.abspath` (never `resolve()`) launching rule kept, and the absent-binary reason and non-zero
+`os.path.abspath` (never `resolve()`) launching rule kept (the r7 round refines the absolutization: no
+component is normalized, `Q-0009a-12`), and the absent-binary reason and non-zero
 exit kept. The three round-5 findings that stay in the shipped half are fixed here: the
 `--selftest-mutations` corpus declares each pair's expected unjudged rules and asserts them
 independently of the reading's reply (D1); the receipt rule reads only its three members, so an ignored
