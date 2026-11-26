@@ -63,3 +63,30 @@ Replace the single byte rule with four measurements, keeping the **verdict seman
   separate the two non-contractive runs from the nine that converged.
 - Goal **0009** itself is no longer a runnable id; it survives as the umbrella contract. The route fan-out
   (0018–0021) now depends on **0009d**.
+
+## The 2026-11-26 re-cut (owner option C): four increments become five
+
+Five cross-family review rounds on 0009a's implementation (lane rounds r1–r5, a different model family
+per round) returned defects in the **same three classes**, severity did not decay (a P1 every round)
+and the reviewed diff grew 171 KB → 194 KB → 338 KB → 364 KB. The root-cause consult named the
+boundary: A2-1's increment carried two features — the **disclosure arm** and the **binary
+fingerprint** — that each round hardened at one site while the next round found the next inherited
+environment variable or the next launch indirection ("if the judge must move to pass, escalate rather
+than iterate", this document's own instrument rule). The owner re-decomposed rather than hardened
+again:
+
+- **0009a ships the offline oracle plus the native check without the two features** (the increment this
+  repository's branch `feat/0009a-native-oracle-v2` now carries), keeping every diff that fixes a
+  reproducible defect of a surviving path — the dangling-symlink crash in a caller's `--codex-home`,
+  the portable held-name rule for the exclusive create, and the `os.path.abspath` (never `resolve()`)
+  rule for launching a shim.
+- **0009e** is the moved work's home, with the reviewed starting point at tag
+  `archive/0009a-r16-native-arm` (head `768df19`): the disclosure arm (owner criterion `Q1 = B`, an
+  id-only lookup miss as the failure control), the binary fingerprint (which file the launched name
+  dispatches to), the ownership seam for every root the harness can write (the round-5 #1 P1: the
+  planted probe inheriting a caller's `CODEX_SQLITE_HOME`), and the round-5 #2 P2 (an official npm
+  launcher fingerprinted instead of the native binary it forwards to).
+
+The route fan-out (0018–0021) still depends on **0009d**; 0009e is independent of it. The re-cut is
+also recorded in `docs/decisions/OPEN-QUESTIONS.md` (`Q-0009a-10`, with the moved items `Q-0009a-05`,
+`-07` and `-09`).

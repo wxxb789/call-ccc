@@ -133,29 +133,6 @@ COPY_ROOT = Path("source")
 #: touch a session another agent may already have continued.
 UNRELATED_NAME = "rollout-2026-01-01T00-00-00-00000000-0000-7000-8000-000000000000.jsonl"
 
-#: The fabricated session the disclosure arm plants: the offline oracle's frozen artifact under a name of
-#: its own, so the harness's own loader answers for bytes the offline rules accept and the two answers
-#: stand side by side (the oracle holds no Codex knowledge, and this is where a caller sees what that
-#: costs: the binary refuses an artifact the container rules hold green).
-ORACLE_PROBE_ID = "00000000-0000-7000-8000-00000000a009"
-ORACLE_PROBE_NAME = f"rollout-2026-01-01T00-00-01-{ORACLE_PROBE_ID}.jsonl"
-
-#: The data directory the disclosure arm's artifact is planted into: a home of this run's own under the
-#: scratch directory, never the target home. Exclusive creation protects a *name*, not the file at it: a
-#: home another writer can reach (the caller's `--codex-home`) could have the planted file replaced
-#: during the run, and a cleanup that unlinked the name would then delete a file this run never wrote.
-#: The artifact therefore lives where only this run can write, and the arm reads it back so the bytes
-#: the harness is given are the bytes this run planted.
-PROBE_HOME = "probe-home"
-
-#: The harness's own sentence refusing the planted artifact, with the artifact's path standing where
-#: `{path}` is: what the real binary answers for the frozen artifact (measured on Codex 0.171.0, the
-#: version every run records). The disclosure arm's PASS requires this sentence *about the exact planted
-#: path* -- evidence the harness read this artifact's bytes and rejected them -- so an id-only lookup
-#: miss, an I/O failure naming the path, and a refusal of a same-named file elsewhere are each recorded
-#: as failures rather than as the refusal the check's name claims.
-REFUSAL_SENTENCE = "rollout at {path} is empty"
-
 #: One app-server request's deadline. Every call this harness makes is bounded by it: a server that keeps
 #: its output open and stops answering is reported as a failed check rather than blocking the run.
 APP_SERVER_TIMEOUT = 120
@@ -199,17 +176,11 @@ REPORTED_NAME_LIMIT = 8
 #: a verdict, so it is kept out of the one-line summaries this harness reports.
 NOISE = ("PATH aliases", "bubblewrap", "is deprecated")
 
-#: What `last_meaningful_line` answers for text holding no meaningful line. A report's detail may say
-#: "(no diagnostics)" -- there the absence *is* the detail -- while a line a verdict depends on may not:
-#: an empty `--version` answer is no answer, and a run reading this placeholder as one would attribute
-#: every verdict below to a binary its header never named.
-NO_MEANINGFUL_LINE = "(no diagnostics)"
-
 
 def last_meaningful_line(text: str) -> str:
     lines = [line.strip() for line in (text or "").splitlines()
              if line.strip() and not any(needle in line for needle in NOISE)]
-    return lines[-1][:300] if lines else NO_MEANINGFUL_LINE
+    return lines[-1][:300] if lines else "(no diagnostics)"
 
 
 #: The control characters TOML's basic strings have a named escape for. Every other character below
@@ -470,15 +441,8 @@ def drain_diagnostics(stream: Iterable[str], retained: collections.deque[str]) -
         pass
 
 
-class Refusal(NamedTuple):
-    """The harness's measured refusal of one planted artifact: a JSON-RPC error whose message is
-    `REFUSAL_SENTENCE` about that artifact's exact path. `refusal_of` is the only constructor."""
-
-    message: str
-
-
 class OtherError(NamedTuple):
-    """A JSON-RPC error answer this run does not read as the refusal it asked about."""
+    """A JSON-RPC error answer to one call: the harness's own error document, folded into one shape."""
 
     message: str
 
@@ -503,19 +467,6 @@ def answer_problem(answer: Thread | OtherError | NoAnswer) -> str:
     if isinstance(answer, NoAnswer):
         return answer.reason
     return ""
-
-
-def refusal_of(answer: OtherError, planted: Path) -> Refusal | OtherError:
-    """The one place a `Refusal` is built: a JSON-RPC error is the harness's refusal of the planted
-    artifact only where its message carries `REFUSAL_SENTENCE` about that artifact's exact path.
-
-    Only an error answer reaches this comparison -- a transport failure is a `NoAnswer` before any
-    message exists -- so a closed pipe, an I/O failure that names the path, and an id-only lookup miss
-    each stay a failure rather than becoming the refusal this check's name claims.
-    """
-    if REFUSAL_SENTENCE.format(path=planted) in answer.message:
-        return Refusal(answer.message)
-    return answer
 
 
 def start_app_server(binary: str, home: Path) -> "AppServer | NoAnswer":
@@ -627,8 +578,7 @@ class AppServer:
         """One request and its answer: the harness's result, its JSON-RPC error, or no answer.
 
         One vocabulary for every interaction: a write, flush or read failure is `NoAnswer` folded at
-        this object; a JSON-RPC error answer is `OtherError` (whether it is the refusal this run asked
-        about is decided by `refusal_of`, from the message alone); a result is `Thread`.
+        this object; a JSON-RPC error answer is `OtherError`; a result is `Thread`.
         """
         self.next_id += 1
         request_id = self.next_id
@@ -807,14 +757,6 @@ def read_text_or_failure(path: Path) -> tuple[str, str]:
         return path.read_text(), ""
     except OSError as failure:
         return "", f"{path} cannot be read: {failure}"
-
-
-def read_bytes_or_failure(path: Path) -> tuple[bytes, str]:
-    """One path's bytes, or the failure that prevented reading it: the same rule as `sha256_or_failure`."""
-    try:
-        return path.read_bytes(), ""
-    except OSError as failure:
-        return b"", f"{path} cannot be read: {failure}"
 
 
 class ForeignHome:
@@ -1038,45 +980,6 @@ def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
     return view, kinds
 
 
-def resume_answer(codex: str, home: Path, thread_id: str, planted: Path) -> tuple[bool, str]:
-    """The target harness's own answer for one artifact: whether it refused the session, and its own
-    words either way.
-
-    A JSON-RPC error answer to `thread/resume` counts as the harness's refusal only where it is the
-    harness's measured refusal *of this artifact*: the rollout at the exact planted path is what it says
-    it read and rejected (`REFUSAL_SENTENCE`, measured on the version every run records), and only
-    `refusal_of` decides that, from a JSON-RPC error message alone. An answer that merely names the
-    requested session id is a lookup miss a store can answer without opening the rollout; an answer
-    naming the path as one it could not *open* (`Permission denied`, a missing file) is an I/O failure,
-    not a rejection of the artifact's contents; and an answer about another path -- a same-named file in
-    another directory included -- is about another artifact. Each of those is recorded as a failure in
-    its own words rather than as the refusal this check's name claims, because none of them is evidence
-    that the harness read this artifact and refused it. A start, handshake, pipe or timeout failure is
-    `NoAnswer` -- no answer at all -- and is likewise *not* a refusal.
-    """
-    server = start_app_server(codex, home)
-    if isinstance(server, NoAnswer):
-        return False, f"the harness never answered: {server.reason}"
-    try:
-        handshake = server.handshake()
-        if isinstance(handshake, NoAnswer):
-            return False, f"the harness never answered: {handshake.reason}"
-        answer = server.call("thread/resume", {"threadId": thread_id})
-    finally:
-        server.close()
-    if isinstance(answer, NoAnswer):
-        return False, f"the harness never answered: {answer.reason}"
-    if isinstance(answer, OtherError):
-        verdict = refusal_of(answer, planted)
-        if isinstance(verdict, Refusal):
-            return True, f"thread/resume answered: {verdict.message}"
-        return False, (f"the harness answered an error that is not its refusal of the planted "
-                       f"artifact at {planted}: {verdict.message}")
-    thread = answer.result.get("thread") or {}
-    return False, (f"thread/resume answered {thread.get('id')} [{thread.get('historyMode')}] "
-                   f"path={thread.get('path')}")
-
-
 def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> list[str]:
     """The words one real turn runs: the conversion's reported arguments, or the identity itself.
 
@@ -1107,35 +1010,37 @@ def turn_answer(repo: Path, codex: str, home: Path, identity: list[str], prompt:
 
 
 def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: list[str],
-             prompt: str, check_name: str) -> None:
+             prompt: str, check_name: str) -> bool:
     """One real turn in an installed session, recorded under ``check_name``, and its answer printed.
 
     The flags this harness adds are its own isolation (no git repository, a read-only sandbox, no
     approvals) and belong to the check, not to the reported command; what the check answers is whether
     the turn ran and the session it names grew. A session whose bytes cannot be measured, and a turn
     that did not start or did not finish (`turn_answer`'s own `NoAnswer`), are this check's own named
-    failures rather than exceptions out of the run.
+    failures rather than exceptions out of the run. The answer says whether the turn ran: the run's own
+    count of turns is the turns whose process answered, never the prompt flags a caller passed.
     """
     try:
         session_before = session_file.stat().st_size
     except OSError as failure:
         record(check_name, False, f"the session's bytes cannot be measured: {failure}")
-        return
+        return False
     turn = turn_answer(repo, codex, home, identity, prompt)
     if isinstance(turn, NoAnswer):
         record(check_name, False, turn.reason)
-        return
+        return False
     try:
         session_after = session_file.stat().st_size
     except OSError as failure:
         record(check_name, False, f"the session's bytes cannot be measured after the turn: {failure}")
-        return
+        return True
     record(check_name, turn.returncode == 0 and session_after > session_before,
            f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
     print()
     print(TURN_OUTPUT_MARKER)
     for line in (turn.stdout or turn.stderr).splitlines():
         print("   ", line)
+    return True
 
 
 #: The deepest `{`/`[` nesting one artifact line may reach before the decoder reads it: the bound
@@ -1181,7 +1086,7 @@ ORACLE_RULE_INPUTS: dict[str, str] = {
 #: The fixtures the oracle is frozen against: one artifact that models no agent's format, and the
 #: receipt that names its bytes. A fixture shaped like a Codex session would carry the foreign-format
 #: knowledge this re-scope deleted; a case in scripts/tests/test_codex_native_check.py fails one that
-#: reappears, and the native check's disclosure arm shows the binary refusing this artifact's bytes.
+#: reappears.
 ORACLE_FIXTURE_ROOT = Path(__file__).resolve().parent / "tests" / "testdata" / "codex-oracle"
 ORACLE_ARTIFACT = "artifact.jsonl"
 ORACLE_RECEIPT = "artifact-receipt.json"
@@ -1222,10 +1127,35 @@ class OracleReading(NamedTuple):
         return not self.violations and not self.not_evaluated
 
 
+class _OracleInteger(str):
+    """One JSON integer as its written digits, never an interpreter integer.
+
+    A receipt's document is parsed with this as its `parse_int`, so a member this rule does not read --
+    an ignored extra member holding a five-thousand-digit integer, say -- is never converted, and the
+    interpreter's integer-string conversion limit cannot decide an unchanged receipt's verdict.
+    """
+
+
 def oracle_digest_stated(value: object) -> str | None:
-    if isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value):
+    if (isinstance(value, str) and not isinstance(value, _OracleInteger)
+            and len(value) == 64 and all(char in "0123456789abcdef" for char in value)):
         return value
     return None
+
+
+def _oracle_count_stated(value: object) -> str | None:
+    """One receipt's stated byte count as its written digits, or None where the member is not a
+    non-negative integer: a JSON integer arrives as its digits (`_OracleInteger`), and a Python integer
+    is written back to digits only where the interpreter can -- a value past the conversion limit is
+    refused rather than raised."""
+    if isinstance(value, _OracleInteger):
+        return value if value.isdigit() else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    try:
+        return str(value)
+    except ValueError:
+        return None
 
 
 class _OracleMemberNameRepeated(ValueError):
@@ -1429,15 +1359,16 @@ def oracle_receipt_violations(data: bytes, receipt: object) -> list[Violation]:
         return [Violation("oracle.receipt-integrity", 0,
                           f"a receipt is a JSON object, found {type(receipt).__name__}")]
     violations: list[Violation] = []
-    stated_bytes = receipt.get("bytes")
-    if not isinstance(stated_bytes, int) or isinstance(stated_bytes, bool) or stated_bytes < 0:
+    stated_count = _oracle_count_stated(receipt.get("bytes"))
+    if stated_count is None:
         violations.append(Violation("oracle.receipt-integrity", 0,
                                     "a receipt states its artifact's byte count as a non-negative "
                                     "integer"))
-    elif stated_bytes != len(data):
+    elif stated_count != str(len(data)):
         violations.append(Violation("oracle.receipt-integrity", 0,
-                                    f"the receipt states {stated_bytes} byte(s), the artifact holds "
-                                    f"{len(data)}"))
+                                    f"the receipt states {stated_count[:40]}"
+                                    + ("…" if len(stated_count) > 40 else "")
+                                    + f" byte(s), the artifact holds {len(data)}"))
     stated_digest = oracle_digest_stated(receipt.get("sha256"))
     if stated_digest is None:
         violations.append(Violation("oracle.receipt-integrity", 0,
@@ -1536,7 +1467,8 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
         try:
             document = json.loads(receipt.read_bytes().decode("utf-8"),
                                   parse_constant=_reject_json_constant,
-                                  object_pairs_hook=_oracle_unique_members)
+                                  object_pairs_hook=_oracle_unique_members,
+                                  parse_int=_OracleInteger)
         except UnicodeDecodeError as failure:
             print(f"oracle: INCOMPLETE — the receipt {receipt} is not UTF-8 text: {failure}",
                   file=sys.stderr)
@@ -1577,12 +1509,16 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
 
 
 class OracleMutation(NamedTuple):
-    """One fixture pair's mutation, and every other rule its bytes are known to break.
+    """One fixture pair's mutation, every other rule its bytes are known to break, and the rules the
+    pair's own disabled arm leaves unjudged.
 
     `also_cited` names the rules the mutated bytes violate beside the one this pair proves: the corpus
     then asserts the mutation cites exactly this pair's rule plus those, and that disabling this pair's
     rule still fails citing exactly those -- the arm the receipt's independence needs (dropping
     `oracle.utf8` leaves a receipt's own disagreement standing, because the receipt speaks about bytes).
+    `unjudged` names the rules the same disabled arm leaves `NotEvaluated`: the corpus asserts that
+    reading independently, so a report that stopped carrying the not-evaluated rules cannot pass the arm
+    by agreeing with itself.
     """
 
     label: str
@@ -1590,6 +1526,7 @@ class OracleMutation(NamedTuple):
     receipt: str | None
     mutate: Callable[[bytes, dict | None], tuple[bytes, dict | None]]
     also_cited: tuple[str, ...] = ()
+    unjudged: tuple[str, ...] = ()
 
 
 def oracle_replace_line(data: bytes, number: int, replacement: bytes) -> bytes:
@@ -1720,19 +1657,23 @@ def _mutation_final_line_feed_dropped_under_receipt(data: bytes, receipt: dict |
 
 ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
     "oracle.utf8": (
-        OracleMutation("a byte that is not UTF-8", ORACLE_ARTIFACT, None, _mutation_byte_not_utf8),
-        OracleMutation("a byte-order mark", ORACLE_ARTIFACT, None, _mutation_byte_order_mark),
+        OracleMutation("a byte that is not UTF-8", ORACLE_ARTIFACT, None, _mutation_byte_not_utf8,
+                       unjudged=("oracle.jsonl-objects",)),
+        OracleMutation("a byte-order mark", ORACLE_ARTIFACT, None, _mutation_byte_order_mark,
+                       unjudged=("oracle.jsonl-objects",)),
         OracleMutation("a byte that is not UTF-8 under the unchanged receipt", ORACLE_ARTIFACT,
                        ORACLE_RECEIPT, _mutation_byte_not_utf8_under_receipt,
-                       ("oracle.receipt-integrity",)),
+                       ("oracle.receipt-integrity",), unjudged=("oracle.jsonl-objects",)),
         OracleMutation("a byte that is not UTF-8 in an unterminated record", ORACLE_ARTIFACT, None,
-                       _mutation_byte_not_utf8_and_unterminated, ("oracle.whole-lines",)),
+                       _mutation_byte_not_utf8_and_unterminated, ("oracle.whole-lines",),
+                       unjudged=("oracle.jsonl-objects",)),
     ),
     "oracle.whole-lines": (
         OracleMutation("a record left unterminated", ORACLE_ARTIFACT, None,
                        _mutation_final_line_feed_dropped),
         OracleMutation("a record left unterminated beside a masked byte", ORACLE_ARTIFACT, None,
-                       _mutation_byte_not_utf8_and_unterminated, ("oracle.utf8",)),
+                       _mutation_byte_not_utf8_and_unterminated, ("oracle.utf8",),
+                       unjudged=("oracle.jsonl-objects",)),
         OracleMutation("a record left unterminated under the unchanged receipt", ORACLE_ARTIFACT,
                        ORACLE_RECEIPT, _mutation_final_line_feed_dropped_under_receipt,
                        ("oracle.receipt-integrity",)),
@@ -1766,7 +1707,8 @@ ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
         OracleMutation("a receipt that is not an object", ORACLE_ARTIFACT, ORACLE_RECEIPT,
                        _mutation_receipt_not_an_object),
         OracleMutation("a receipt under a masked byte", ORACLE_ARTIFACT, ORACLE_RECEIPT,
-                       _mutation_byte_not_utf8_under_receipt, ("oracle.utf8",)),
+                       _mutation_byte_not_utf8_under_receipt, ("oracle.utf8",),
+                       unjudged=("oracle.jsonl-objects",)),
         OracleMutation("a receipt under an unterminated record", ORACLE_ARTIFACT, ORACLE_RECEIPT,
                        _mutation_final_line_feed_dropped_under_receipt, ("oracle.whole-lines",)),
     ),
@@ -1872,7 +1814,13 @@ def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path
                 f"{sorted(mutation.also_cited)} (exit {code}): "
                 + "; ".join(f"{violation['rule']} line {violation['line']}"
                             for violation in document["violations"])), ""
-    expected_code = 1 if mutation.also_cited else (0 if not document["not_evaluated"] else 2)
+    expected_unjudged = sorted(mutation.unjudged)
+    if _unjudged(document) != expected_unjudged:
+        return (f"the negative fixture with `--disable-rule {rule}` reads {_unjudged(document)} as not "
+                f"evaluated instead of {expected_unjudged} (exit {code}, {document['verdict']}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']}"
+                            for violation in document["violations"])), ""
+    expected_code = 1 if mutation.also_cited else (2 if mutation.unjudged else 0)
     if code != expected_code:
         return (f"the negative fixture with `--disable-rule {rule}` exited {code} where the reading is "
                 f"{document['verdict']} (citing {cited}, not evaluated {_unjudged(document)}): "
@@ -1880,8 +1828,8 @@ def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path
                             for violation in document["violations"])), ""
     if mutation.also_cited:
         still = "FAIL, still citing " + ", ".join(mutation.also_cited)
-    elif document["not_evaluated"]:
-        still = "INCOMPLETE, not evaluated " + ", ".join(_unjudged(document))
+    elif expected_unjudged:
+        still = "INCOMPLETE, not evaluated " + ", ".join(expected_unjudged)
     else:
         still = "PASS"
     return None, still
@@ -1898,6 +1846,7 @@ def oracle_mutation_selftest() -> int:
     """
     failures: list[str] = []
     declared, mutated = set(ORACLE_RULES), set(ORACLE_MUTATIONS)
+    needs_text = {name for name, kind in ORACLE_RULE_INPUTS.items() if kind == "needs_text"}
     for rule in sorted(declared - mutated):
         failures.append(f"{rule}: declared in ORACLE_RULES with no fixture pair in ORACLE_MUTATIONS")
     for rule in sorted(mutated - declared):
@@ -1917,6 +1866,14 @@ def oracle_mutation_selftest() -> int:
                 for other in sorted(set(mutation.also_cited) - declared):
                     failures.append(f"{rule}: {mutation.label}: also_cited names {other}, which "
                                     f"ORACLE_RULES does not declare")
+                if rule in set(mutation.unjudged):
+                    failures.append(f"{rule}: {mutation.label}: unjudged names the pair's own rule")
+                for other in sorted(set(mutation.unjudged) - declared):
+                    failures.append(f"{rule}: {mutation.label}: unjudged names {other}, which "
+                                    f"ORACLE_RULES does not declare")
+                for other in sorted((set(mutation.unjudged) & declared) - needs_text):
+                    failures.append(f"{rule}: {mutation.label}: unjudged names {other}, which the "
+                                    f"reading's declared input kinds never leave unjudged")
                 problem, still = _oracle_selftest_one(rule, mutation, work)
                 if problem is None:
                     print(f"oracle.selftest: {rule} — {mutation.label}: positive PASS, negative FAIL "
@@ -1935,39 +1892,6 @@ def oracle_mutation_selftest() -> int:
           f"too), --disable-rule clean of the pair's own rule (still citing those others where the bytes "
           f"break them, INCOMPLETE where the disabled rule left a needs_text rule unjudged)")
     return 0
-
-
-def dispatched_executable(codex: str, version: str, cwd: Path) -> tuple[Path | None, str]:
-    """The file whose bytes the launched name runs, or the failure naming a dispatch this run cannot
-    establish.
-
-    `codex` is what every invocation launches and is never resolved past itself, because a launcher's
-    shim (a mise shim is a symlink to the launcher, which dispatches on argv[0]) must keep its own name.
-    Where that name *is* a symlink, `open` would read the target's bytes while `--version` answers for
-    whatever the name dispatches to -- a launcher's shim would pair the harness's words with the
-    launcher's digest. The resolved file is therefore asked to identify itself, and only a resolved file
-    whose own answer is `version` is the executable this name dispatches to; a launcher answering its
-    own words, no answer at all, or a file that cannot be started leaves the pair unattributable and the
-    caller answers INCOMPLETE.
-    """
-    launched = Path(codex)
-    if not launched.is_symlink():
-        return launched, ""
-    resolved = Path(os.path.realpath(codex))
-    try:
-        answer = run([str(resolved), "--version"], cwd=cwd)
-    except (OSError, subprocess.TimeoutExpired) as failure:
-        return None, (f"{codex} is a symlink whose target {resolved} cannot be asked for its own "
-                      f"version: {failure}")
-    if answer.returncode != 0:
-        return None, (f"{codex} is a symlink whose target {resolved} exits {answer.returncode} for "
-                      f"`--version`, so the executable this name dispatches to cannot be identified")
-    own_words = last_meaningful_line(answer.stdout or answer.stderr)
-    if own_words != version:
-        return None, (f"{codex} is a symlink whose target {resolved} answers its own words "
-                      f"({own_words!r}) where the harness answered {version!r}: the executable this "
-                      f"name dispatches to cannot be identified")
-    return resolved, ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2045,52 +1969,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.codex} is not on PATH: this harness verifies native behaviour, which needs the "
               f"target harness installed", file=sys.stderr)
         return 2
-    # One executable serves the version command and every harness invocation below: a `which()` answer
-    # can preserve a relative PATH entry (`./codex`), and the digest would then be read from where this
-    # process stands while `--version` runs from `repo` -- one binary's words paired with another's
-    # bytes. Made absolute here, but deliberately *not* `resolve()`d: a mise shim is a symlink to the
+    # One executable serves every harness invocation below: a `which()` answer can preserve a relative
+    # PATH entry (`./codex`), and the process this run launches would then depend on where this one
+    # stands. Made absolute here, but deliberately *not* `resolve()`d: a mise shim is a symlink to the
     # `mise` binary itself and dispatches on argv[0], so following the link launches `mise` (whose
-    # `--version` is its own, and whose `app-server` is not Codex's) instead of the harness.
+    # `app-server` is not Codex's) instead of the harness.
     codex = os.path.abspath(codex)
-    # The Codex judgment is this binary's, and the owner's answer is to follow `latest`: no version is
-    # pinned anywhere, so each run records what it resolved — the binary's own words and its digest. A
-    # fingerprint this run cannot record — an unreadable digest, a command that never ran, an answer with
-    # no line in it, a dispatched executable this run cannot identify — ends it INCOMPLETE: every verdict
-    # below is attributed to the binary the header names, and a run whose header cannot name it has none
-    # to attribute.
-    version_failure = ""
-    version = None
-    try:
-        version = run([codex, "--version"], cwd=repo)
-    except (OSError, subprocess.TimeoutExpired) as failure:
-        version_failure = str(failure)
-    codex_version = ""
-    if version is not None and version.returncode == 0:
-        answer = last_meaningful_line(version.stdout or version.stderr)
-        codex_version = "" if answer == NO_MEANINGFUL_LINE else answer
-    dispatched = Path(codex)
-    if codex_version:
-        dispatched, dispatch_failure = dispatched_executable(codex, codex_version, repo)
-        if dispatched is None:
-            print(f"the resolved binary {codex} cannot be fingerprinted: {dispatch_failure} — this "
-                  f"harness records the binary it verified against, so the run is INCOMPLETE",
-                  file=sys.stderr)
-            return 2
-    try:
-        codex_digest = sha256(dispatched)
-    except OSError:
-        codex_digest = ""
-    if not codex_digest or not codex_version:
-        print(f"the resolved binary {codex} cannot be fingerprinted: "
-              f"{codex_version or version_failure or 'no --version answer'}, sha256 "
-              f"{codex_digest or 'unreadable'} — this harness records the binary it verified against, so "
-              f"the run is INCOMPLETE", file=sys.stderr)
-        return 2
-    oracle_fixture_path = ORACLE_FIXTURE_ROOT / ORACLE_ARTIFACT
-    if not oracle_fixture_path.is_file():
-        print(f"the committed oracle fixture {oracle_fixture_path} is missing: the disclosure arm "
-              f"needs the bytes the harness answers for", file=sys.stderr)
-        return 2
     go = shutil.which("go")
     if go is None:
         print("go is not on PATH: this harness builds ccc with the Go toolchain", file=sys.stderr)
@@ -2132,8 +2016,6 @@ def main(argv: list[str] | None = None) -> int:
                              f"{seeding.report()}")
     sessions = home / "sessions" / "2026" / "01" / "01"
     unrelated = sessions / UNRELATED_NAME
-    probe_home = scratch / PROBE_HOME
-    probe = probe_home / "sessions" / "2026" / "01" / "01" / ORACLE_PROBE_NAME
     foreign = ForeignHome()
 
     def finish(code: int) -> int:
@@ -2144,8 +2026,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2 if problems else code
 
     def refused(path: Path, what: str) -> int:
-        """The refusal one plant's own collision earns: named, and answered through `finish` so the
-        other fabrication this run made is removed on this path too."""
+        """The refusal one plant's own collision earns: named, and answered through `finish` so
+        nothing this run fabricated is left on this path either."""
         print(f"{path} already exists: this harness plants {what} under that name and will not "
               f"overwrite one that is there", file=sys.stderr)
         return finish(2)
@@ -2164,19 +2046,9 @@ def main(argv: list[str] | None = None) -> int:
             return finish(2)
         if not planted:
             return refused(unrelated, "its own fabricated session")
-        probe_bytes = oracle_fixture(ORACLE_ARTIFACT)
-        planted, failure = foreign.plant(probe, probe_bytes)
-        if failure:
-            print(f"INCOMPLETE — {failure}", file=sys.stderr)
-            return finish(2)
-        if not planted:
-            return refused(probe, "the oracle's frozen artifact")
 
         print(f"repo:        {repo}")
-        print(f"codex:       {codex} ({codex_version}, sha256 {codex_digest})")
-        if dispatched != Path(codex):
-            print(f"codex file:  {dispatched} (the file this symlink name dispatches to; the version "
-                  f"and digest above are its own)")
+        print(f"codex:       {codex}")
         print(f"codex home:  {home}")
         if seeded_report:
             print(seeded_report)
@@ -2199,10 +2071,9 @@ def main(argv: list[str] | None = None) -> int:
         # the dashed id its file name ends with, and its bytes: a conversion must not reuse an id and must
         # not touch a file it did not write. The unrelated fabrication this harness planted is in the id
         # list (a conversion must not reuse its id either) but not in the byte comparison, which is about
-        # the files this run did not write; the disclosure arm's artifact lives in this run's own probe
-        # home, outside this tree. An entry whose bytes cannot be read — a *dangling* symlink is listed by
-        # `rglob` like any other — is this run's own inability to verify that promise, so it is INCOMPLETE,
-        # named, before any check runs, rather than an exception out of the run.
+        # the files this run did not write. An entry whose bytes cannot be read — a *dangling* symlink is
+        # listed by `rglob` like any other — is this run's own inability to verify that promise, so it is
+        # INCOMPLETE, named, before any check runs, rather than an exception out of the run.
         rollouts = list(home.rglob("rollout-*.jsonl"))
         existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in rollouts]
         existing_sessions: dict[Path, str] = {}
@@ -2231,33 +2102,6 @@ def main(argv: list[str] | None = None) -> int:
             record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
             return finish(2)
         record("ccc builds with the flags upstream ships", True)
-
-        # The disclosure arm, side by side: the offline rules accept these bytes — they are a container,
-        # not a Codex session — and the harness's own loader answers for them. `record` says the pair held
-        # only where the harness refused: a binary that accepted the artifact turns this line red, which
-        # is the signal that the disclosure below the fold needs re-reading. The offline half judges the
-        # bytes *read back* from the planted name — not the committed fixture, which the arm would pass
-        # on even where the planted file was replaced — and both that read-back and the offline reading
-        # have to hold for the pair to stand.
-        presented, presented_failure = read_bytes_or_failure(probe)
-        if presented_failure:
-            offline = None
-            offline_state = presented_failure
-        else:
-            offline = validate_artifact(presented)
-            offline_state = ("green" if offline.passed
-                             else "violations " + ", ".join(sorted({v.rule for v in offline.violations}))
-                             + ("; not evaluated "
-                                + ", ".join(entry.rule for entry in offline.not_evaluated)
-                                if offline.not_evaluated else ""))
-        planted_standing = not presented_failure and presented == probe_bytes
-        refused, answer = resume_answer(codex, probe_home, ORACLE_PROBE_ID, probe)
-        record("the harness refuses an artifact the offline rules accept",
-               planted_standing and offline is not None and offline.passed and refused,
-               ("" if planted_standing else
-                f"the bytes at {probe} are not the bytes this run planted"
-                + (f" ({presented_failure})" if presented_failure else "") + "; ")
-               + f"the offline rules: {offline_state}; {answer}")
 
         env = {"CLAUDE_PROJECTS_DIR": str(source_root)}
         try:
@@ -2350,11 +2194,12 @@ def main(argv: list[str] | None = None) -> int:
                f"resume_command={resume_command!r} exec_resume_command={exec_resume_command!r} "
                f"environment={resume_environment}")
 
+        turns_run = 0
         if args.resume_prompt:
             print()
-            run_turn(repo, codex, home, installed,
-                     turn_identity(codex, thread_id, exec_resume_arguments),
-                     args.resume_prompt, "a real turn continues from the installed session")
+            turns_run += run_turn(repo, codex, home, installed,
+                                  turn_identity(codex, thread_id, exec_resume_arguments),
+                                  args.resume_prompt, "a real turn continues from the installed session")
         else:
             record("a real turn continues from the installed session", False,
                    "not attempted: pass --resume-prompt to run one", skipped=True)
@@ -2484,16 +2329,17 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.repeat_resume_prompt:
             print()
-            run_turn(repo, codex, home, second_installed,
-                     turn_identity(codex, second_thread_id,
-                                   second_target.get("exec_resume_arguments") or []),
-                     args.repeat_resume_prompt, "a real turn continues from the second installed session")
+            turns_run += run_turn(repo, codex, home, second_installed,
+                                  turn_identity(codex, second_thread_id,
+                                                second_target.get("exec_resume_arguments") or []),
+                                  args.repeat_resume_prompt,
+                                  "a real turn continues from the second installed session")
         else:
             record("a real turn continues from the second installed session", False,
                    "not attempted: pass --repeat-resume-prompt to run one", skipped=True)
         print()
         print(f"conversions: 2 session(s) installed ({thread_id} then {second_thread_id}); real turn(s) "
-              f"run: {int(bool(args.resume_prompt)) + int(bool(args.repeat_resume_prompt))}")
+              f"run: {turns_run}")
 
         # Every promise about files this run must not change is answered here, after the loader and —
         # when it ran — the real turn: a comparison recorded beside the read-back above would let a
@@ -2564,14 +2410,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"results": [{"check": n, "state": s, "detail": d} for n, s, d in RESULTS],
                               "target_session": thread_id, "installed": str(installed),
                               "second_session": second_thread_id, "second_installed": str(second_installed),
-                              "codex": codex, "codex_home": str(home),
-                              "codex_version": codex_version, "codex_sha256": codex_digest,
-                              "codex_dispatched": str(dispatched)}, indent=2))
+                              "codex": codex, "codex_home": str(home)}, indent=2))
         return finish(1 if failures else 0)
     finally:
         # The safety net for an exit no `finish` saw (an unexpected raise): every path this run owns is
         # removed here too, and a removal that fails is the same INCOMPLETE report, never swallowed. The
-        # fabricated sessions belong to this harness and no one else: `remove_all` unlinks only paths this
+        # fabricated session belongs to this harness and no one else: `remove_all` unlinks only paths this
         # run's own exclusive create recorded, so a name another writer reached first keeps its file and
         # --codex-home is left as it was found apart from the converted session this run installed.
         report_leftovers(foreign.remove_all())

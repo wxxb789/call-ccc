@@ -1,14 +1,32 @@
 # 0009a (v2) — the native oracle, re-scoped — evidence
 
 Increment: the re-scope of [goal 0009a](../goals/0009a-native-oracle.md), reactivated by this record's
-state. Plan written before implementation: [`docs/plans/0009a-native-oracle-v2.md`](../plans/0009a-native-oracle-v2.md).
+state, **re-cut 2026-11-26 (owner option C)**. Plan written before implementation:
+[`docs/plans/0009a-native-oracle-v2.md`](../plans/0009a-native-oracle-v2.md).
 The superseded attempt (PR #19, closed unmerged, sixteen review rounds) is preserved at tag
 `archive/0009a-pre-rescope` (`8787ae6484`); the deletion list in §2 is derived by reading that attempt's
 diff, never from memory.
 
+**The re-cut, and what this record describes.** Five cross-family review rounds (lane rounds r1–r5) on
+this increment's pre-re-cut heads returned defects in the same three classes, severity did not decay (a
+P1 every round), and the reviewed diff grew 171 KB → 364 KB. The owner took the re-decomposition
+decision (option C): the **disclosure arm** and the **binary fingerprint** — the two features whose
+footprint kept moving — move out into [goal 0009e](../goals/0009e-native-check-hardening.md), whose
+reviewed starting point is tag `archive/0009a-r16-native-arm` (head `768df19`). The round history in
+§1–§3 below is **the pre-re-cut tree's** — kept because it is where the moved features' fixes and the
+oracle's own rounds were measured — while every count and quoted run the re-cut changes is
+**re-measured on the re-cut tree** and marked as such. 0009a now ships: the offline oracle (unchanged),
+the native load and real-turn checks (the base's own, minus the two moved additions), and the three
+round-5 findings that live in the shipped half — the corpus's declared unjudged rules, the receipt's
+three-member read, and the turn count. Every diff that fixes a reproducible defect of a surviving path
+is kept: the dangling-symlink crash in a caller's `--codex-home`, the portable held-name rule for the
+exclusive create, and the `os.path.abspath` (never `resolve()`) launch rule. The moved decisions are
+`Q-0009a-05`, `-07` and `-09`, and the re-cut itself is `Q-0009a-10`
+(`docs/decisions/OPEN-QUESTIONS.md`).
+
 Every command below ran in the task worktree `<worktree>`
 (branch `feat/0009a-native-oracle-v2`, cut from `origin/main` = `5c2b9c237451768fa7409870d3ded8eb023bd840`),
-on 2026-11-23, with every edit uncommitted for the operator. Nothing carried is touched; no Go file, gate
+with every edit uncommitted for the operator. Nothing carried is touched; no Go file, gate
 step or CI workflow changes.
 
 ## 1. What shipped
@@ -39,19 +57,21 @@ committed document beside the frozen artifact (`scripts/tests/testdata/codex-ora
 **4 rules, 22 fixture pairs, each with its three arms** (a pair whose bytes are known to break a second
 rule names it, the pair's `also_cited` set, and still cites exactly it with the pair's own rule
 disabled; §3). The fixture models no agent's format on
-purpose: it is the artifact a case proves the rules accept while the binary refuses it (§4).
+purpose: it is the artifact a case proves the rules accept, and the moved disclosure arm (goal 0009e) is
+where the binary's refusal of these same bytes was measured (§4).
 
-**The Codex judgment is the binary's.** The native half is unchanged except for two additions: every run
-records the resolved binary (the owner's answer — follow `latest`, no version re-pin — so the run
-records `codex --version` and the binary's own SHA-256), and the **disclosure arm** plants the oracle's
-frozen artifact in the scratch home and records the pair *offline rules accept / the harness refuses*,
-with the harness's own words in the detail. The loader, resume and turn checks are the file's own,
-unchanged; nothing in Python restates what they answer. The 2026-11-24 cross-family review round
+**The Codex judgment is the binary's.** On the pre-re-cut tree the native half carried two additions —
+the resolved-binary fingerprint and the **disclosure arm** (it plants the oracle's frozen artifact in
+the scratch home and records the pair *offline rules accept / the harness refuses*); both were re-cut
+into goal 0009e on 2026-11-26. The loader, resume and turn checks are the file's own, unchanged; nothing
+in Python restates what they answer. The 2026-11-24 cross-family review round
 tightened three of the native half's own readings: a plant path holding anything — a caller's *dangling*
 symlink included — is a collision, never written through or removed; the refusal is the harness's only
 where its own words identify the planted rollout; and a binary fingerprint the run cannot record ends it
 INCOMPLETE instead of a pass (§3, §6). The 2026-11-25 cross-family **lane** round (the r2 fix) closed
-what remained open in those three families, each as one systematic pass: every plant is created
+what remained open in those three families (the refusal-criterion and fingerprint fixes are the
+pre-re-cut tree's; they are preserved at tag `archive/0009a-r16-native-arm` and carried by 0009e), each
+as one systematic pass: every plant is created
 *exclusively* — the create is the reservation — and only a file this run's create made is ever removed,
 so two overlapping runs against one home can neither clobber nor delete each other's file; the refusal
 must be the harness's measured sentence about the *exact* planted path, so an id-only lookup miss, an
@@ -66,7 +86,7 @@ ownership object — a path is recorded the instant its exclusive create succeed
 happens next, a *failed write after the reservation* no longer strangles the next run, a removal that
 fails is INCOMPLETE by name, and the directories this run created to hold its fabrications are recorded
 and removed too; gave every harness interaction one result vocabulary (`Thread` / `OtherError` /
-`NoAnswer`, with `Refusal` built only by the one sentence matcher from a JSON-RPC error message, and a
+`NoAnswer` — whose `Refusal` member and one-sentence matcher moved to 0009e with the arm — and a
 pipe that dropped under the client folded at the client object so a caller's `finally` cannot replace
 an answer already in hand); and re-shaped the oracle reading per §1's paragraph above. The tests moved
 to the same seams: the drive's app-server stub now answers `thread/read` *replies* the shipped
@@ -82,7 +102,9 @@ ownership object, the refusal's one sentence matcher and the fingerprint's launc
 corrected the fingerprint correction itself (§3's operator blockquote: the launched path is made
 absolute with `os.path.abspath`, **never** `resolve()`d, because this host's `codex` is a mise shim).
 The **r5 round** closes the four findings the cross-family lane left on that head
-(`review-lane-r4-fix-20261126.md`), each at the seam the finding names:
+(`review-lane-r4-fix-20261126.md`), each at the seam the finding names (the first two bullets below are
+the moved features': their fixes are preserved with the moved work at tag `archive/0009a-r16-native-arm`
+and carried by 0009e — the last two stay with the shipped half):
 
 - **The disclosure arm's artifact lives where only this run can write.** It is planted into a probe home
   of its own under the run's scratch directory, never the target home, so no cleanup of this run can
@@ -102,12 +124,15 @@ The **r5 round** closes the four findings the cross-family lane left on that hea
   over every physical line belongs to the offline rule, whose blank line's refusal
   `test_the_line_rule_is_the_whole_lines_own` pins.
 
-The suite moved with the seams (94 → 96): the drive hands `main` a fixed scratch directory of the case's
-own name (patched `mkdtemp`), so a case can address the run's own tree — the probe home above all —
-before the run starts; `seed_probe` now stages the held name at the plant's own site while the new
-`probe_in_caller_home` pins the caller's file under the probe's *name* being left byte for byte;
-`probe_replaced` pins the read-back comparison; and the symlink case split into the dispatched-target arm
-and the launcher-shim INCOMPLETE arm (§2, §3).
+The suite moved with the seams on the pre-re-cut tree (94 → 96): the drive hands `main` a fixed scratch
+directory of the case's own name (patched `mkdtemp`), so a case can address the run's own tree — the
+probe home above all — before the run starts; `seed_probe` staged the held name at the plant's own site
+while `probe_in_caller_home` pinned the caller's file under the probe's *name*; `probe_replaced` pinned
+the read-back comparison; and the symlink case split into the dispatched-target arm and the
+launcher-shim INCOMPLETE arm (§2, §3). **The re-cut removes every case whose only subject is a moved
+feature** — sixteen of them (§2's "The re-cut's own test movement") — **and narrows the shared ones** to
+the one plant site that survives (the unrelated session's in the caller's home), adding the three pins
+for the shipped half's round-5 findings; the surviving suite is **82 tests, re-measured in §3**.
 
 ## 2. The deletion list
 
@@ -238,8 +263,41 @@ while `test_a_symlinked_shim_is_launched_through_its_own_path` becomes
 `test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target` and the seam
 cases' staged paths move into the run's own tree (§1).
 
+**The re-cut's own test movement (2026-11-26).** Sixteen cases were removed with their subjects —
+`test_the_disclosure_arm_is_a_recorded_pass_naming_the_harnesss_refusal`,
+`test_a_handshake_that_never_answered_is_not_read_as_a_refusal`,
+`test_an_error_that_names_no_planted_artifact_is_not_read_as_a_refusal`,
+`test_an_id_only_lookup_miss_is_not_read_as_the_refusal`,
+`test_an_error_naming_another_artifact_is_not_read_as_the_refusal`,
+`test_a_run_records_the_resolved_binary_and_its_digest`,
+`test_a_callers_file_under_the_probes_name_is_left_as_it_was_found`,
+`test_a_probe_replaced_while_the_run_goes_is_named_not_passed_on_the_fixture`,
+`test_the_planted_probe_is_removed_when_the_run_ends`,
+`test_a_dropped_pipe_on_the_probe_resume_is_not_read_as_a_refusal`,
+`test_a_version_command_with_no_answer_ends_the_run_incomplete`,
+`test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target`,
+`test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete`,
+`test_the_fingerprint_pairs_one_executable_with_its_own_version`,
+`test_an_open_error_naming_the_artifact_is_not_read_as_the_refusal` and
+`test_a_refusal_of_a_same_name_elsewhere_is_not_read_as_the_refusal` — the two refusal-path collision
+cases collapsed into one for the surviving plant site (`test_a_refused_collision_leaves_no_scratch_tree`,
+which also carries the caller's-colliding-file clause), and six shared cases were narrowed to the
+unrelated session's plant site: `test_a_callers_dangling_symlink_under_a_plants_name_is_a_collision`,
+`test_a_keep_run_that_refuses_keeps_and_names_its_scratch_tree`,
+`test_a_write_that_fails_after_the_reservation_leaves_no_leftover`,
+`test_a_fabrication_the_run_cannot_remove_is_incomplete_by_name`,
+`test_a_file_racing_the_plant_is_neither_clobbered_nor_deleted` and the unreadable-home-entry case
+(the drive's `race_plant`/`plant_write_fails`/`unlink_fails`/`dangling_symlink` knobs are the booleans
+they now are, since one plant site remains). Three cases were added for the shipped half's round-5
+findings: `test_the_corpus_notices_unjudged_reporting_that_disappeared` (F-1),
+`test_a_receipt_member_the_rule_does_not_read_is_not_converted` (F-2) and
+`test_a_turn_that_never_answered_is_not_counted_as_run` (F-3); the closed-set case gained the
+`unjudged`-declaration assertions. The suite is **82 tests on the re-cut tree** (§3, re-measured).
+
 **Documentation.** The attempt's `docs/harness.md` paragraph describing sixteen rules and the manifest
-receipt is replaced by the reduced oracle's description plus the disclosure (§4); its AGENTS.md edits of
+receipt is replaced by the reduced oracle's description and the disclosure's limit (§4; the arm and
+fingerprint paragraphs the first draft added were removed again by the re-cut, and live with 0009e); its
+AGENTS.md edits of
 that era are not part of this base (the ownership rule is already there). The plan stub the decomposition
 left for this goal (`docs/plans/0009a-native-oracle.md`, whose increment is the superseded attempt) is
 reduced to a pointer at this increment's plan, so no plan file directs the superseded premise; its older
@@ -327,11 +385,12 @@ names the unjudged rule and exits INCOMPLETE (2), which is the seam the r3 findi
 pre-r3 reading answered PASS over bytes whose final byte was not a line feed; §1's paragraph and
 `--disable-rule oracle.utf8`'s middle arm above hold the line rule's violation standing).
 
-**The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §6):
+**The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §6). At the
+r5 (pre-re-cut) head it ran 96 tests; **re-measured on the re-cut tree**:
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 96 tests in 0.923s
+Ran 82 tests in 0.497s
 OK
 ```
 
@@ -357,62 +416,38 @@ refusal path and the `--keep` refusal), 64 → 69 the cross-family review round'
 2026-11-25 r2 round's thirteen, 82 → 93 the 2026-11-25 r3 round's eleven (§2 names them), and 93 → 94
 the 2026-11-26 r4 round's one; the r5 round moves it 94 → 96 (§1 names the two and the case whose
 subject moved with the artifact), and the run above is the r5 round's own, on the tree this record
-describes.
+describes. **The re-cut moves it 96 → 82** — sixteen cases removed with the moved features, the two
+refusal-path collision cases collapsed into one, six cases narrowed to the surviving plant site, and
+three pins added for the shipped half's round-5 findings (§2's "The re-cut's own test movement") — and
+the whole discovery in §6 is correspondingly **537** tests against 551 at the r5 head.
 
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
-exit 0). The header it records — this run's resolved binary, the same two values the run's `--json`
-payload carries as `codex_version`/`codex_sha256`, because the owner's answer is to follow `latest`:
+**re-measured on the re-cut tree**, exit 0). The header names the launched binary alone — the version and
+digest pairing moved out with the fingerprint — and the run's own count is the base's minus the moved
+check line:
 
 ```
-codex:       <codex> (codex-cli 0.172.0, sha256 ad83b94c093f0cdd8176a6bc8005a461bdf23a759863e157d40f562b8a9d664d)
+codex:       <codex>
+…
+26 check(s) passed, 0 failed, 2 skipped
 ```
 
-its counts — `27 check(s) passed, 0 failed, 2 skipped` (the two skips are the real turns, which need
-model access and no prompt flag was passed) — and the disclosure arm's own line, verbatim:
+(`26` passed + `2` skipped = 28 recorded checks, against 29 at the pre-re-cut head — the moved arm's own
+line; the two skips are the real turns, which need model access and no prompt flag was passed.)
 
-```
-PASS: the harness refuses an artifact the offline rules accept — the offline rules: green; thread/resume answered: thread/resume failed: failed to read thread: thread-store internal error: failed to read session metadata <scratch>/codex-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl: rollout at <scratch>/codex-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl is empty
-```
-
-The r3 round re-ran that command on this record's tree: the same resolved version and digest, the same
-`27 check(s) passed, 0 failed, 2 skipped`, exit 0, and the arm's PASS above re-measured verbatim (the
-scratch path was this run's own) — the seam replacements move nothing the binary answers. The r4 round's
-correction re-measured the same command again (§3's operator blockquote), and the **r5 round** ran it
-with the artifact moved into the run's own probe home: exit 0, the same `27 check(s) passed, 0 failed,
-2 skipped`, the same resolved version and digest (`codex-cli 0.172.0`, sha256
-`ad83b94c093f0cdd8176a6bc8005a461bdf23a759863e157d40f562b8a9d664d`), and the arm's PASS now naming the
-run's own probe home (the scratch path elided to `<scratch>`; this host's `codex` is a mise install
-whose `latest` component is a directory symlink, so the launched file itself is not one and the run
-records no `codex file:` line):
-
-```
-PASS: the harness refuses an artifact the offline rules accept — the offline rules: green; thread/resume answered: thread/resume failed: failed to read thread: thread-store internal error: failed to read session metadata <scratch>/probe-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl: rollout at <scratch>/probe-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl is empty
-```
-
-The round's own cases pin what the binary cannot be asked here: the read-back comparison
-(`test_a_probe_replaced_while_the_run_goes_is_named_not_passed_on_the_fixture`, measured failing
-against the pre-fix arm that validated the committed fixture), the caller's file under the probe's name
-being left byte for byte (`test_a_callers_file_under_the_probes_name_is_left_as_it_was_found`), and the
-two symlink arms — the dispatched target's own bytes as the digest
-(`test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target`) and the
-launcher shim ending the run INCOMPLETE
-(`test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete`, measured: with the pre-fix
-digest pairing restored, the run answers exit 0 and pairs `codex-cli 0.test` with the launcher's bytes).
-
-The r2 round reads that arm and this run strictly: the arm's PASS requires the harness's measured
-refusal sentence about the *exact* planted path (`rollout at <the planted path> is empty`) — this answer
-is exactly that, about the path it could not read — so an id-only lookup miss, an open error naming the
-path, and a refusal of a same-named file elsewhere are failed arms
+The pre-re-cut tree's own native runs — the disclosure arm's PASS with its r3/r5 re-measurements, the
+fingerprint's header pair, the r2 round's strictness arms
 (`test_an_id_only_lookup_miss_is_not_read_as_the_refusal`,
 `test_an_open_error_naming_the_artifact_is_not_read_as_the_refusal`,
-`test_a_refusal_of_a_same_name_elsewhere_is_not_read_as_the_refusal`), never a pass. And the binary's
-fingerprint is a precondition of the whole run: the executable is resolved before it is hashed or
-launched, so a relative `which()` answer cannot pair one file's bytes with another's words; a
-`--version` with no answer (the `(no diagnostics)` placeholder is not one) or a digest that cannot be
-read ends it INCOMPLETE (exit 2) naming the unreadable half
+`test_a_refusal_of_a_same_name_elsewhere_is_not_read_as_the_refusal`) and the fingerprint's preconditions
 (`test_a_run_records_the_resolved_binary_and_its_digest`,
 `test_a_version_command_with_no_answer_ends_the_run_incomplete`,
-`test_the_fingerprint_pairs_one_executable_with_its_own_version`).
+`test_the_fingerprint_pairs_one_executable_with_its_own_version`) — all moved with their features to
+[goal 0009e](../goals/0009e-native-check-hardening.md); their fixes and cases are preserved at tag
+`archive/0009a-r16-native-arm`, and the quotes that measured them are in this record's earlier revisions
+(this branch's pre-re-cut heads, in git history). What the re-measured run above records is the loader's
+own answers and the base's own comparisons — plus the absent-binary arm below — and nothing in Python
+restates what the binary answers.
 
 **The absent-binary arm** (D3's other half — the reason, and a non-zero exit, never a guess):
 
@@ -424,20 +459,23 @@ definitely-not-a-binary is not on PATH: this harness verifies native behaviour, 
 
 ## 4. The disclosure, side by side
 
-The two answers for one artifact's bytes are in §3: the offline rules hold the frozen artifact green, and
-the binary that owns the format refuses it. That is the re-scope's stated limit, not a defect: the offline
+The two answers for one artifact's bytes were measured on the pre-re-cut tree (those runs are §3's, now
+moved with the arm to [goal 0009e](../goals/0009e-native-check-hardening.md)): the offline rules hold
+the frozen artifact green, and the binary that owns the format refuses it. That is the re-scope's stated
+limit, not a defect: the offline
 half can no longer detect a Codex artifact the binary would reject, by construction — it holds no Codex
 knowledge at all. It is stated where a reader meets it: the goal file's own "What this goal does not
 claim" paragraph (under *Intended advance*) and its *Non-scope*, this
 record, and `docs/harness.md`'s native-check
 section (which is also the CI note: the gate never runs the native half — `scripts/gate.py` decides the
-offline half, and the native checks are deliberately not gate steps).
+offline half, and the native checks are deliberately not gate steps). The demonstration that keeps that
+limit visible — planting a fabricated artifact and quoting the binary's refusal — is 0009e's acceptance.
 
 ## 5. The debt re-read (D5)
 
 `docs/core-design/README.md` §2's declared-debt entries were re-read against this increment's surface
-(it deletes a Python oracle, adds container/receipt rules and two native-half report lines; no Go file,
-no other native check). Each is **kept** with its condition unchanged:
+(it deletes a Python oracle, adds container/receipt rules; the two native-half additions were re-cut to
+0009e, and no Go file or other native check is touched). Each is **kept** with its condition unchanged:
 
 | entry (condition) | site | why kept |
 | --- | --- | --- |
@@ -448,15 +486,18 @@ no other native check). Each is **kept** with its condition unchanged:
 | `Q-0005-19` | `ccc/internal/ccc/pi_verify.go`, `omp_verify.go`, the Pi/OMP checks | not touched |
 | `Q-0003-12` | `ccc/internal/ccc/codex_install.go` | not touched |
 
-No new entry is owed: the surviving rules judge no foreign format, and the arm that asks the binary is a
-read of the binary's own answer, which is what the ownership rule asks for. The defaults this increment
+No new entry is owed: the surviving rules judge no foreign format, and the native half reads the
+binary's own answers, which is what the ownership rule asks for. The defaults this increment
 took where the brief was silent are recorded in `docs/decisions/OPEN-QUESTIONS.md` as `Q-0009a-01`–`05`,
 with the 2026-11-25 r2 round's two refinements appended as `Q-0009a-06` (the staged reading's receipt
 clause, superseding `Q-0009a-02`'s) and `Q-0009a-07` (the refusal criterion, superseding `Q-0009a-05`),
 and the r3 round's reading supersession as `Q-0009a-08` (every rule evaluated or explicitly
 `NotEvaluated`; `--disable-rule` a subtraction after evaluation, superseding `Q-0009a-02`'s evaluation
 clause), and the r5 round appends `Q-0009a-09` (the launcher-shim dispatch: the run ends INCOMPLETE
-rather than printing a pair it cannot support, which is the finding's own allowed arm).
+rather than printing a pair it cannot support, which is the finding's own allowed arm). **The
+2026-11-26 re-cut appends `Q-0009a-10` (the re-cut itself) and marks `Q-0009a-05`, `-07` and `-09`
+moved to [goal 0009e](../goals/0009e-native-check-hardening.md) with the arm and the fingerprint;
+`Q-0009a-01`–`-04`, `-06` and `-08` stay with the frozen oracle.**
 
 ## 6. The gate, on the state this increment leaves
 
@@ -470,28 +511,29 @@ gate: go=<go 1.27.4> module=ccc targets=./cmd/ccc/... ./internal/ccc/...
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 551 tests in 10.467s (rc=0)
-  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5775 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
+  PASS     selftest    Ran 537 tests in 10.624s (rc=0)
+  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5776 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified…
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
-  PASS     secrets     no leaks found in 230 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets     no leaks found in 231 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 22 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's row against the Go test it cites. The table is the 2026-11-26 r5 round's own
-run, on the tree that holds this record, and it printed the unqualified `GATE: PASS`; its `selftest`
-count moved 503 → 519 across the four rounds, → 524 in the cross-family review round, → 537 in the r2
-round, → 548 in the r3 round and → 549 in the r4 round (§2 and §3 name the added cases), and the r5
-round's own movement is 549 → 551 (its two cases and the renamed one, §1/§2); its `secrets` count (230
+which verifies the goal's row against the Go test it cites. The table is **re-measured on the re-cut
+tree** (2026-11-26), whose `selftest` count is 537 against 551 at the r5 head (§2/§3 name the moved
+cases; the whole discovery's counts moved 503 → 519 across the four rounds, → 524 in the cross-family
+review round, → 537 in the r2 round, → 548 in the r3 round, → 549 in the r4 round and → 551 in the r5
+round, whose 96-test narrowed suite the re-cut moves to 82). Its `secrets` count (231
 files) is
 this worktree's own scope — the
-count includes untracked `__pycache__`/`bin` files — not a change the round made.
+count includes untracked `__pycache__`/`bin` files — not a change the re-cut made.
 
 ## What this record does not claim
 
 - That the offline rules can detect a Codex artifact the binary would reject. They cannot, by
-  construction, and §4 states it where a reader meets it.
+  construction, and §4 states it where a reader meets it; the demonstration that keeps it visible (the
+  binary's refusal of the frozen artifact) is [goal 0009e](../goals/0009e-native-check-hardening.md)'s.
 - That a gate run exercises the native half. It never has and does not now: the native checks need the
   Codex binary installed (and model access for a real turn), and they stay re-runnable evidence rather
   than gate steps. The two turns in the native half were therefore skipped in §3's run, and the run says
@@ -500,6 +542,7 @@ count includes untracked `__pycache__`/`bin` files — not a change the round ma
   — whole UTF-8 lines, one JSON object per line, no duplicate members, no unpaired surrogate escapes —
   and a blank line is refused rather than skipped; a choice the later increments can revisit, which is
   what the oracle lock freezes until goal 0009 ends.
-- That the recorded `0.172.0` is any kind of pin. The owner's answer is to follow `latest`; the version
-  and digest in §3 are what this host resolved on 2026-11-25 (the 2026-11-23 run of this increment built
-  on 0.171.0), and the next run records its own.
+- That the native run's recorded binary is any kind of pin. The owner's answer is to follow `latest`;
+  the pre-re-cut record's `0.172.0` and digest were what this host resolved on 2026-11-25 (the
+  2026-11-23 run of this increment built on 0.171.0), the re-cut's header names the launched path alone
+  (the fingerprint is 0009e's), and the next run records its own.

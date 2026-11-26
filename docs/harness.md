@@ -481,28 +481,14 @@ says so.
   `--disable-rule oracle.utf8` over non-UTF-8 bytes still cites the byte rules' own violations, or names
   the unjudged text rule instead of handing back a pass. **It holds no Codex
   knowledge**: whether an artifact is
-  one Codex reads or resumes is the binary's own answer — read by the native half above, and shown side
-  by side by its **disclosure arm**, which plants the frozen artifact into a **probe home of its own**
-  under the run's scratch directory — never the target home, where a file another writer had put under
-  the planted name would be deleted by this run's own cleanup — and records that the offline rules accept
-  the bytes *read back from that planted name* (so a substitution of the planted file is named by the
-  arm's own comparison instead of passing on the committed fixture) while the harness refuses it (measured
-  on 0.171.0: `thread/resume`
-  answers `rollout … is empty`) — the refusal read as one only where that measured sentence is about the
-  *exact* planted path, so an id-only lookup miss, an I/O failure naming the path, and a refusal of a
-  same-named file elsewhere are each a failed arm rather than a pass. That limit is the
+  one Codex reads or resumes is the binary's own answer, read by the native half above — the file never
+  restates the loader — and every native run's header names the launched binary. That limit is the
   re-scope's disclosure, not something this documentation
   can wave away: **the gate never runs the native half** — the native checks are deliberately not gate
-  steps — so a green gate says nothing about whether any Codex reader accepts an artifact, and a native
-  run records the resolved binary (`codex --version` and its own SHA-256; no version is pinned, the owner
-  follows `latest`) beside every answer it reads, while a binary it cannot fingerprint ends the run
-  INCOMPLETE, naming the unreadable half, so no verdict is attributed to a binary its own header could
-  not name. Where the resolved name is a **symlink**, the version and the digest must both be the
-  executable the name dispatches to: the run asks the resolved file to identify itself, takes its bytes
-  as the digest only where its own `--version` answer is the harness's, and ends INCOMPLETE — naming the
-  launcher and the words it answered — where the target is a launcher's shim answering its own words (a
-  plain symlink to the harness passes that check and its target's bytes are the digest; the launched path
-  itself is never resolved past its own name, because a shim dispatches on `argv[0]`). The oracle's
+  steps — so a green gate says nothing about whether any Codex reader accepts an artifact. (The
+  side-by-side demonstration — planting a fabricated artifact and recording the binary's refusal — and
+  the binary's version + SHA-256 fingerprint were re-cut out of goal 0009a into goal 0009e on
+  2026-11-26.) The oracle's
   verdict line is the last one printed —
   `oracle: PASS` / `oracle: FAIL — …` / `oracle: INCOMPLETE — …` — with exit 0/1/2, and INCOMPLETE is
   both an input the command could not read and a reading where a rule was left unjudged; its rules and their

@@ -47,8 +47,7 @@ the Codex knowledge from Python rather than repairing it.
 
 **Where it lives.** `scripts/codex-native-check.py` gains one oracle section and the modes
 `--validate [--receipt] [--disable-rule]` and `--selftest-mutations`; the native half (goals 0002/0004)
-is otherwise untouched apart from (a) two new report lines: the resolved binary's version and its own
-digest, and the disclosure arm below.
+is otherwise untouched (the re-cut below removed the two report additions the first draft carried).
 
 **Registry (`ORACLE_RULES`), four ids, each a format-agnostic sentence:**
 
@@ -95,27 +94,39 @@ turns its own rule off — clean of that rule, green where every rule was still 
 where the disabled rule left a `needs_text` rule unjudged, or still failing citing exactly those others)
 through the shipped command's own path, on mutated bytes written under one scratch directory.
 
-**The disclosure arm (native half).** The check plants the oracle's frozen artifact under its scratch
-home's sessions tree, asks the target's own app server to resume it, and records the pair — *the
-offline rules accept these bytes and the harness refuses them* — with the harness's own words in the
-detail (measured on 0.171.0: `thread/resume` answers `failed to read session metadata … is empty`). The
-refusal is read as one only where that measured sentence is about the *exact* planted path (the r2
-round's refinement: an id-only lookup miss, an I/O failure naming the path, and a refusal of a
-same-named file elsewhere each fail the arm). The arm is a check that can fail: a binary that accepted
-the artifact would turn it red, and the disclosure would be re-read.
+**The 2026-11-26 re-cut (owner option C).** Five cross-family review rounds returned defects in the same
+three classes (a P1 every round; the reviewed diff grew 171 KB → 364 KB), and the root-cause consult
+named the two features whose footprint kept moving: the **disclosure arm** and the **binary
+fingerprint**. Both are removed from this increment and moved to [goal
+0009e](../goals/0009e-native-check-hardening.md), whose reviewed starting point is tag
+`archive/0009a-r16-native-arm` (head `768df19`). What this increment now ships under D3 is the native
+check **without** them: the loader's own answers and the real-turn checks the base carried, with the
+`os.path.abspath` (never `resolve()`) launching rule kept, and the absent-binary reason and non-zero
+exit kept. The three round-5 findings that stay in the shipped half are fixed here: the
+`--selftest-mutations` corpus declares each pair's expected unjudged rules and asserts them
+independently of the reading's reply (D1); the receipt rule reads only its three members, so an ignored
+member holding a five-thousand-digit integer cannot turn an unchanged receipt INCOMPLETE (D4); and the
+run's own "real turn(s) run" count counts turns that ran, never the prompt flags a caller passed
+(D3's run line). Every diff that fixes a reproducible defect of a surviving path is kept: the
+dangling-symlink crash in a caller's `--codex-home`, the portable held-name rule for the exclusive
+create, and the launch-path rule above.
 
 ## Acceptance (the goal file's `Done when`)
 
 - **D1** — every surviving offline rule has its own negative fixture: one mutation per rule at minimum,
-  and `--selftest-mutations` proves the declared set equals the mutated set over the survivors only.
+  and `--selftest-mutations` proves the declared set equals the mutated set over the survivors only,
+  each pair's expected unjudged rules declared with it and asserted against the reading the command
+  gets (never derived from the reply).
 - **D2** — the offline oracle holds no foreign-format knowledge, stated testably: the registry names no
   Codex member, event type, record kind or ordering, and an artifact that is well-formed as a container
   but wrong as a Codex artifact passes the offline rules.
 - **D3** — the Codex judgment is the binary's: the native check drives the resolved binary and reports
-  its answer; absence of the binary is an explicit reason and a non-zero exit; the offline half never
-  stands in for it.
+  its answer (the loader's own calls, and a real turn where a prompt flag asks for one); absence of the
+  binary is an explicit reason and a non-zero exit; the offline half never stands in for it. The
+  refusal arm and the version+SHA-256 fingerprint are 0009e's acceptance.
 - **D4** — receipts: the frozen artifact's SHA-256 and anchors verify, and a single mutated byte breaks
-  the receipt (two cases: verify, and verify-after-mutation).
+  the receipt (two cases: verify, and verify-after-mutation); the receipt rule reads only its three
+  members, so an ignored extra member is never converted.
 - **D5** — the deletions are declared: the deleted rule list, with each rule's fixture and mutation, is
   in this increment's evidence; and `docs/core-design/README.md` §2's declared-debt entries
   (`Q-0005-18`, `Q-0005-20`, `Q-0003-12`, `Q-0008-10`, `Q-0005-19`, `Q-0007-13`) are re-read and either kept with

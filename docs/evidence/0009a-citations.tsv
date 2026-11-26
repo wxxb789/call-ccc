@@ -17,7 +17,9 @@
 # red (beside exactly the other rules its bytes are known to break, the pair's `also_cited`), every arm
 # (positive PASS, negative FAIL citing those, `--disable-rule` clean of the pair's own rule — PASS where
 # every rule was still evaluated, INCOMPLETE where the disabled rule left a `needs_text` rule unjudged,
-# or still FAIL citing exactly the other rules) is read through the shipped command's own
+# or still FAIL citing exactly the other rules; the expected unjudged set is declared with each pair and
+# asserted against the reading the command gets, never read from the reply) is read through the shipped
+# command's own
 # `--validate`/`--receipt`/`--disable-rule` path, and the three tables (rules, input kinds, mutations)
 # are asserted in bijection from both ends — the increment's D1. The fixtures are
 # `scripts/tests/testdata/codex-oracle/` (the frozen artifact and the receipt that names its bytes).
@@ -78,8 +80,8 @@
 #         and `oracle.utf8` × `oracle.whole-lines`, each declared under both rules:
 #         `test_every_pair_of_byte_rules_is_co_cited_by_a_mutation`).
 #   D3 — the Codex judgment is the binary's: the native check's own unflagged run is a native harness
-#         run, not a gate step; its verdicts (and the disclosure arm, where the harness refuses the
-#         artifact the offline rules accept) are quoted in §3 of docs/evidence/0009a-native-oracle-v2.md.
+#         run, not a gate step; its verdicts are quoted in §3 of docs/evidence/0009a-native-oracle-v2.md
+#         (the disclosure arm and the binary fingerprint were re-cut into goal 0009e on 2026-11-26).
 #   D5 — the deletions are declared: §2 of the same record carries the deleted rule list with each
 #         rule's fixture and mutations, derived from PR #19's diff; the gate cannot hold a deleted rule.
 rule_id	test	package	artifact

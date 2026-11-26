@@ -3207,7 +3207,9 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 ## Q-0009a-05 — What the disclosure arm reads as the harness's refusal
 
 - **Status:** open (default taken: the arm's PASS requires the harness's own answer to name the planted
-  rollout, below).
+  rollout, below). **Moved 2026-11-26 to [goal 0009e](../goals/0009e-native-check-hardening.md)** by the
+  re-cut (owner option C): the arm this decides is 0009e's; the default below stands as the moved work's
+  starting point.
 - **Question:** the disclosure arm records "the offline rules accept the artifact / the harness refuses
   it". A JSON-RPC error answer to `thread/resume` is evidence about *this* artifact only if the harness
   opened it; an answer naming the requested session id alone (`no session <id>`, `<id> not found`) is
@@ -3261,7 +3263,9 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 
 - **Status:** resolved (owner answer 2026-11-25, Q1 = B — the criterion keys on the artifact's file name
   — refined by this increment's r2 fix round, R2-2: the name must be attached to a refusal of *this*
-  artifact's bytes rather than to any error mentioning the path).
+  artifact's bytes rather than to any error mentioning the path). **Moved 2026-11-26 to [goal
+  0009e](../goals/0009e-native-check-hardening.md)** by the re-cut (owner option C): this criterion is
+  0009e's D1, and the default below stands as its reviewed starting point.
 - **Question:** Q-0009a-05 required the harness's own answer to name the planted rollout. A basename
   match is still not evidence of a *read*: `permission denied opening <probe path>` names the artifact
   and the harness never opened it, and a refusal of a same-named file in another directory names the
@@ -3326,7 +3330,11 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   allows either "resolve the *dispatched* executable for both the version and the digest, or report
   `INCOMPLETE` when the dispatch cannot be identified"). On a host whose `PATH` resolves `codex` to a
   launcher's shim — this host's mise shims are symlinks to `mise`, which dispatches on `argv[0]` — the
-  run now ends INCOMPLETE unless the caller names the real binary with `--codex`.
+  run now ends INCOMPLETE unless the caller names the real binary with `--codex`. **Moved 2026-11-26 to
+  [goal 0009e](../goals/0009e-native-check-hardening.md)** by the re-cut (owner option C): the
+  fingerprint this decides is 0009e's D2/D4(b) — including the round-5 #2 finding (an official npm
+  launcher fingerprinted instead of the native binary it forwards to) — and the default below stands as
+  its reviewed starting point.
 - **Question:** the fingerprint's digest must belong to the binary that answered `--version`. A plain
   symlink to the harness is settled by asking the resolved file to identify itself: its own `--version`
   answer is the harness's, and its bytes are the digest. A launcher's shim resolves to the launcher,
@@ -3346,3 +3354,36 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Reversal:** (b) — one increment that teaches the fingerprint the launcher's own `which`; the
   shim case's INCOMPLETE arm becomes the target-resolution arm.
 - **Settled by:** the owner, or a fix round that must run the check on a shim-only host.
+
+## Q-0009a-10 — The re-cut: the disclosure arm and the binary fingerprint move to 0009e
+
+- **Status:** resolved (owner decision 2026-11-26, option C — re-decompose, not harden again; executed by
+  this increment's re-cut).
+- **Question:** five cross-family review rounds on 0009a (lane rounds r1–r5) returned defects in the
+  **same three classes**, severity did not decay (a P1 every round) and the reviewed diff grew
+  171 KB → 194 KB → 338 KB → 364 KB. The root-cause consult named the abstraction boundary: the
+  increment carried two features — the **disclosure arm** (plant a fabricated artifact, drive the real
+  binary, require its refusal) and the **binary fingerprint** (`codex: <path> (version, sha256 …)`) —
+  and each round hardened one site while the next round found the next inherited environment variable
+  or the next launch indirection. Continue hardening, shrink in place, or re-cut?
+- **Options:** (a) another hardening round on the same surface (refused: the finding classes had
+  returned five times, and the addition of a fix round moved the reviewed diff up, never down);
+  (b) shrink the two features in place (refused: each class exists *because* the feature does, so
+  shrinking in place is the same iteration by another name); (c) **re-cut** — move both features out of
+  0009a into [goal 0009e](../goals/0009e-native-check-hardening.md) and let 0009a ship the offline
+  oracle plus the native check **without** them (taken).
+- **Default taken:** (c). The moved features' reviewed starting point is tag
+  `archive/0009a-r16-native-arm` (head `768df19`), where the five rounds' fixes to them are preserved;
+  0009e's `Done when` carries them with the owner's refusal criterion (`Q1 = B`, `Q-0009a-07`), the
+  dispatch resolution, the ownership seam for every root the harness can write (round-5 #1:
+  `CODEX_SQLITE_HOME`), and round-5 #2 (the npm launcher). 0009a keeps every diff that fixes a
+  reproducible defect of a surviving path (the dangling-symlink crash in a caller's `--codex-home`, the
+  portable held-name rule for the exclusive create, the `os.path.abspath` — never `resolve()` — launch
+  rule), and the three round-5 findings of the shipped half are fixed under its D1, its D4 and the run's
+  own turn count. The moved decisions are `Q-0009a-05`, `Q-0009a-07` and `Q-0009a-09` (marked moved
+  above); `Q-0009a-01`–`-04`, `-06` and `-08` stay with the frozen oracle.
+- **Reversal:** one increment that folds 0009e's two features back into the native check beside the
+  0009a half — it would have to answer the re-cut's premise first (each feature needs its own audit
+  surface) and to bound the diff that premise could not.
+- **Settled by:** the owner, or 0009e's own acceptance showing the moved features can be reviewed to a
+  clean verdict on their narrower surface.

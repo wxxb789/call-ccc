@@ -1,11 +1,17 @@
 # 0009a — Freeze the native oracle
 
-**Status:** **Re-scoped 2026-11-23 — implemented on `feat/0009a-native-oracle-v2`; awaiting operator
-acceptance.** The hold of 2026-11-21 is over, and its superseded sections (`Intended advance`,
-`Done when`) were **replaced, not reactivated** — the held text is in git history, and the superseded
-attempt (PR #19, sixteen review rounds, closed unmerged) is preserved at tag `archive/0009a-pre-rescope`.
-The oracle this goal freezes is the **reduced** one below: read-only for the rest of goal 0009 (the
-oracle lock), with the Codex judgment owned by the installed `codex` binary.
+**Status:** **Re-scoped 2026-11-23, re-cut 2026-11-26 (owner option C) — implemented on
+`feat/0009a-native-oracle-v2`; awaiting operator acceptance.** The hold of 2026-11-21 is over, and its
+superseded sections (`Intended advance`, `Done when`) were **replaced, not reactivated** — the held text
+is in git history, and the superseded attempt (PR #19, sixteen review rounds, closed unmerged) is
+preserved at tag `archive/0009a-pre-rescope`. The 2026-11-26 re-cut moves the **disclosure arm** and the
+**binary fingerprint** out of this increment into [goal 0009e](0009e-native-check-hardening.md) — after
+five cross-family review rounds returned defects in the same three classes, the owner re-decomposed
+rather than hardened again; the reviewed starting point of the moved work is tag
+`archive/0009a-r16-native-arm` (`768df19`), and the re-cut is recorded in
+[`docs/decisions/OPEN-QUESTIONS.md`](../decisions/OPEN-QUESTIONS.md) (`Q-0009a-10`). The oracle this
+goal freezes is the **reduced** one below: read-only for the rest of goal 0009 (the oracle lock), with
+the Codex judgment owned by the installed `codex` binary.
 **Context:** the umbrella contract is [`docs/goals/0009-selective-context.md`](0009-selective-context.md);
 the decomposition's rationale, the two cross-family consults it came from, and the per-increment proof
 obligations are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md). The re-scope's
@@ -26,8 +32,8 @@ receipt-identified by this rule), so a fixture is re-identified by its bytes in 
 mutated byte is named by the line it moved; and **the rule registry's own closure**: the declared rule
 set equals the mutated rule set, executed by `--selftest-mutations`. **The Codex well-formedness and
 replay judgment belongs to the `codex` binary itself**: a native check runs the binary against an
-artifact and reports *its* answer (load / resume / refusal), and where the binary is absent the check
-prints the reason and
+artifact and reports *its* answer (the loader's own `thread/resume`/`thread/read`, and a real turn where
+a prompt flag asks for one), and where the binary is absent the check prints the reason and
 exits non-zero — never a guess, never a Python restatement of the loader. Once merged, the oracle file is
 **read-only for the rest of goal 0009**; the conductor's oracle-lock signal enforces that over the
 reduced file.
@@ -35,7 +41,8 @@ reduced file.
 **What this goal does not claim.** The offline half **cannot** detect a Codex artifact the binary would
 reject — by construction, because it holds no Codex knowledge at all. That limit is disclosed here, in
 the increment's evidence record (§4) and in the harness documentation (the CI note: the gate never runs
-the native half).
+the native half). The side-by-side *demonstration* of that limit — planting a fabricated artifact and
+recording the binary's refusal — is [goal 0009e](0009e-native-check-hardening.md)'s, not this one's.
 
 ## Bounds
 
@@ -55,7 +62,10 @@ and pass.
   rule (and, where its bytes are known to break another rule too, exactly those, the pair's `also_cited`
   set); and with `--disable-rule` for the pair's own rule the same bytes carry no violation of that rule
   — a pass where every rule was still evaluated, INCOMPLETE naming the rule the disabled one left
-  unjudged where it was not, or still fail citing exactly the other rules its bytes break. The corpus
+  unjudged where it was not, or still fail citing exactly the other rules its bytes break. The expected
+  unjudged rules are **declared with each pair and asserted against the reading the command gets** — the
+  command's own reply never supplies the expectation — so a reading that stopped carrying the
+  not-evaluated rules turns the corpus red instead of closing green. The corpus
   holds that independence for every pair of byte-reading rules: one mutation violates both, declared in
   each rule's own arm, so disabling either still cites the other.
 - **D2 — The offline oracle holds no foreign-format knowledge**, stated testably: the rule registry
@@ -63,9 +73,11 @@ and pass.
   **container** but wrong as a **Codex** artifact passes the offline rules (a case that fails if any
   schema knowledge creeps back).
 - **D3 — The Codex judgment is the binary's**: the native check drives the resolved binary and reports
-  its answer; every run records the resolved version and the binary's own SHA-256 (the owner follows
-  `latest`; no version is re-pinned), and absence of the binary is an explicit reason and a non-zero
-  exit; the offline half never stands in for it.
+  its answer (the loader's own `thread/resume`/`thread/read`, and a real turn where a prompt flag asks
+  for one); absence of the binary is an explicit reason and a non-zero exit; the offline half never
+  stands in for it. The **refusal arm** (planting a fabricated artifact and requiring the binary's
+  refusal of it) and the **version + SHA-256 fingerprint** of the launched binary are
+  [goal 0009e](0009e-native-check-hardening.md)'s acceptance, not this increment's.
 - **D4 — Receipts**: a frozen artifact's byte count, whole-file SHA-256 and per-line anchors verify, and
   a single mutated byte breaks the receipt — two cases: verify, and verify-after-mutation.
 - **D5 — The deletions are declared**: the deleted rule list, with each rule's fixture and mutation,
@@ -76,7 +88,9 @@ and pass.
 
 ## Non-scope
 
-Any Go change; the other four target routes; the manifest receipt's *producer* (0009c/0009d); and, by
+Any Go change; the other four target routes; the manifest receipt's *producer* (0009c/0009d); the
+**disclosure arm** and the **binary fingerprint**, re-cut to [goal 0009e](0009e-native-check-hardening.md)
+(2026-11-26, owner option C); and, by
 the re-scope, **every rule whose subject is a Codex member, event vocabulary, record shape or replay
 ordering** — those were deleted with their fixtures and mutations (the list is the increment's evidence
 record §2), and no offline rule may name one again.
@@ -85,8 +99,8 @@ record §2), and no offline rule may name one again.
 
 `docs/evidence/0009a-citations.tsv` — the surviving rules a gate-runnable Go test can ground — with the
 increment's record [`docs/evidence/0009a-native-oracle-v2.md`](../evidence/0009a-native-oracle-v2.md)
-(§3: the corpus's closure, the verdict paths with their exit codes, the native run and its disclosure
-arm). The native-load check itself is re-runnable evidence, deliberately not a gate step.
+(§3: the corpus's closure, the verdict paths with their exit codes, the native run). The native-load
+check itself is re-runnable evidence, deliberately not a gate step.
 
 ## Stop and report
 

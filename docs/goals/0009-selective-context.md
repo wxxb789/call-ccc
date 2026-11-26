@@ -1,6 +1,6 @@
 # 0009 — Select which recorded context crosses a harness boundary
 
-**Status:** **Decomposed 2026-11-21 into four ordered increments (owner fork A2): 0009a → 0009b → 0009c → 0009d.** This file is the umbrella contract; the increments' own `Done when` clauses live in their goal files, and the rationale, the two cross-family consults and the per-increment proof obligations are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md).
+**Status:** **Decomposed 2026-11-21 into four ordered increments (owner fork A2): 0009a → 0009b → 0009c → 0009d**, **with 0009e added by the 2026-11-26 re-cut (owner option C): the native check's refusal arm and binary fingerprint, re-cut out of 0009a — its prerequisite — so 0009a's shipped half can be reviewed to a clean verdict.** This file is the umbrella contract; the increments' own `Done when` clauses live in their goal files, and the rationale, the two cross-family consults and the per-increment proof obligations are in [`docs/plans/0009-decomposition.md`](../plans/0009-decomposition.md).
 Code → Codex**. A wider attempt (PR #14: 19 machine-review rounds, 0 clean, reviewed diff 191 KB → 1.47 MB)
 was closed unmerged; two blind cross-family consults found it non-contractive, and its review log is kept as
 an adversarial-shape corpus for this increment's negative cases. Prerequisite accepted.
