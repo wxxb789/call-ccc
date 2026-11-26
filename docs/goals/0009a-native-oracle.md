@@ -52,14 +52,34 @@ recording the binary's refusal — is [goal 0009e](0009e-native-check-hardening.
 
 ## Bounds
 
-No Go change; nothing outside `scripts/codex-native-check.py`, its tests, the committed oracle fixtures
+No Go change; nothing outside `scripts/codex-native-check.py`, its tests — including the suite's
+host-contract module `scripts/tests/_host_contract.py` and its lint `scripts/tests/test_host_contract.py`,
+which the root fix for the Windows-portability class added under the disclosure below, and the sibling
+`scripts/tests/*.py` cases whose platform premises the same sweep aligned — the committed oracle fixtures
 (`scripts/tests/testdata/codex-oracle/`), the goal's `docs/evidence/0009a-citations.tsv`, this
 increment's own plan/evidence, and the documentation surfaces this increment's own description occupies
 — this goal file, `docs/goals/README.md`'s index row, `docs/harness.md`'s native-check section, the
-superseded plan stub `docs/plans/0009a-native-oracle.md`, `docs/decisions/OPEN-QUESTIONS.md` and the
+superseded plan stub `docs/plans/0009a-native-oracle.md`, `docs/decisions/OPEN-QUESTIONS.md`, `AGENTS.md`'s
+harness-tests bullet and `docs/conventions.md`'s host-dialect paragraph (both required of this increment by
+`AGENTS.md`'s own "when an increment changes a rule an agent must follow, update this file in the same
+increment" rule, and disclosed here rather than silently absorbed) and the
 moved work's own goal file `docs/goals/0009e-native-check-hardening.md` (whose lock statement this
 goal's own must agree with). The existing unflagged Codex acceptance keeps reporting the same verdict. A
 cited Go test must already exist and pass.
+
+> **Disclosure (added by the round-10 root fix, 2026-11-27).** `docs/goals/0009a-native-oracle.md`'s
+> `Bounds` were written for a change confined to the check and its own test module. The owner commissioned
+> a root-cause consult (NEON, `consult-r9-answer.md`) after three consecutive `windows-latest` reds that
+> were each one instance of the same class — a POSIX premise spelled by hand in an assertion — and adopted
+> its prescription: a measured host contract (`scripts/tests/_host_contract.py`), path rules driven over
+> both dialects, and an **AST lint** (`scripts/tests/test_host_contract.py`, run inside the `selftest`
+> step) that fails the banned idioms on this host instead of in a CI leg. Those two new files and the two
+> documentation surfaces that state the rule are outside the list above as written, so they are named here
+> rather than absorbed: the increment is the same one (goal `0009a`), no other goal's lock is touched, and
+> the widening is exactly these four paths (`scripts/tests/_host_contract.py`,
+> `scripts/tests/test_host_contract.py`, `AGENTS.md`'s harness-tests bullet, `docs/conventions.md`'s
+> host-dialect paragraph) plus the sibling `scripts/tests/*.py` cases whose platform premises the sweep
+> corrected. Recorded in `docs/decisions/OPEN-QUESTIONS.md` (Q-0009a-14) and the increment's own records.
 
 ## Done when
 

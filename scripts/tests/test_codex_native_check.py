@@ -53,7 +53,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import ntpath
 import os
+import posixpath
 import queue
 import re
 import shlex
@@ -63,10 +65,23 @@ import sys
 import tempfile
 import tomllib
 import unittest
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
+
+#: The two path dialects every pure path rule is driven over on every host, with the working directory
+#: each dialect's own spelling anchors against. ``ntpath``/``PureWindowsPath`` *is* what this host's
+#: ``os.path``/``Path`` is on Windows, so driving the pair here makes a win32 syntax rule fail on this
+#: host instead of in the one CI leg; the pure classes carry the strict absolute rule (a drive-less
+#: root is not absolute) that the running ``ntpath`` only aligned to in CPython 3.13.
+PATH_DIALECTS = (
+    ("posixpath", posixpath, PurePosixPath, "/work"),
+    ("ntpath", ntpath, PureWindowsPath, "C:\\work"),
+)
 
 #: A session id and binary the cases use: the check compares words, so their values only have to be
 #: spelled the same on both sides.
@@ -849,9 +864,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         # would create it there rather than fail somewhere else.
         if dangling_symlink:
             planted.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                planted.symlink_to(scratch / SYMLINK_TARGET_NAME)
-            except (OSError, NotImplementedError):
+            if not HOST_CONTRACT.make_symlink(scratch / SYMLINK_TARGET_NAME, planted, is_dir=False):
                 self.skipTest("this host cannot create a symlink")
         # An entry whose name is a rollout's and whose bytes cannot be read, under a path neither plant
         # claims: the snapshot of the sessions a conversion must not touch cannot be taken from it. A
@@ -863,9 +876,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             if unreadable_home_entry == "directory":
                 entry.mkdir()
             elif unreadable_home_entry == "link":
-                try:
-                    entry.symlink_to(scratch / SYMLINK_TARGET_NAME)
-                except (OSError, NotImplementedError):
+                if not HOST_CONTRACT.make_symlink(scratch / SYMLINK_TARGET_NAME, entry, is_dir=False):
                     self.skipTest("this host cannot create a symlink")
             else:
                 raise AssertionError(f"unknown unreadable_home_entry shape: {unreadable_home_entry}")
@@ -1855,42 +1866,86 @@ class LaunchPathResolution(unittest.TestCase):
     lexically where the filesystem follows `alias` first — a path that resolved to the installed
     executable can be rewritten to a name that does not exist, or to another file's name at that path.
     A launcher shim is not `resolve()`d either: it dispatches on `argv[0]`.
+
+    The rule's pure half is driven over both path dialects on every host (`PATH_DIALECTS`), so a
+    spelling that holds for one dialect alone fails here instead of in the `windows-latest` job; the
+    filesystem half is staged and read under `HOST_CONTRACT`, whose measured answers the cases follow
+    rather than second-guess.
     """
 
     def test_a_relative_path_is_anchored_without_a_component_being_normalized(self) -> None:
-        """Every relative shape keeps its own components; the answer is absolute either way."""
-        cwd = os.getcwd()
-        for given in ("codex", "./codex", "alias/../codex", "a//b/codex"):
-            with self.subTest(path=given):
+        """Every relative shape keeps its own components; the answer is absolute under either dialect."""
+        shapes = ("codex", "./codex", "alias/../codex", "a//b/codex")
+        for given in shapes:
+            with self.subTest(dialect="this host", path=given):
                 answered = NATIVE_CHECK.absolute_launch_path(given)
-                self.assertEqual(answered, os.path.join(cwd, given),
+                self.assertEqual(answered, os.path.join(os.getcwd(), given),
                                  f"{given!r} was not anchored to the process's own directory unchanged")
                 self.assertTrue(os.path.isabs(answered), answered)
+        for label, pathmod, _, cwd in PATH_DIALECTS:
+            for given in shapes:
+                with self.subTest(dialect=label, path=given):
+                    answered = NATIVE_CHECK.absolute_launch_path(given, pathmod=pathmod, cwd=cwd)
+                    self.assertEqual(answered, pathmod.join(cwd, given),
+                                     f"{given!r} was not anchored to the dialect's own directory "
+                                     f"unchanged")
+                    self.assertTrue(pathmod.isabs(answered), answered)
 
     def test_an_absolute_path_is_answered_unchanged(self) -> None:
-        """An absolute path — a `..` component included — is not touched at all.
+        """An absolute path — a `..` component included — is not touched at all, under either dialect.
 
-        The fixtures are built from the process directory's own anchor, so each is fully qualified by
-        the platform's own definition: a bare-separator root spells a Windows drive-less path, which
-        the platform does not call absolute (CPython >= 3.13), and this case's premise would then hold
-        on POSIX alone.
+        The fixtures come from each dialect's own anchor (`make_abs_path`), so each is fully qualified
+        by that dialect's own definition: a bare-separator root spells a Windows *drive-less* path,
+        which the platform does not call absolute (CPython >= 3.13), and this case's premise would then
+        hold on POSIX alone.
         """
-        anchor = Path.cwd().anchor
-        for given in (os.path.join(anchor, "opt", "bin", "codex"),
-                      os.path.join(anchor, "opt", "alias", "..", "codex")):
-            with self.subTest(path=given):
+        for label, pathmod, _, _cwd in PATH_DIALECTS:
+            for parts in (("opt", "bin", "codex"), ("opt", "alias", "..", "codex")):
+                given = HOST_CONTRACT.make_abs_path(*parts, pathmod=pathmod)
+                with self.subTest(dialect=label, path=given):
+                    self.assertEqual(NATIVE_CHECK.absolute_launch_path(given, pathmod=pathmod), given)
+        for parts in (("opt", "bin", "codex"), ("opt", "alias", "..", "codex")):
+            given = HOST_CONTRACT.make_abs_path(*parts)
+            with self.subTest(dialect="this host", path=given):
                 self.assertEqual(NATIVE_CHECK.absolute_launch_path(given), given)
 
-    def test_a_rooted_path_is_answered_by_the_platforms_own_predicate(self) -> None:
-        """The `os.sep`-prefixed shape: fully qualified on POSIX, rooted and drive-less on Windows.
+    def test_a_rooted_path_is_answered_by_the_dialects_own_predicate(self) -> None:
+        """The rooted, drive-less shape: absolute on POSIX, rooted-and-not-absolute on Windows.
 
-        The platform's own `isabs` answer decides, exactly as `absolute_launch_path`'s contract states:
-        on POSIX the spelling is absolute and answered unchanged, while on Windows a root with no drive
-        is not absolute (CPython >= 3.13) and is anchored to the process's own directory, which resolves
-        its root and supplies the current drive. Both halves are asserted, so neither platform's answer
-        is assumed on the other.
+        The dialect's own `isabs` answer decides, exactly as `absolute_launch_path`'s contract states:
+        `/opt/bin/codex` is absolute to `posixpath` and answered unchanged, while a root with no drive
+        is not absolute to CPython >= 3.13's `ntpath.isabs` and is anchored to the process's own
+        directory, which resolves its root and supplies the current drive. `PureWindowsPath` has
+        answered `False` for the shape since 3.4 while `ntpath.isabs` answered `True` until 3.13, so
+        both answers are pinned: a 3.11/3.12 host asserts the strict rule its own `ntpath` cannot give
+        it, and the dialect arm asserts whichever answer the running minor's predicate actually gives.
         """
-        given = os.path.join(os.sep, "opt", "bin", "codex")
+        rooted = {label: HOST_CONTRACT.make_rooted_path("opt", "bin", "codex", pathmod=pathmod)
+                  for label, pathmod, _, _ in PATH_DIALECTS}
+        self.assertFalse(PureWindowsPath(rooted["ntpath"]).is_absolute(),
+                         "the pure class says a drive-less root is not absolute: the rule CPython 3.13's "
+                         "ntpath aligned to")
+        if sys.version_info >= (3, 13):
+            self.assertFalse(ntpath.isabs(rooted["ntpath"]),
+                             "ntpath did not answer the 3.13 rule on a 3.13+ host")
+        else:
+            self.assertTrue(ntpath.isabs(rooted["ntpath"]),
+                            "the running ntpath stopped answering a drive-less root as absolute before "
+                            "3.13; this case's version gate is stale")
+        for label, pathmod, _, cwd in PATH_DIALECTS:
+            given = rooted[label]
+            with self.subTest(dialect=label, path=given):
+                answered = NATIVE_CHECK.absolute_launch_path(given, pathmod=pathmod, cwd=cwd)
+                if pathmod.isabs(given):
+                    self.assertEqual(answered, given)
+                else:
+                    self.assertNotEqual(answered, given,
+                                        "a drive-less rooted path was answered as itself on a dialect "
+                                        "whose own predicate does not call it absolute")
+                    self.assertEqual(pathmod.splitdrive(answered)[0], pathmod.splitdrive(cwd)[0],
+                                     f"{answered!r} is not anchored to the dialect's own drive")
+                    self.assertEqual(answered, pathmod.join(cwd, given))
+        given = HOST_CONTRACT.make_rooted_path("opt", "bin", "codex")
         answered = NATIVE_CHECK.absolute_launch_path(given)
         if os.path.isabs(given):
             self.assertEqual(answered, given)
@@ -1903,30 +1958,30 @@ class LaunchPathResolution(unittest.TestCase):
             self.assertEqual(answered, os.path.join(os.getcwd(), given))
 
     def test_a_lexical_collapse_would_name_another_file(self) -> None:
-        """Which file each form names is the platform's own resolution; the answer keeps the caller's path.
+        """Which file each form names is the host's own resolution; the answer keeps the caller's path.
 
-        `alias` is a symlink into `real/sub`, so `alias/../codex` traverses to `real/codex` where the
-        platform follows the link before the `..`, while `abspath` collapses the component lexically to
-        `<root>/codex` -- both names staged, each with its own bytes. The case reads the file each
-        spelling names and branches on what the platform answered: where the two forms differ the
-        traversal names the executable and the collapse names another file, and where the platform's own
-        resolution removes a `..` component before following the link (win32 path handling) both
-        spellings name `<root>/codex`, so no distinct-file claim is made and the resolution's own answer
-        is asserted instead. `into-root` targets a direct child of the root, so the traversal is
-        `<root>/codex` under every platform's own resolution, and the same-file arm the lexical platform
-        reaches is exercised on this host too. Staging it needs the host to make a symlink; the string
-        pins above are the host-independent half, so a host without the privilege skips this arm.
+        `alias` is a symlink into `real/sub`, and both names are staged with distinct bytes: where the
+        host's kernel follows the link before the `..` (POSIX), `alias/../codex` traverses to
+        `real/codex` while `abspath`'s lexical collapse names `<root>/codex`; where the platform removes
+        the component before following the link (win32), both spellings name `<root>/codex`. The branch
+        is `HOST_SEMANTICS.symlink_dotdot_follows_link`, checked for the `alias` arm against what this
+        filesystem actually answered, so a broken probe fails here instead of quietly picking a branch.
+        `into-root` targets a direct child of the root, so its traversal is `<root>/codex` under every
+        platform's own resolution -- the same-file arm a lexical platform reaches is exercised on this
+        host too. Every platform keeps the invariants: the answer is the caller's path unchanged, it
+        exists, and the collapse is a different string. Staging needs the host to make a symlink; the
+        dialect cases above are the host-independent half, so a host without the privilege skips here.
         """
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             (root / "real" / "sub").mkdir(parents=True)
             (root / "real" / "codex").write_text("the executable's own bytes\n")
             (root / "codex").write_text("the file the lexical collapse names\n")
-            try:
-                (root / "alias").symlink_to(root / "real" / "sub")
-                (root / "into-root").symlink_to(root / "real")
-            except (OSError, NotImplementedError):
+            linked = HOST_CONTRACT.make_symlink(root / "real" / "sub", root / "alias", is_dir=True)
+            linked = linked and HOST_CONTRACT.make_symlink(root / "real", root / "into-root", is_dir=True)
+            if not linked:
                 self.skipTest("this host cannot create a symlink")
+            follows = HOST_CONTRACT.HOST_SEMANTICS.symlink_dotdot_follows_link
             for name in ("alias", "into-root"):
                 given = os.path.join(str(root), name, "..", "codex")
                 collapsed = os.path.abspath(given)
@@ -1937,7 +1992,13 @@ class LaunchPathResolution(unittest.TestCase):
                     answered = NATIVE_CHECK.absolute_launch_path(given)
                     self.assertEqual(answered, given)
                     self.assertTrue(os.path.exists(answered), answered)
-                    if Path(given).read_bytes() != Path(collapsed).read_bytes():
+                    if name == "alias":
+                        measured = (Path(given).read_bytes()
+                                    == (root / "real" / "codex").read_bytes())
+                        self.assertEqual(measured, follows,
+                                         "the precomputed host answer and this host's own resolution "
+                                         "disagree, so the probe is broken")
+                    if follows and name == "alias":
                         self.assertEqual(Path(given).read_bytes(), (root / "real" / "codex").read_bytes(),
                                          "the traversal does not name the executable the link's `..` "
                                          "reaches")
@@ -1945,7 +2006,7 @@ class LaunchPathResolution(unittest.TestCase):
                                          "the collapse does not name the file at the name it spells")
                     else:
                         self.assertEqual(Path(answered).read_bytes(), (root / "codex").read_bytes(),
-                                         "the platform's own resolution of the traversal does not name "
+                                         "the host's own resolution of the traversal does not name "
                                          "the collapse's file, which this case stages")
 
 
@@ -1991,14 +2052,12 @@ class ForeignHomeOwnership(unittest.TestCase):
             claimed = root / "planted.jsonl"
             self.assertEqual(owner.plant(claimed, b"this run's bytes\n"), (True, ""))
             self.assertEqual(claimed.read_bytes(), b"this run's bytes\n")
-            self.assertEqual(owner.plant(claimed, b"another writer's bytes\n"), (False, ""),
-                             "a second create under a held name was not a collision")
+            HOST_CONTRACT.assert_create_refused(owner.plant, claimed)
             self.assertEqual(claimed.read_bytes(), b"this run's bytes\n",
                              "the collision wrote over the file it found")
             held = root / "a-directory"
             held.mkdir()
-            self.assertEqual(owner.plant(held, b"x"), (False, ""),
-                             "a directory at the name was not a collision")
+            HOST_CONTRACT.assert_create_refused(owner.plant, held)
             self.assertTrue(held.is_dir(), "the directory was replaced by a file")
             self.assertEqual(owner.remove_all(), [])
             self.assertFalse(claimed.exists(), "the removal left this run's own file behind")

@@ -40,6 +40,9 @@ from unittest import mock
 GATE = Path(__file__).resolve().parents[1] / "gate.py"
 REPO_ROOT = GATE.parents[1]
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
+
 #: Set for a nested run of this suite, so the child's ``HostCase`` copies skip
 #: instead of nesting a run of their own; nothing else in the suite reads it.
 SELFCHECK = "CALLCCC_SUITE_SELFCHECK"
@@ -173,16 +176,12 @@ class GateTree:
 
         No case in this suite executes a stub: the cases that need a tool to
         answer with a specific exit code patch the gate's own ``run`` instead.
-        A stub therefore only has to be *found*, which is why it is written
-        twice -- as a POSIX script and as a Windows ``.bat`` (``shutil.which``
-        resolves that one through ``PATHEXT``) -- and why no stub is a binary.
+        A stub therefore only has to be *found*, and the host contract writes
+        the one shape this host's own lookup resolves -- a mode-bit script
+        where the bits exist, a ``PATHEXT``-suffixed ``.bat`` on Windows -- so
+        neither shape is hand-rolled and no stub is a binary.
         """
-        directory = where or self.stub_bin
-        directory.mkdir(parents=True, exist_ok=True)
-        script = directory / name
-        script.write_text(f"#!/bin/sh\nexit {exit_code}\n", encoding="utf-8")
-        script.chmod(0o755)
-        (directory / f"{name}.bat").write_text(f"@exit /b {exit_code}\r\n", encoding="utf-8")
+        HOST_CONTRACT.make_executable_stub(where or self.stub_bin, name, exit_code=exit_code)
 
     def write(self, relative: str, text: str) -> None:
         path = self.root / relative

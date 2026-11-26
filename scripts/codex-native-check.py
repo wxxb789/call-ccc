@@ -759,12 +759,12 @@ def read_text_or_failure(path: Path) -> tuple[str, str]:
         return "", f"{path} cannot be read: {failure}"
 
 
-def absolute_launch_path(path: str) -> str:
+def absolute_launch_path(path: str, pathmod=os.path, cwd: str | None = None) -> str:
     """The path made absolute without a component of it being normalized.
 
-    Whether a path is already absolute is the platform's own answer (`os.path.isabs`): an absolute path
-    is answered unchanged and every other spelling is anchored to the process's own directory, so the
-    answer is what the caller's path traverses. That includes Windows's rooted-but-drive-less form
+    Whether a path is already absolute is the path dialect's own answer (`pathmod.isabs`): an absolute
+    path is answered unchanged and every other spelling is anchored to the process's own directory, so
+    the answer is what the caller's path traverses. That includes Windows's rooted-but-drive-less form
     (`\\opt\\bin\\codex`): a root without a drive is not absolute to CPython >= 3.13's `ntpath.isabs`
     (only a fully qualified path is; 3.11 and 3.12 answered `True` for it), and anchoring it resolves
     its root against the process's own directory, which supplies the current drive -- the way the
@@ -772,8 +772,12 @@ def absolute_launch_path(path: str) -> str:
     filesystem follows `alias` first, so a path that resolved to the executable can be rewritten to a
     name that does not exist or to another file's name at that path. A launcher shim is not `resolve()`d
     either: it dispatches on `argv[0]`.
+
+    `pathmod`/`cwd` exist so this pure rule can be driven over both path dialects (`posixpath` and
+    `ntpath`) on any host; every shipped call site leaves them at the running platform's own `os.path`
+    and process directory.
     """
-    return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    return path if pathmod.isabs(path) else pathmod.join(cwd if cwd is not None else os.getcwd(), path)
 
 
 class ForeignHome:

@@ -34,6 +34,9 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 REPO_ROOT = SCRIPTS.parent
 SCRIPT_DIRS = (str(SCRIPTS),)
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
+
 #: A revision-shaped pin; the exact digits do not matter to any rule under test.
 PIN = "0123456789abcdef0123456789abcdef01234567"
 REVISION = "fedcba9876543210fedcba9876543210fedcba98"
@@ -170,8 +173,8 @@ class ParityTree:
         (self.root / relative).unlink()
 
     def apply_executable_bit(self, relative: str, mode: str) -> None:
-        """Match the file's mode to the manifest's, where the platform has POSIX mode bits."""
-        if mode == "100755" and os.name != "nt":
+        """Match the file's mode to the manifest's, where this host's filesystem carries the bits."""
+        if mode == "100755" and HOST_CONTRACT.HOST_SEMANTICS.posix_exec_bits_enforced:
             path = self.root / relative
             path.chmod(path.stat().st_mode | 0o111)
 
@@ -232,9 +235,7 @@ class ParityTree:
             "symlink_target": self.link_seam({path: target.decode("utf-8")})}
         link = self.root / path
         link.unlink()
-        try:
-            os.symlink(target.decode("utf-8"), link)
-        except (OSError, NotImplementedError):
+        if not HOST_CONTRACT.make_symlink(target.decode("utf-8"), link, is_dir=False):
             # This host cannot create a link: the file form above is the whole of what it can hold, and
             # the case's seam answers the target that link holds.
             self.write_bytes(path, target)

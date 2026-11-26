@@ -47,6 +47,9 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 CHECKER = SCRIPTS / "obligation-citations.py"
 GATE = SCRIPTS / "gate.py"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
+
 #: The header every case's manifest carries unless it is the case's subject.
 HEADER = "rule_id\ttest\tpackage\tartifact"
 
@@ -114,8 +117,8 @@ class CitationsTree(unittest.TestCase):
     The stub bin answers the host probes the shipped code makes before it looks at the tree: ``go`` and
     the C compiler the Windows boundary asks about (``gofmt`` too, for the gate's own first step when a
     case drives the gate). No case executes a stub — every case that reaches a ``go test`` invocation
-    patches the checker's runner seam — so a stub only has to be *found*, which is why it is written
-    twice, as a POSIX script and as a Windows ``.bat``.
+    patches the checker's runner seam — so a stub only has to be *found*, and the host contract writes
+    the one shape this host's own lookup resolves.
     """
 
     PACKAGE = "./internal/ccc"
@@ -131,12 +134,7 @@ class CitationsTree(unittest.TestCase):
 
     def stub(self, name: str, where: Path | None = None) -> None:
         """Make ``name`` findable on a pinned ``PATH`` without installing a tool."""
-        directory = where or self.stub_bin
-        directory.mkdir(parents=True, exist_ok=True)
-        script = directory / name
-        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        script.chmod(0o755)
-        (directory / f"{name}.bat").write_text("@exit /b 0\r\n", encoding="utf-8")
+        HOST_CONTRACT.make_executable_stub(where or self.stub_bin, name)
 
     def write(self, relative: str, text: str) -> None:
         path = self.root / relative

@@ -3455,3 +3455,26 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   exception and removal condition.
 - **Settled by:** the owner, or a later increment that needs a *rule* change during goal 0009 — under
   the lock that is an escalation, not an iteration.
+
+## Q-0009a-14 — Which answer stages and reads the mode-bit fixtures (r10c, NEON's prescription)
+
+- **Status:** resolved (default taken; r10c fix round, 2026-11-27).
+- **Question:** the suite stages executable bits in two ways and now has two answers for one host
+  fact: `scripts/tests/_host_contract.py`'s measured `HOST_SEMANTICS.posix_exec_bits_enforced`, and
+  `scripts/upstream-parity.py`'s own `executable_bit_supported()` seam (`os.name`-based). The parity
+  fixture staging (`apply_executable_bit`) and the five per-case guards
+  (`if os.name == "nt": assert executable_bit_supported() is False; return`) could each move to the
+  measured answer.
+- **Options:** (a) every site reads the measured answer; (b) the fixture *staging* reads the measured
+  answer (so the suite never infers a host fact from `os.name`) while the guard sites keep asserting
+  the *shipped probe's own* answer, which is the referee of the rule under test (taken); (c) every
+  site keeps reading the shipped seam.
+- **Default taken:** (b). `apply_executable_bit` now consults
+  `HOST_SEMANTICS.posix_exec_bits_enforced`; the per-case guards are unchanged and their docstrings
+  keep saying which platform each asserts. The two answers can only diverge on a host whose filesystem
+  carries no mode bits while `os.name` is not `nt` — where both readings fail loudly (the staged tree
+  cannot carry the pinned mode the checker compares), so neither silently downgrades.
+- **Reversal:** (c) — one increment that stages through `executable_bit_supported()` (or the seam
+  itself) again, with the two reading sites named; or (a) — moving the guard sites to the measured
+  answer with their assertions kept.
+- **Settled by:** the owner, or a host where the two answers diverge.
