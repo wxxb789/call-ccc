@@ -826,6 +826,9 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         ``core.filemode=false`` the pinned index blob, ``git status`` and the recorded bytes all agree
         with the modified tree -- the modification git would record is exactly the owner bit that was
         cleared. The comparison therefore asks for ``S_IXUSR``, the bit git's own mode is derived from.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of changing a bit.
         """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)
@@ -991,6 +994,9 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
         changed, and no git-backed answer has to disagree for that to be a difference (a checkout with
         ``core.filemode=false`` never records one). The case below reaches the same rule through the
         git-backed branch, where the index mode and a clean status would both pass it.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of a mode change.
         """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)
@@ -1212,7 +1218,11 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         self.assert_failed(*self.run_with_git(porcelain=b""), "changed file type")
 
     def test_a_worktree_executable_bit_git_status_cannot_report_is_still_caught(self) -> None:
-        """The mode is checked on the file itself, the way the bytes-only branch always checked it."""
+        """The mode is checked on the file itself, the way the bytes-only branch always checked it.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of a mode change.
+        """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)
             return
@@ -1328,6 +1338,9 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         record's mode, and ``git status`` reports nothing. The working tree's own mode is therefore
         asked of the file itself for that path too, which is what makes the declared allowance cover
         its bytes and nothing else.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of a mode change.
         """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)

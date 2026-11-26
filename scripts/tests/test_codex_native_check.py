@@ -1518,7 +1518,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         exactly as it found it, not follow it (the target is not created), and write no fabrication of
         its own beside it. A guard asking ``exists()`` would write through the link with the plant's own
         write and unlink the caller's link in the cleanup instead. The run keeps its scratch tree, so the
-        link staged under the caller's home survives for the assertions.
+        link staged under the caller's home survives for the assertions. Staging it needs the host to
+        make a symlink; the refusal path itself is pinned host-independently by the exclusive create's
+        seam case in ``ForeignHomeOwnership``, so a host without the privilege skips this arm.
         """
         code, _ = self.drive(mutate_during_resume=False, dangling_symlink=True, keep=True)
         self.assertEqual(code, 2, f"exit {code} for the dangling symlink: {self.last_stderr}")
@@ -1901,30 +1903,50 @@ class LaunchPathResolution(unittest.TestCase):
             self.assertEqual(answered, os.path.join(os.getcwd(), given))
 
     def test_a_lexical_collapse_would_name_another_file(self) -> None:
-        """The two forms differ on the filesystem: the traversal finds the executable, the collapse not.
+        """Which file each form names is the platform's own resolution; the answer keeps the caller's path.
 
-        This is the measured shape `abspath` breaks: `alias` is a symlink into `real/sub`, so
-        `alias/../codex` traverses to `real/codex`, while the collapsed `abspath` answer names
-        `<root>/codex`, which does not exist. Staging it needs the host to make a symlink; the string
+        `alias` is a symlink into `real/sub`, so `alias/../codex` traverses to `real/codex` where the
+        platform follows the link before the `..`, while `abspath` collapses the component lexically to
+        `<root>/codex` -- both names staged, each with its own bytes. The case reads the file each
+        spelling names and branches on what the platform answered: where the two forms differ the
+        traversal names the executable and the collapse names another file, and where the platform's own
+        resolution removes a `..` component before following the link (win32 path handling) both
+        spellings name `<root>/codex`, so no distinct-file claim is made and the resolution's own answer
+        is asserted instead. `into-root` targets a direct child of the root, so the traversal is
+        `<root>/codex` under every platform's own resolution, and the same-file arm the lexical platform
+        reaches is exercised on this host too. Staging it needs the host to make a symlink; the string
         pins above are the host-independent half, so a host without the privilege skips this arm.
         """
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             (root / "real" / "sub").mkdir(parents=True)
             (root / "real" / "codex").write_text("the executable's own bytes\n")
+            (root / "codex").write_text("the file the lexical collapse names\n")
             try:
                 (root / "alias").symlink_to(root / "real" / "sub")
+                (root / "into-root").symlink_to(root / "real")
             except (OSError, NotImplementedError):
                 self.skipTest("this host cannot create a symlink")
-            given = os.path.join(str(root), "alias", "..", "codex")
-            self.assertTrue(os.path.exists(given),
-                            "the path's own traversal does not name the staged executable")
-            self.assertFalse(os.path.exists(os.path.abspath(given)),
-                             "the lexical collapse names the executable too, so this case's premise "
-                             "does not hold on this host")
-            answered = NATIVE_CHECK.absolute_launch_path(given)
-            self.assertEqual(answered, given)
-            self.assertTrue(os.path.exists(answered), answered)
+            for name in ("alias", "into-root"):
+                given = os.path.join(str(root), name, "..", "codex")
+                collapsed = os.path.abspath(given)
+                with self.subTest(link=name):
+                    self.assertNotEqual(collapsed, given,
+                                        "this case's path has no lexical collapse for the assertion "
+                                        "to be about")
+                    answered = NATIVE_CHECK.absolute_launch_path(given)
+                    self.assertEqual(answered, given)
+                    self.assertTrue(os.path.exists(answered), answered)
+                    if Path(given).read_bytes() != Path(collapsed).read_bytes():
+                        self.assertEqual(Path(given).read_bytes(), (root / "real" / "codex").read_bytes(),
+                                         "the traversal does not name the executable the link's `..` "
+                                         "reaches")
+                        self.assertEqual(Path(collapsed).read_bytes(), (root / "codex").read_bytes(),
+                                         "the collapse does not name the file at the name it spells")
+                    else:
+                        self.assertEqual(Path(answered).read_bytes(), (root / "codex").read_bytes(),
+                                         "the platform's own resolution of the traversal does not name "
+                                         "the collapse's file, which this case stages")
 
 
 class ForeignHomeOwnership(unittest.TestCase):
