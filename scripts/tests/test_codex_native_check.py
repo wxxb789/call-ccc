@@ -747,9 +747,11 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         *dangling symlink* there instead, whose target the run must neither follow nor delete — the
         collision shape a guard asking ``exists()`` misses.
         ``view_reply`` is what the stub answers `thread/read` with: ``"typed"`` (items whose own
-        ``type`` fields are the kinds the shipped extraction reads) or ``"text-only"`` (a reply whose
+        ``type`` fields are the kinds the shipped extraction reads), ``"text-only"`` (a reply whose
         message text spells the expected kind words while no item of those types exists, so a reading of
-        the rendered lines answers kinds the reply does not hold);
+        the rendered lines answers kinds the reply does not hold), or ``"read-fails"`` (no result answer
+        at all: every resume still answers the requested id and path, and the read's failure must be
+        named by the view checks rather than speak for the resume);
         ``lexical_codex`` gives ``--codex`` a path that holds a ``..`` component after a directory —
         ``<scratch>/alias/../codex`` — and has ``which`` answer the same path, so a run that normalized
         the path it launches (``abspath``'s lexical collapse) is visible in the argv[0] the stub
@@ -1074,6 +1076,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 second = session == second_thread_id
                 path = second_installed if second else installed
                 if method == "thread/read":
+                    if view_reply == "read-fails":
+                        return NATIVE_CHECK.NoAnswer(
+                            "the app server closed its output while answering thread/read")
                     if view_reply == "text-only":
                         # The expected kind appears only inside message text: a reading that rendered the
                         # lines and looked for the words there answers the kinds it sees here, where a
@@ -1632,6 +1637,34 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                       results["the target's own view of the second session lists the appended turn"][1])
         self.assertEqual(code, 1, f"exit {code} for a run whose view checks failed: {results}")
 
+    def test_a_read_failure_does_not_speak_for_the_resume(self) -> None:
+        """R7-2's drive pin: `thread/resume` answered and `thread/read` answered no result.
+
+        The two outcomes are reported separately: each loader check is the resume's own verdict (PASS,
+        naming the id and path it answered) while the checks that stand on the read fail naming the
+        read's own words. A run that recorded the read failure under the loader's name shows the loader
+        FAIL here, and one whose view check passed despite the failed read shows no view failure; the
+        resume the stub's binary answered never reads as a failed open either way.
+        """
+        code, results = self.drive(mutate_during_resume=False, view_reply="read-fails")
+        for name in ("the target harness's own loader opens the installed session",
+                     "the target harness's own loader opens the second installed session"):
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS",
+                             f"a read-only failure spoke for the resume at {name}: {results}")
+            self.assertIn("thread/resume ->", detail, detail)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the target's own view lists the converted turns",
+                                 "the target's own view of the second session lists the appended turn",
+                                 "the first session's own view does not hold the appended turn"]),
+                         f"the failed reads were not answered by the view checks: {results}")
+        for name in ("the target's own view lists the converted turns",
+                     "the target's own view of the second session lists the appended turn"):
+            self.assertIn("thread/read", results[name][1],
+                          f"{name}: the read's own failure is not named: {results[name]}")
+        self.assertEqual(code, 1, f"exit {code} for a run whose view reads failed: {results}")
+
     def test_a_file_racing_the_plant_is_neither_clobbered_nor_deleted(self) -> None:
         """Two writers at one name: the run must not clobber or remove the other writer's file.
 
@@ -1833,11 +1866,39 @@ class LaunchPathResolution(unittest.TestCase):
                 self.assertTrue(os.path.isabs(answered), answered)
 
     def test_an_absolute_path_is_answered_unchanged(self) -> None:
-        """An absolute path — a `..` component included — is not touched at all."""
-        for given in (os.path.join(os.sep, "opt", "bin", "codex"),
-                      os.path.join(os.sep, "opt", "alias", "..", "codex")):
+        """An absolute path — a `..` component included — is not touched at all.
+
+        The fixtures are built from the process directory's own anchor, so each is fully qualified by
+        the platform's own definition: a bare-separator root spells a Windows drive-less path, which
+        the platform does not call absolute (CPython >= 3.13), and this case's premise would then hold
+        on POSIX alone.
+        """
+        anchor = Path.cwd().anchor
+        for given in (os.path.join(anchor, "opt", "bin", "codex"),
+                      os.path.join(anchor, "opt", "alias", "..", "codex")):
             with self.subTest(path=given):
                 self.assertEqual(NATIVE_CHECK.absolute_launch_path(given), given)
+
+    def test_a_rooted_path_is_answered_by_the_platforms_own_predicate(self) -> None:
+        """The `os.sep`-prefixed shape: fully qualified on POSIX, rooted and drive-less on Windows.
+
+        The platform's own `isabs` answer decides, exactly as `absolute_launch_path`'s contract states:
+        on POSIX the spelling is absolute and answered unchanged, while on Windows a root with no drive
+        is not absolute (CPython >= 3.13) and is anchored to the process's own directory, which resolves
+        its root and supplies the current drive. Both halves are asserted, so neither platform's answer
+        is assumed on the other.
+        """
+        given = os.path.join(os.sep, "opt", "bin", "codex")
+        answered = NATIVE_CHECK.absolute_launch_path(given)
+        if os.path.isabs(given):
+            self.assertEqual(answered, given)
+        else:
+            self.assertNotEqual(answered, given,
+                                "a drive-less rooted path was answered as itself on a platform whose "
+                                "own predicate does not call it absolute")
+            self.assertEqual(os.path.splitdrive(answered)[0], os.path.splitdrive(os.getcwd())[0],
+                             f"{answered!r} is not anchored to the process's own drive")
+            self.assertEqual(answered, os.path.join(os.getcwd(), given))
 
     def test_a_lexical_collapse_would_name_another_file(self) -> None:
         """The two forms differ on the filesystem: the traversal finds the executable, the collapse not.
@@ -2091,13 +2152,14 @@ class HarnessThatCannotBeStarted(unittest.TestCase):
         absent = home / "absent.jsonl"
         before = len(NATIVE_CHECK.RESULTS)
         try:
-            view, kinds = NATIVE_CHECK.load_and_view(
+            view, kinds, view_failure = NATIVE_CHECK.load_and_view(
                 missing, home, "00000000-0000-0000-0000-000000000000", absent,
                 "the case's loader", "the case's view:")
             recorded = NATIVE_CHECK.RESULTS[before:]
         finally:
             del NATIVE_CHECK.RESULTS[before:]
-        self.assertEqual((view, kinds), ([], []))
+        self.assertEqual((view, kinds, view_failure), ([], [], ""),
+                         "a start failure is the loader's own record, not a read that answered no view")
         self.assertEqual(len(recorded), 1, recorded)
         name, state, detail = recorded[0]
         self.assertEqual((name, state), ("the case's loader", "FAIL"))
@@ -2540,9 +2602,11 @@ class CodexArtifactOracle(unittest.TestCase):
         The first line feed replaced by a space leaves the file's size the same and merges the first two
         lines, so the receipt's anchor count no longer equals the artifact's line count *and* the first
         line's own bytes diverged. The anchors the two sides still share are compared even on that count
-        mismatch, so the reading names the line the moved byte diverged on; a reading that skipped the
-        comparison whenever the counts differed would report only the whole-file digest and the count,
-        where a reader cannot find the byte — the receipt-integrity line a moved line feed is.
+        mismatch, so the reading names the line the moved byte diverged on, and the count statement
+        itself names the first line with no counterpart — anchor 3, whose line the merge removed; a
+        reading that skipped the comparison whenever the counts differed would report only the
+        whole-file digest and the count, where a reader cannot find the byte — the receipt-integrity
+        line a moved line feed is.
         """
         data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
         receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
@@ -2553,8 +2617,29 @@ class CodexArtifactOracle(unittest.TestCase):
         named = {(violation.rule, violation.line) for violation in violations}
         self.assertIn(("oracle.receipt-integrity", 1), named,
                       f"the receipt did not name the line the moved byte diverged on: {violations}")
-        self.assertIn(("oracle.receipt-integrity", 0), named,
-                      f"the count mismatch is no longer reported: {violations}")
+        self.assertIn(("oracle.receipt-integrity", 3), named,
+                      f"the count statement no longer names the first line without a counterpart: "
+                      f"{violations}")
+
+    def test_a_line_the_receipt_gives_no_anchor_for_is_named(self) -> None:
+        """R7-3's regression case: one line feed appended, so the artifact holds a fourth line.
+
+        Every anchor the two sides share still matches and the file-level statements (byte count,
+        digest) disagree; the count statement has to name the line the way a changed byte is named by
+        the line it moved on, so a reader meets line 4 and what is unmatched about it rather than only
+        two numbers that differ. The appended line feed is a blank line, which the container rule
+        refuses as well — this case reads the receipt's own statement.
+        """
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT) + b"\n"
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        violations = [violation for violation in self.reading(data, receipt)
+                      if violation.rule == "oracle.receipt-integrity"]
+        self.assertEqual({violation.line for violation in violations}, {0, 4},
+                         f"the appended-LF shape is not the file-level pair plus the gained line: "
+                         f"{violations}")
+        naming = [violation.detail for violation in violations if violation.line == 4]
+        self.assertTrue(any("no anchor" in detail for detail in naming),
+                        f"line 4 is named without saying what is unmatched about it: {violations}")
 
     def test_the_byte_layer_ends_the_record_reading(self) -> None:
         """A violation at the byte layer ends the *record* reading — the BOM and a byte that is not
@@ -2902,20 +2987,23 @@ class CodexArtifactOracle(unittest.TestCase):
 
         ``--resume-prompt``/``--repeat-resume-prompt`` ask a native run for a real turn; ``--validate``
         and ``--selftest-mutations`` run no harness at all, so the combination is refused (exit 2) with
-        the flag named. Pre-fix the command returned the mode's own verdict, ran no turn, and said
-        nothing — a caller could ask for a turn and read a report that answered a different request.
+        the flag named. The flag's *presence* is what is tested, not its value: an empty prompt is the
+        same request as a spelled one and is refused the same way, where a truthiness test accepted it,
+        ran no turn and said nothing — a caller could ask for a turn and read a report that answered a
+        different request.
         """
         fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
-        for argv in (["--validate", str(fixture), "--resume-prompt", "a question"],
-                     ["--validate", str(fixture), "--repeat-resume-prompt", "a question"],
-                     ["--selftest-mutations", "--repeat-resume-prompt", "a question"]):
-            with self.subTest(argv=argv[:2]):
-                errors = io.StringIO()
-                with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
-                    NATIVE_CHECK.main(argv)
-                self.assertEqual(refusal.exception.code, 2, errors.getvalue())
-                self.assertIn("runs no harness turn", errors.getvalue())
-                self.assertIn("--resume-prompt", errors.getvalue())
+        for mode in (["--validate", str(fixture)], ["--selftest-mutations"]):
+            for flag in ("--resume-prompt", "--repeat-resume-prompt"):
+                for value in ("a question", ""):
+                    argv = mode + [flag, value]
+                    with self.subTest(argv=argv):
+                        errors = io.StringIO()
+                        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                            NATIVE_CHECK.main(argv)
+                        self.assertEqual(refusal.exception.code, 2, f"{argv}: {errors.getvalue()}")
+                        self.assertIn("runs no harness turn", errors.getvalue(), argv)
+                        self.assertIn("--resume-prompt", errors.getvalue(), argv)
 
     def test_disable_rule_without_validate_is_refused(self) -> None:
         """``--disable-rule`` turns a rule off for ``--validate``, which names the artifact the reading

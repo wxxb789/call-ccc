@@ -467,7 +467,8 @@ says so.
   member names unique, no unpaired surrogate escape, no line nested deeper than 256 levels — the bound is
   the rule's own statement, not the reading interpreter's recursion limit) and `oracle.receipt-integrity` (a
   receipt's byte count, whole-file SHA-256 and one anchor per line — the line's own bytes, line feed included — read
-  against the artifact: a mutated byte is refused, named by the line it moved; a receipt covers an
+  against the artifact: a mutated byte is refused, named by the line it moved, and the first line
+  without a counterpart anchor is named the same way; a receipt covers an
   artifact holding at least one line, so the empty artifact is not receipt-identified by this rule; a
   receipt document nested deeper than 256 levels is refused too — that bound is the rule's own statement,
   not the reading interpreter's recursion limit).

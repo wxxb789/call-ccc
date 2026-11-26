@@ -762,11 +762,16 @@ def read_text_or_failure(path: Path) -> tuple[str, str]:
 def absolute_launch_path(path: str) -> str:
     """The path made absolute without a component of it being normalized.
 
-    A relative path is anchored to the process's own directory and an already absolute one is answered
-    unchanged, so the answer is what the caller's path traverses. `abspath` instead collapses `alias/..`
-    lexically where the filesystem follows `alias` first, so a path that resolved to the executable can
-    be rewritten to a name that does not exist or to another file's name at that path. A launcher shim
-    is not `resolve()`d either: it dispatches on `argv[0]`.
+    Whether a path is already absolute is the platform's own answer (`os.path.isabs`): an absolute path
+    is answered unchanged and every other spelling is anchored to the process's own directory, so the
+    answer is what the caller's path traverses. That includes Windows's rooted-but-drive-less form
+    (`\\opt\\bin\\codex`): a root without a drive is not absolute to CPython >= 3.13's `ntpath.isabs`
+    (only a fully qualified path is; 3.11 and 3.12 answered `True` for it), and anchoring it resolves
+    its root against the process's own directory, which supplies the current drive -- the way the
+    platform itself resolves a rooted path. `abspath` instead collapses `alias/..` lexically where the
+    filesystem follows `alias` first, so a path that resolved to the executable can be rewritten to a
+    name that does not exist or to another file's name at that path. A launcher shim is not `resolve()`d
+    either: it dispatches on `argv[0]`.
     """
     return path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
 
@@ -942,18 +947,23 @@ def readback_verdict(thread_id: str, counts: dict, carried: dict) -> tuple[bool,
 
 
 def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
-                  loader_name: str, view_label: str) -> tuple[list[str], list[str]]:
-    """One installed session as the target harness itself answers for it: its own view, or the failure.
+                  loader_name: str, view_label: str) -> tuple[list[str], list[str], str]:
+    """One installed session as the target harness itself answers for it: its own view, its item kinds,
+    and the failure the view's own read answered ("" where the read answered).
 
     The strings a run records about a load are the run's own -- each conversion's checks have their own
     names and the second session's own view has its own heading -- and the loader's answer is the
     harness's reply itself: a server that stopped answering is a failed check carrying its own words,
-    not a traceback, because every interaction answers its variant instead of raising.
+    not a traceback, because every interaction answers its variant instead of raising. The loader's own
+    check is `thread/resume`'s verdict and is recorded whether or not the view was read; a read that
+    answered no view is returned to the caller, whose view check names that failure, so a read-only
+    failure cannot speak for a resume the harness answered.
     """
     view: list[str] = []
     kinds: list[str] = []
     server = start_app_server(codex, home)
     problem = ""
+    read_failure = ""
     loaded_thread: dict = {}
     reply: dict = {}
     if isinstance(server, NoAnswer):
@@ -973,23 +983,25 @@ def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
                     if isinstance(viewed, Thread):
                         reply = viewed.result
                     else:
-                        problem = answer_problem(viewed)
+                        read_failure = answer_problem(viewed)
         finally:
             server.close()
     if problem:
         record(loader_name, False, problem)
-        return view, kinds
+        return view, kinds, read_failure
     record(loader_name,
            loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
            f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
            f"cwd={loaded_thread.get('cwd')}")
+    if read_failure:
+        return view, kinds, read_failure
     view, kinds = thread_view(reply)
     if view:
         print()
         print(view_label)
         for line in view:
             print("   ", line)
-    return view, kinds
+    return view, kinds, ""
 
 
 def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> list[str]:
@@ -1084,8 +1096,9 @@ ORACLE_RULES: dict[str, str] = {
         "a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per "
         "line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt "
         "whose statements do not match the artifact's bytes is refused, naming the line a changed byte "
-        "moved; a receipt covers an artifact holding at least one line, so the empty artifact is not "
-        "receipt-identified by this rule; a receipt document nested deeper than "
+        "moved and, where the two sides hold different line counts, the first line without a "
+        "counterpart anchor; a receipt covers an artifact holding at least one line, so the empty "
+        "artifact is not receipt-identified by this rule; a receipt document nested deeper than "
         f"{ORACLE_NESTING_BOUND} levels is refused as well, because that bound is this rule's own "
         "statement rather than the reading interpreter's recursion limit",
 }
@@ -1420,12 +1433,18 @@ def oracle_receipt_violations(data: bytes, receipt: object) -> list[Violation]:
                                     "a receipt names one anchor per line, as a non-empty array"))
     else:
         if len(anchors) != len(spans):
-            violations.append(Violation("oracle.receipt-integrity", 0,
+            unmatched = min(len(anchors), len(spans)) + 1
+            if len(anchors) < len(spans):
+                naming = f"line {unmatched} is the first the receipt gives no anchor for"
+            else:
+                naming = f"anchor {unmatched} is the first the artifact gives no line for"
+            violations.append(Violation("oracle.receipt-integrity", unmatched,
                                         f"the receipt names {len(anchors)} line(s), the artifact holds "
-                                        f"{len(spans)}"))
+                                        f"{len(spans)}; {naming}"))
         # The anchors the two sides share are compared even where the counts differ, so the first line
-        # whose bytes diverged is still named: a moved delimiter byte changes the count too, and a
-        # count-only report leaves a reader no line to look at.
+        # whose bytes diverged is still named: a moved delimiter byte changes the count too, and the
+        # count statement names the first line with no counterpart, because a reader who cannot locate
+        # the line the statements disagree about has been told only that two numbers differ.
         for number, (anchor, span) in enumerate(zip(anchors, spans), start=1):
             stated = oracle_digest_stated(anchor.get("sha256") if isinstance(anchor, dict) else None)
             if stated is None:
@@ -1993,7 +2012,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.validate is not None or args.receipt is not None or args.disable_rule:
             parser.error("--selftest-mutations runs the whole corpus and takes none of --validate, "
                          "--receipt or --disable-rule")
-        if args.resume_prompt or args.repeat_resume_prompt:
+        if args.resume_prompt is not None or args.repeat_resume_prompt is not None:
             parser.error("--selftest-mutations runs the offline corpus: it runs no harness turn and "
                          "takes no --resume-prompt or --repeat-resume-prompt")
         return oracle_mutation_selftest()
@@ -2002,7 +2021,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.disable_rule and args.validate is None:
         parser.error("--disable-rule turns a rule off for --validate, which names the artifact")
     if args.validate is not None:
-        if args.resume_prompt or args.repeat_resume_prompt:
+        if args.resume_prompt is not None or args.repeat_resume_prompt is not None:
             parser.error("--validate reads one artifact and runs no harness turn: it takes no "
                          "--resume-prompt or --repeat-resume-prompt")
         disabled = frozenset(args.disable_rule)
@@ -2227,13 +2246,13 @@ def main(argv: list[str] | None = None) -> int:
         record("the inherited reader reads the installed file back as what was written",
                readback_ok and agreed, detail)
 
-        view, item_kinds = load_and_view(
+        view, item_kinds, view_failure = load_and_view(
             codex, home, thread_id, installed,
             "the target harness's own loader opens the installed session",
             "the target harness's own view of the installed session:")
         record("the target's own view lists the converted turns",
-               "userMessage" in item_kinds and "agentMessage" in item_kinds,
-               f"{len(item_kinds)} item(s) in the reply's own turn list")
+               not view_failure and "userMessage" in item_kinds and "agentMessage" in item_kinds,
+               view_failure or f"{len(item_kinds)} item(s) in the reply's own turn list")
 
         # The reported invocation, checked against the directory this run installed into: Codex takes
         # its data directory from CODEX_HOME alone, so a resume command that does not name it opens
@@ -2375,16 +2394,17 @@ def main(argv: list[str] | None = None) -> int:
         record("the inherited reader reads the second installed file back as what was written",
                second_readback_ok and second_agreed, second_detail)
 
-        second_view, second_kinds = load_and_view(
+        second_view, second_kinds, second_view_failure = load_and_view(
             codex, home, second_thread_id, second_installed,
             "the target harness's own loader opens the second installed session",
             "the target harness's own view of the second installed session:")
         second_view_text = "\n".join(second_view)
         record("the target's own view of the second session lists the appended turn",
-               all(text in second_view_text for text in appended)
+               not second_view_failure
+               and all(text in second_view_text for text in appended)
                and "userMessage" in second_kinds and "agentMessage" in second_kinds,
-               f"{len(second_kinds)} item(s) in the reply's own turn list; the appended turn's own words "
-               f"are in its own view")
+               second_view_failure or f"{len(second_kinds)} item(s) in the reply's own turn list; the "
+               f"appended turn's own words are in its own view")
         record("the first session's own view does not hold the appended turn",
                bool(item_kinds) and not any(text in "\n".join(view) for text in appended),
                f"the first session's own view holds {len(item_kinds)} item(s), none of them the turn the "

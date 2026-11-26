@@ -17,9 +17,10 @@ reviewed starting point is tag `archive/0009a-r16-native-arm` (head `768df19`). 
 oracle's own rounds were measured — while every count and quoted run the re-cut changes is
 **re-measured on the re-cut tree** and marked as such. 0009a now ships: the offline oracle (unchanged by
 the re-cut; the 2026-11-26 r7 fix round's two reading refinements — the receipt document's stated bound
-and the corpus's own verdict assertions — are §1 and §3), the native load and real-turn checks (the
-base's own, minus the two moved additions), and the three round-5 findings that live in the shipped half
-— the corpus's declared unjudged rules, the receipt's three-member read, and the turn count. Every diff
+and the corpus's own verdict assertions — and the r8 fix round's receipt-statement refinement are §1 and
+§3), the native load and real-turn checks (the base's own, minus the two moved additions; the r8 round
+splits the resume verdict from the read failure), and the three round-5 findings that live in the shipped
+half — the corpus's declared unjudged rules, the receipt's three-member read, and the turn count. Every diff
 that fixes a reproducible defect of a surviving path is kept: the dangling-symlink crash in a caller's
 `--codex-home`, the portable held-name rule for the exclusive create, and the launch rule for a shim —
 the path is never `resolve()`d, and since the r7 round it is made absolute without a component being
@@ -154,10 +155,10 @@ vocabulary, record shape or replay ordering is deleted here, with its fixtures a
 - **`oracle.session-meta`** — `session.jsonl` — 4: `the metadata record deleted`, `a second metadata record`, `every record deleted`, `a record standing before the metadata`.
 - **`oracle.session-meta-members`** — `session.jsonl` — 3: `an empty id`, `no cli_version`, `no originator`.
 - **`oracle.clock`** — `session.jsonl` — 1: `two adjacent instants swapped`.
-- **`oracle.message`** — `session.jsonl`, `session-media.jsonl` — 9: `a message with no content`, `a block type the native format does not define`, `a block typed with the reader's spelling the format lacks`, `a message whose text is blank`, `a message with no role`, `a block whose text is not a string beside a valid one`, `a media block without its reference member`, `a media block whose reference member is not a string`, `a media block whose detail is outside the version's spellings`.
+- **`oracle.message`** — `session.jsonl`, `session-media.jsonl`, `session-receipt.json` for one mutation — 9: `a message with no content`, `a block type the native format does not define`, `a block typed with the reader's spelling the format lacks`, `a message whose text is blank`, `a message with no role`, `a block whose text is not a string beside a valid one`, `a media block without its reference member`, `a media block whose reference member is not a string`, `a media block whose detail is outside the version's spellings`.
 - **`oracle.event-message`** — `session.jsonl` — 2: `an event message that is not a string`, `an event message that is blank`.
 - **`oracle.call-pairing`** — `session.jsonl` — 5: `an output naming no call`, `a call id carried twice`, `an output written before its call`, `a call without a usable name`, `a named call whose call_id is empty`.
-- **`oracle.call-members`** — `session.jsonl` — 6: `a call's recorded input renamed to the other family's member`, `a call output without its output member`, `a call's recorded input written as an object`, `a custom call's recorded input written as an object`, `a call output written as null`, `a call output written as an array of bare strings`.
+- **`oracle.call-members`** — `session.jsonl`, `session-receipt.json` for one mutation — 6: `a call's recorded input renamed to the other family's member`, `a call output without its output member`, `a call's recorded input written as an object`, `a custom call's recorded input written as an object`, `a call output written as null`, `a call output written as an array of bare strings`.
 - **`oracle.compacted`** — `session.jsonl`, `reduced.jsonl` — 2: `a boundary whose message member is deleted`, `a boundary whose message member is not a string`.
 - **`oracle.receipt`** — `session.jsonl` + `session-receipt.json` — 4: `a disposition the vocabulary does not hold`, `a result entry with no call_id`, `a result entry with no recorded text`, `a receipt that declares no occurrences`. *(The manifest receipt's schema — occurrence kinds, identities, dispositions. The surviving `oracle.receipt-integrity` is a different subject with a new id; no manifest-receipt clause and no id carries over.)*
 - **`oracle.plan-emitted`** — `session.jsonl` + `session-receipt.json` — 2: `a message the plan emits and the artifact lost`, `an emitted message whose turn-view event is gone`.
@@ -389,11 +390,11 @@ pre-r3 reading answered PASS over bytes whose final byte was not a line feed; §
 `--disable-rule oracle.utf8`'s middle arm above hold the line rule's violation standing).
 
 **The suite** (`selftest`'s own command, narrowed to this file; the whole discovery runs in §6). At the
-r5 (pre-re-cut) head it ran 96 tests; **re-measured on the r7 round's tree**:
+r5 (pre-re-cut) head it ran 96 tests; **re-measured on the r8 round's tree**:
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 90 tests in 0.571s
+Ran 93 tests in 1.620s
 OK
 ```
 
@@ -425,7 +426,9 @@ three pins added for the shipped half's round-5 findings (§2's "The re-cut's ow
 the whole discovery in §6 is correspondingly **537** tests against 551 at the r5 head. The **r7 fix
 round** moves it 82 → 90 — its eight cases: R6-1's launch-path pins (three unit cases and one
 drive case), R6-2's past-bound receipt, R6-3's verdict-lying corpus mutant, R6-4's non-zero turn and
-R6-5's offline-mode refusal — and the whole discovery in §6 is correspondingly **545** tests.
+R6-5's offline-mode refusal — and the whole discovery in §6 is correspondingly **545** tests. The
+**r8 fix round** moves it 90 → 93 — R7-1's rooted-path predicate case, R7-2's read-failure arm and
+R7-3's appended-LF receipt case — and the whole discovery in §6 is correspondingly **548** tests.
 
 **The r7 fix round's arms** (2026-11-26, on this record's tree; each finding's case was measured red
 before its fix):
@@ -450,8 +453,30 @@ the traversal does not reach). The lock-boundary finding (R6-6) is a documentati
 files now state the same boundary (the offline oracle, not the whole file), in the form `Q-0009a-13`
 records.
 
+**The r8 fix round's arms** (2026-11-26, on this record's tree; each finding's case was measured red
+before its fix, and every probe edit was restored):
+
+```
+$ python3 -m unittest ... -k test_a_read_failure_does_not_speak_for_the_resume          # R7-2
+# pre-fix the loaded session's record was FAIL in the read's own words and the resume verdict was gone;
+# now the loader's check is `thread/resume`'s and the view check names the read:
+PASS: the target harness's own loader opens the installed session — thread/resume -> <id> [legacy] cwd=/tmp
+FAIL: the target's own view lists the converted turns — the app server closed its output while answering thread/read
+$ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-oracle/artifact.jsonl \
+    --resume-prompt ""                         # an *empty* native-turn flag on an offline mode (R7-4)
+codex-native-check.py: error: --validate reads one artifact and runs no harness turn: it takes no --resume-prompt or --repeat-resume-prompt
+                                                                    # exit 2; pre-fix: PASS, no turn, no diagnostic
+```
+
+The appended-LF artifact's receipt violations read `{0, 4}` — line 4 named as the first the receipt
+gives no anchor for — where pre-fix they read `{0}` with the count statement naming no line (R7-3); the
+absolute-path case's fixtures are built from the process directory's own anchor and the drive-less
+shape has its own case, because `ntpath.isabs('\opt\bin\codex')` answers False on CPython 3.13 (True on
+3.11 and 3.12) while the helper's contract anchors it to the process directory — the current drive —
+which is the platform's own resolution (R7-1; the Windows CI leg is that arm's oracle).
+
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
-**re-measured on the r7 round's tree**, exit 0). The header names the launched binary alone — the version and
+**re-measured on the r8 round's tree**, exit 0). The header names the launched binary alone — the version and
 digest pairing moved out with the fingerprint — and the run's own count is the base's minus the moved
 check line:
 
@@ -540,21 +565,21 @@ gate: go=<go 1.27.4> module=ccc targets=./cmd/ccc/... ./internal/ccc/...
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 545 tests in 10.266s (rc=0)
+  PASS     selftest    Ran 548 tests in 11.567s (rc=0)
   PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5776 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified…
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
-  PASS     secrets     no leaks found in 231 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets     no leaks found in 236 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 22 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's row against the Go test it cites. The table is **re-measured on the r7 round's
-tree** (2026-11-26), whose `selftest` count is 545 against 551 at the r5 head (§2/§3 name the moved
+which verifies the goal's row against the Go test it cites. The table is **re-measured on the r8 round's
+tree** (2026-11-26), whose `selftest` count is 548 against 551 at the r5 head (§2/§3 name the moved
 cases; the whole discovery's counts moved 503 → 519 across the four rounds, → 524 in the cross-family
 review round, → 537 in the r2 round, → 548 in the r3 round, → 549 in the r4 round, → 551 in the r5
-round, whose 96-test narrowed suite the re-cut moves to 82 and the r7 fix round to 90; the whole
-discovery moves 537 → 545). Its `secrets` count (231
+round, whose 96-test narrowed suite the re-cut moves to 82, the r7 fix round to 90 and the r8 fix
+round to 93; the whole discovery moves 537 → 545 → 548). Its `secrets` count (236
 files) is
 this worktree's own scope — the
 count includes untracked `__pycache__`/`bin` files — not a change the re-cut made.
