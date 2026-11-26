@@ -568,6 +568,20 @@ SYMLINK_TARGET_NAME = "caller-symlink-target.jsonl"
 #: and a deleted one as a missing file.
 RACE_PLANT_TEXT = b"a file another writer placed under this name while this run was starting\n"
 
+#: The name of the scratch directory the run is handed (the case patches ``tempfile.mkdtemp``): a fixed
+#: name, so every path under the run's tree -- the probe home the disclosure arm's artifact is planted
+#: into above all -- can be addressed before the run starts and read back after it ends.
+RUN_SCRATCH_NAME = "run-scratch"
+
+#: The bytes a case leaves at the probe's *name*: in this run's own plant site, as the other writer a
+#: held name stages, and in the caller's home, as the session that home already held under that name.
+CALLER_PROBE_TEXT = "the caller's own file under the probe's name\n"
+
+#: The bytes a case writes over the planted probe while the run is going: one JSON object in one whole
+#: line, so the offline rules still answer *green* for them and only the arm's own read-back comparison
+#: can name the substitution.
+REPLACED_PROBE_TEXT = b'{"a": 1}\n'
+
 #: The words the case's own growth fragment records, so the run has something to find in the *later*
 #: target's document and not in the earlier one. They are the case's, not the committed fixture's: what
 #: this half of the suite pins is that the shipped check reads the fragment it is given and searches the
@@ -648,6 +662,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               repeat_turn: bool = False,
               seed_probe: bool = False,
               seed_unrelated: bool = False,
+              probe_in_caller_home: bool = False,
+              probe_replaced: bool = False,
               keep: bool = False,
               unrelated_refusal: bool = False,
               handshake_fails: bool = False,
@@ -662,6 +678,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               codex_digest_unreadable: bool = False,
               relative_codex: bool = False,
               codex_is_a_symlink: bool = False,
+              codex_is_a_launcher_shim: bool = False,
               unreadable_home_entry: str | None = None,
               installed_unreadable: bool = False,
               race_plant_at: str | None = None,
@@ -739,8 +756,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         skipped cannot read as one whose mutation nothing caught.
 
         ``seed_probe`` — and ``seed_unrelated``, the same collision under the unrelated session's own
-        name, which the run meets first — writes a caller's own file before ``main``
-        runs — the collisions those guards' refusal paths are about; ``race_plant_at``
+        name, which the run meets first — holds the name before ``main``
+        runs — the collisions those guards' refusal paths are about (the probe's plant site is inside the
+        run's own scratch tree, so its held name is staged there, while the unrelated session's is staged
+        in the caller's home) — and ``probe_in_caller_home`` stages the other shape: a caller's file under
+        the probe's *name* in the caller's home, which the run plants nothing at and must leave byte for
+        byte. ``probe_replaced`` writes other bytes over the planted artifact while the run goes, at the
+        run's own first read of it, so the arm's read-back comparison is what the case measures;
+        ``race_plant_at``
         (``"probe"`` or ``"unrelated"``) writes one *in the window* the plant's own seam is about: the
         file appears when this run's plant first reaches that name, the shape two overlapping runs
         against one home produce, so the plant must treat it as a collision and leave it byte for byte
@@ -780,6 +803,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         read. ``relative_codex`` resolves the stub through a *relative* name found in a caller's own
         directory while the repository holds a same-named decoy: a run that hashed one file and asked
         the other for its version, or launched the other, would pair two files' bytes and words.
+        ``codex_is_a_symlink`` stages the launched name as a symlink to a target answering the harness's
+        own version — the executable the name dispatches to, whose bytes are the pair the run records —
+        and ``codex_is_a_launcher_shim`` stages that target answering its own words instead, the
+        dispatch the run cannot identify and must not record a pair for.
         ``unreadable_home_entry`` (``"directory"`` or ``"link"``) puts an entry under the home whose
         name matches ``rollout-*.jsonl`` and whose bytes cannot be read — a directory, or a dangling
         link — so the snapshot of the sessions a conversion must not touch cannot be taken; and
@@ -822,10 +849,22 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                                                                    "text": GROWTH_ANSWER}]}}) + "\n")
         home = scratch / "codex-home"
         home.mkdir()
+        # The scratch directory the *run* makes for itself: this case hands the shipped `main` a fixed
+        # one (the patch below), so every path under the run's own tree -- the probe home the disclosure
+        # arm plants into above all -- has a name this case can address before the run starts and read
+        # back after it ends. A run that asked for another directory is refused here instead of a case
+        # quietly addressing paths the run never used.
+        run_scratch = scratch / RUN_SCRATCH_NAME
+
+        def case_mkdtemp(prefix="", dir=None, **kwargs):
+            run_scratch.mkdir(exist_ok=True)
+            return str(run_scratch)
+
         # The two tools the harness resolves: names it only compares and runs through the stub below.
         # The Codex path is a real file all the same, because the run digests the binary it resolves:
         # `codex_digest_unreadable` is the one shape where it is not (a directory under that name).
         go = str(scratch / "go")
+        codex_real = scratch / "codex-real"
         if relative_codex:
             # A relative `--codex` under another `--repo`: the caller's own directory holds the binary
             # the stubbed `which` finds by that name, and a decoy of the same name stands in the
@@ -839,13 +878,15 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             (repo / "codex").write_text("the repository's decoy codex binary\n")
         else:
             codex = str(scratch / "codex")
-            if codex_is_a_symlink:
-                # A mise shim's own shape: the name on PATH is a symlink to another binary and the
-                # harness is chosen by argv[0]. Following the link launches the target, whose
-                # `--version` is its own and whose `app-server` is not this harness's.
-                (scratch / "codex-real").write_text("the case's real stub codex binary\n")
+            if codex_is_a_symlink or codex_is_a_launcher_shim:
+                # A mise shim's own shape: the name on PATH is a symlink and the harness is chosen by
+                # argv[0]. `codex_is_a_symlink` stages the target as the executable the name dispatches
+                # to (its own `--version` answer is the harness's, so the pair reported is the target's);
+                # `codex_is_a_launcher_shim` stages a target answering its own words, the pair the run
+                # must refuse to record.
+                codex_real.write_text("the case's real stub codex binary\n")
                 try:
-                    Path(codex).symlink_to(scratch / "codex-real")
+                    Path(codex).symlink_to(codex_real)
                 except (OSError, NotImplementedError):
                     self.skipTest("this host cannot create a symlink")
             elif codex_digest_unreadable:
@@ -866,12 +907,21 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         pre_existing = home / "sessions" / "2025" / "12" / "31" / PRE_EXISTING_NAME
         pre_existing.parent.mkdir(parents=True)
         pre_existing.write_text(json.dumps({"type": "session_meta"}) + "\n")
-        # The caller's own file under the probe's name: the run must refuse to overwrite it, plant
-        # nothing of its own, and leave this file exactly as it found it.
-        probe = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
+        # The disclosure arm's artifact, planted by the run into its own scratch probe home -- a tree only
+        # this run can write, never the caller's -- and the caller's own file under the same *name* in the
+        # caller's home, which the run must leave byte for byte: it plants nothing there, so nothing it
+        # cleans up can be this file.
+        probe_home = run_scratch / NATIVE_CHECK.PROBE_HOME
+        probe = probe_home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
+        caller_probe = home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
+        if probe_in_caller_home:
+            caller_probe.parent.mkdir(parents=True, exist_ok=True)
+            caller_probe.write_text(CALLER_PROBE_TEXT)
+        # A held name at the probe plant's own site: the collision guard's window, staged in the run's
+        # scratch tree because that is the only tree the artifact is planted into.
         if seed_probe:
             probe.parent.mkdir(parents=True, exist_ok=True)
-            probe.write_text("the caller's own file under the probe's name\n")
+            probe.write_text(CALLER_PROBE_TEXT)
         # The same collision under the unrelated session's own name: that guard is the *first* one the
         # run meets, so its refusal path is reached (and its cleanup exercised) only from here.
         if seed_unrelated:
@@ -879,8 +929,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             planted.write_text("the caller's own file under the unrelated session's name\n")
         # A caller's *dangling* link at one plant's name: nothing is at that path by `exists()`, so a
         # guard asking it writes through the link and the cleanup unlinks the caller's own link. The
-        # target sits beside the home with its parent in place, so a write through the link would
-        # create it here rather than fail somewhere else.
+        # target sits in the case's own scratch root, whose parent exists, so a write through the link
+        # would create it there rather than fail somewhere else.
         if dangling_symlink_at is not None:
             link = {"probe": probe, "unrelated": planted}[dangling_symlink_at]
             link.parent.mkdir(parents=True, exist_ok=True)
@@ -1015,6 +1065,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 1, "", "codex-cli 0.test is broken\n")
                 if version_output_empty:
                     return subprocess.CompletedProcess(cmd, 0, "", "")
+                if command[0] == str(codex_real):
+                    # The launched name's symlink target, asked to identify itself: a plain symlink's
+                    # target is the executable the name dispatches to (it answers the harness's own
+                    # words), while a launcher's shim answers its own.
+                    answer = "mise 2026.11.10 linux-x64\n" if codex_is_a_launcher_shim \
+                        else "codex-cli 0.test\n"
+                    return subprocess.CompletedProcess(cmd, 0, answer, "")
                 if relative_codex:
                     # The version belongs to the file the *command's own path* names: the shipped run
                     # resolves a relative `--codex` before launching it, and the check reads that answer
@@ -1119,12 +1176,20 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
                 if session not in (thread_id, second_thread_id):
-                    if (not probe.is_file()
-                            or probe.read_bytes()
+                    # The arm's home is where the artifact was planted: this case's stub reads the name
+                    # out of the data directory the run handed the app server, so a run that planted
+                    # somewhere else meets this assertion instead of a passing arm.
+                    arm_probe = (Path(self.home) / "sessions" / "2026" / "01" / "01"
+                                 / NATIVE_CHECK.ORACLE_PROBE_NAME)
+                    if not arm_probe.is_file():
+                        raise AssertionError(
+                            f"the disclosure arm's refusal was asked for session {session}, but no "
+                            f"artifact is planted at {arm_probe}")
+                    if (not probe_replaced and arm_probe.read_bytes()
                             != NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)):
                         raise AssertionError(
                             f"the disclosure arm's refusal was asked for session {session}, but the "
-                            f"planted artifact {probe} does not hold the frozen fixture's own bytes")
+                            f"planted artifact {arm_probe} does not hold the frozen fixture's own bytes")
                     if probe_no_answer:
                         return NATIVE_CHECK.NoAnswer(
                             "the case's stub dropped its pipe after the handshake")
@@ -1219,6 +1284,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             unlink_fails_path = {"probe": probe, "unrelated": planted}[unlink_fails_at]
         claimed = {"fired": False}
         failed_write = {"fired": False}
+        replaced = {"fired": False}
         real_open = Path.open
         real_unlink = Path.unlink
 
@@ -1248,6 +1314,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 claimed["fired"] = True
                 with real_open(race_path, "wb") as handle:
                     handle.write(RACE_PLANT_TEXT)
+            # The substitution happens at the run's own first *read* of the planted artifact: by the time
+            # the arm judges the bytes it was given, the file holds other bytes.
+            if (probe_replaced and not replaced["fired"] and Path(self) == probe
+                    and (args[0] if args else kwargs.get("mode")) == "rb"):
+                replaced["fired"] = True
+                with real_open(probe, "wb") as handle:
+                    handle.write(REPLACED_PROBE_TEXT)
             handle = real_open(self, *args, **kwargs)
             if write_fails_path is not None and not failed_write["fired"] and Path(self) == write_fails_path:
                 failed_write["fired"] = True
@@ -1260,7 +1333,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             return real_unlink(self, *args, **kwargs)
 
         patches = []
-        if race_path is not None or write_fails_path is not None:
+        if race_path is not None or write_fails_path is not None or probe_replaced:
             patches.append(mock.patch.object(Path, "open", case_open))
         if unlink_fails_path is not None:
             patches.append(mock.patch.object(Path, "unlink", case_unlink))
@@ -1271,6 +1344,9 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 for patch in patches:
                     stack.enter_context(patch)
+                # The run's scratch directory is this case's own name for it (the patched `mkdtemp`), so
+                # the probe home the disclosure arm plants into is addressable before the run starts.
+                stack.enter_context(mock.patch.object(tempfile, "mkdtemp", case_mkdtemp))
                 stack.enter_context(mock.patch.object(NATIVE_CHECK, "run", fake_run))
                 stack.enter_context(mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer))
                 stack.enter_context(mock.patch("shutil.which", fake_which))
@@ -1289,6 +1365,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             del NATIVE_CHECK.RESULTS[before:]
         self.last_stdout, self.last_stderr, self.last_home = stdout.getvalue(), stderr.getvalue(), home
         self.last_codex = codex
+        self.last_codex_real = codex_real
+        self.last_scratch = run_scratch
+        self.last_probe = probe
+        self.last_caller_probe = caller_probe
         return code, results
 
     def test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison(self) -> None:
@@ -1600,17 +1680,21 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         its PASS rests on the harness's own refusal — a refusal that names the rollout it could not
         read — a harness that accepted the artifact is recorded FAIL, and its detail quotes that
         refusal; a run that stopped recording the arm, or one that recorded it unconditionally, fails
-        here."""
+        here. The refusal it quotes names the artifact in the run's own scratch probe home, never a
+        path under the caller's home: the planted file lives where only the run can write."""
         _, results = self.drive(mutate_during_resume=False)
         state, detail = results.get("the harness refuses an artifact the offline rules accept",
                                     ("missing", ""))
         self.assertEqual(state, "PASS",
                          f"the disclosure arm is not a recorded PASS: {state} — {detail}")
         self.assertIn("the offline rules: green", detail, detail)
-        probe = self.last_home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
-        self.assertIn(f"rollout at {probe} is empty", detail,
+        self.assertIn(f"rollout at {self.last_probe} is empty", detail,
                       f"the arm's detail does not quote the harness's refusal of the planted rollout: "
                       f"{detail}")
+        self.assertTrue(self.last_probe.is_relative_to(self.last_scratch),
+                        f"the artifact was not planted under the run's own scratch tree: {self.last_probe}")
+        self.assertFalse(self.last_caller_probe.exists(),
+                         "the run planted the disclosure arm's artifact in the caller's home")
         _, results = self.drive(mutate_during_resume=False, probe_accepted=True)
         state, detail = results.get("the harness refuses an artifact the offline rules accept",
                                     ("missing", ""))
@@ -1706,18 +1790,46 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 self.assertEqual(results, {},
                                  f"{label}: a run with no fingerprint recorded checks: {results}")
 
-    def test_a_callers_file_under_the_probes_name_is_refused_without_leaving_a_fabrication(self) -> None:
-        """A probe collision plants nothing: the run refuses (exit 2), the caller's own file is left
-        exactly as found, and no fabricated session is written into the home — the leak this pins was
-        measured when the check ran after the unrelated fabric had already been planted."""
-        code, _ = self.drive(mutate_during_resume=False, seed_probe=True)
-        self.assertEqual(code, 2, f"exit {code} for a probe collision: {self.last_stderr}")
-        sessions = self.last_home / "sessions" / "2026" / "01" / "01"
-        self.assertEqual((sessions / NATIVE_CHECK.ORACLE_PROBE_NAME).read_text(),
-                         "the caller's own file under the probe's name\n",
-                         "the run did not leave the caller's probe file as it found it")
-        self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
-                          "the refused run left the fabricated unrelated session in the home")
+    def test_a_callers_file_under_the_probes_name_is_left_as_it_was_found(self) -> None:
+        """The run plants nothing in the caller's home: a file under the probe's *name* there is a
+        session the home already held.
+
+        The disclosure arm's artifact lives in the run's own scratch probe home, so a caller's file
+        under that name is compared with its own bytes like every other session of the home and must be
+        left byte for byte — a run that planted into the caller's tree would overwrite it, and one that
+        cleaned up after such a plant would delete it.
+        """
+        code, results = self.drive(mutate_during_resume=False, probe_in_caller_home=True)
+        self.assertEqual(code, 0, f"exit {code}: {self.last_stdout!r} / {self.last_stderr!r}")
+        self.assertEqual(self.last_caller_probe.read_text(), CALLER_PROBE_TEXT,
+                         "the run did not leave the caller's probe-name file as it found it")
+        self.assertIn("2 pre-existing session file(s)",
+                      results["no pre-existing session in the target home changed"][1],
+                      f"the caller's file was not among the sessions the run compared: {results}")
+        self.assertFalse((self.last_home / "sessions" / "2026" / "01" / "01"
+                          / NATIVE_CHECK.UNRELATED_NAME).exists(),
+                         "the run left its own fabricated session in the home")
+
+    def test_a_probe_replaced_while_the_run_goes_is_named_not_passed_on_the_fixture(self) -> None:
+        """The arm judges the bytes the harness was *given*, not the committed fixture.
+
+        The case writes other bytes over the planted artifact at the run's own first read of it; they
+        are one JSON object in one whole line, so the offline rules still answer green for them, and only
+        the arm's own read-back comparison can tell that the bytes the harness reads are no longer the
+        bytes this run planted. A run that validated the committed fixture instead — the pre-fix arm —
+        reads PASS here; the fixed arm records FAIL naming the mismatch and the run exits 1.
+        """
+        code, results = self.drive(mutate_during_resume=False, probe_replaced=True)
+        state, detail = results.get("the harness refuses an artifact the offline rules accept",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL",
+                         f"a substituted artifact was recorded as {state}: {detail}")
+        self.assertIn("the bytes at", detail, detail)
+        self.assertIn("are not the bytes this run planted", detail, detail)
+        self.assertIn("the offline rules: green", detail,
+                      "the case's replacement bytes are green offline, so the FAIL is the comparison's: "
+                      + detail)
+        self.assertEqual(code, 1, f"exit {code} for a run whose arm failed: {results}")
 
     def test_a_callers_dangling_symlink_under_a_plants_name_is_a_collision(self) -> None:
         """A dangling symlink is a collision like any other, never written through or deleted.
@@ -1725,111 +1837,86 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         The caller's own link sits under a plant's name with its target not created, so a guard asking
         ``exists()`` sees nothing: the run must refuse (exit 2) naming the collision, leave the link
         exactly as it found it, not follow it (the target is not created), and write no fabrication of
-        its own into the home. A guard asking ``exists()`` writes through the link with the plant's own
-        write and unlinks the caller's link in the cleanup instead — on the probe's guard and on the
-        unrelated session's, which is the first the run meets.
+        its own beside it. A guard asking ``exists()`` writes through the link with the plant's own write
+        and unlinks the caller's link in the cleanup instead — on the probe's guard, whose plant site is
+        inside the run's own scratch tree, and on the unrelated session's, which is the first the run
+        meets. The runs keep their scratch trees, so the link staged there survives for the assertions.
         """
-        for label, at, link_name, other_name in (
-                ("the probe's name", "probe", NATIVE_CHECK.ORACLE_PROBE_NAME,
-                 NATIVE_CHECK.UNRELATED_NAME),
-                ("the unrelated session's name", "unrelated", NATIVE_CHECK.UNRELATED_NAME,
-                 NATIVE_CHECK.ORACLE_PROBE_NAME)):
+        for label, at in (("the probe's plant site", "probe"),
+                          ("the unrelated session's name", "unrelated")):
             with self.subTest(collision=label):
-                code, _ = self.drive(mutate_during_resume=False, dangling_symlink_at=at)
+                code, _ = self.drive(mutate_during_resume=False, dangling_symlink_at=at, keep=True)
                 self.assertEqual(code, 2,
                                  f"exit {code} for the {label} symlink: {self.last_stderr}")
                 self.assertIn("already exists", self.last_stderr,
                               f"the refusal does not name the {label} collision: {self.last_stderr}")
                 sessions = self.last_home / "sessions" / "2026" / "01" / "01"
-                link = sessions / link_name
+                link = (self.last_probe if at == "probe"
+                        else sessions / NATIVE_CHECK.UNRELATED_NAME)
+                other = (sessions / NATIVE_CHECK.UNRELATED_NAME if at == "probe"
+                         else self.last_probe)
                 self.assertTrue(link.is_symlink() and not link.exists(),
                                 f"the run did not leave the caller's dangling {label} link as it found "
                                 f"it: is_symlink={link.is_symlink()}, exists={link.exists()}")
                 target = self.last_home.parent / SYMLINK_TARGET_NAME
                 self.assertFalse(target.exists(),
                                  f"the run wrote through the caller's {label} link: {target} was created")
-                self.assertFalse((sessions / other_name).is_symlink()
-                                 or (sessions / other_name).exists(),
-                                 f"the refused run left a fabrication of its own in the home: "
-                                 f"{sessions / other_name}")
+                self.assertFalse(other.is_symlink() or other.exists(),
+                                 f"the refused run left a fabrication of its own: {other}")
 
     def test_a_refused_collision_leaves_no_scratch_tree(self) -> None:
-        """A refused run owns nothing it created: the collision guards fire before the plants, and the
-        scratch tree this run made for itself — a fixture copy and any seeded configuration — is removed
-        on the refusal path too, so a collision does not leave one mkdtemp tree per attempt in the
-        caller's temp root."""
-        with tempfile.TemporaryDirectory() as temp_root:
-            previous = tempfile.tempdir
-            tempfile.tempdir = temp_root
-            try:
-                code, _ = self.drive(mutate_during_resume=False, seed_probe=True)
-            finally:
-                tempfile.tempdir = previous
-            self.assertEqual(code, 2, f"exit {code} for a probe collision: {self.last_stderr}")
-            prefix = "ccc-native-check-"
-            left = sorted(entry.name for entry in Path(temp_root).iterdir()
-                          if entry.name.startswith(prefix) and len(entry.name) == len(prefix) + 8)
-            self.assertEqual(left, [], f"the refused run left its scratch tree(s) behind: {left}")
+        """A refused run owns nothing it created: the collision guard fires at the plant, and the scratch
+        tree this run made for itself — the fixture copy, any seeded configuration and the probe home —
+        is removed on the refusal path too, so a collision does not leave one tree per attempt behind."""
+        code, _ = self.drive(mutate_during_resume=False, seed_probe=True)
+        self.assertEqual(code, 2, f"exit {code} for a probe-site collision: {self.last_stderr}")
+        self.assertIn("already exists", self.last_stderr, self.last_stderr)
+        self.assertFalse(self.last_scratch.exists(),
+                         "the refused run left its own scratch tree behind")
 
     def test_a_refused_unrelated_collision_also_leaves_no_scratch_tree(self) -> None:
         """The other refusal path: the unrelated-name guard is the first the run meets, and it removes
-        this run's scratch tree as well, so neither collision leaks a mkdtemp tree — and the caller's own
+        this run's scratch tree as well, so neither collision leaks one — and the caller's own colliding
         file is left as it was found, in this path too."""
-        with tempfile.TemporaryDirectory() as temp_root:
-            previous = tempfile.tempdir
-            tempfile.tempdir = temp_root
-            try:
-                code, _ = self.drive(mutate_during_resume=False, seed_unrelated=True)
-            finally:
-                tempfile.tempdir = previous
-            self.assertEqual(code, 2,
-                             f"exit {code} for an unrelated-name collision: {self.last_stderr}")
-            planted = (self.last_home / "sessions" / "2026" / "01" / "01"
-                       / NATIVE_CHECK.UNRELATED_NAME)
-            self.assertEqual(planted.read_text(),
-                             "the caller's own file under the unrelated session's name\n",
-                             "the run did not leave the caller's colliding file as it found it")
-            prefix = "ccc-native-check-"
-            left = sorted(entry.name for entry in Path(temp_root).iterdir()
-                          if entry.name.startswith(prefix) and len(entry.name) == len(prefix) + 8)
-            self.assertEqual(left, [], f"the refused run left its scratch tree(s) behind: {left}")
+        code, _ = self.drive(mutate_during_resume=False, seed_unrelated=True)
+        self.assertEqual(code, 2,
+                         f"exit {code} for an unrelated-name collision: {self.last_stderr}")
+        planted = (self.last_home / "sessions" / "2026" / "01" / "01"
+                   / NATIVE_CHECK.UNRELATED_NAME)
+        self.assertEqual(planted.read_text(),
+                         "the caller's own file under the unrelated session's name\n",
+                         "the run did not leave the caller's colliding file as it found it")
+        self.assertFalse(self.last_scratch.exists(),
+                         "the refused run left its own scratch tree behind")
 
     def test_a_keep_run_that_refuses_keeps_and_names_its_scratch_tree(self) -> None:
         """`--keep` is honoured on both refusal paths: a collision with `--keep` leaves this run's tree
         where the run says it is, rather than removing it silently — the promise the flag's own help
         makes, and the promise a refusal would otherwise break."""
-        for label, seed_probe in (("the probe's name", True),
-                                  ("the unrelated session's name", False)):
+        for label, arm in (("the probe's plant site", {"seed_probe": True}),
+                           ("the unrelated session's name", {"seed_unrelated": True})):
             with self.subTest(collision=label):
-                with tempfile.TemporaryDirectory() as temp_root:
-                    previous = tempfile.tempdir
-                    tempfile.tempdir = temp_root
-                    try:
-                        code, _ = self.drive(mutate_during_resume=False, keep=True,
-                                             seed_probe=seed_probe, seed_unrelated=not seed_probe)
-                    finally:
-                        tempfile.tempdir = previous
-                    self.assertEqual(code, 2, f"exit {code} for a {label} collision: {self.last_stderr}")
-                    prefix = "ccc-native-check-"
-                    kept = sorted(entry.name for entry in Path(temp_root).iterdir()
-                                  if entry.name.startswith(prefix)
-                                  and len(entry.name) == len(prefix) + 8)
-                    self.assertEqual(len(kept), 1,
-                                     f"a --keep run removed its own scratch tree: {kept}")
-                    kept_path = Path(temp_root) / kept[0]
-                    self.assertIn(f"kept {kept_path}", self.last_stdout,
-                                  f"the refusal does not say where the scratch tree it kept is: "
-                                  f"{self.last_stdout!r}")
+                code, _ = self.drive(mutate_during_resume=False, keep=True, **arm)
+                self.assertEqual(code, 2, f"exit {code} for a {label} collision: {self.last_stderr}")
+                self.assertTrue(self.last_scratch.exists(),
+                                f"a --keep run removed its own scratch tree: {self.last_scratch}")
+                self.assertIn(f"kept {self.last_scratch}", self.last_stdout,
+                              f"the refusal does not say where the scratch tree it kept is: "
+                              f"{self.last_stdout!r}")
 
     def test_the_planted_probe_is_removed_when_the_run_ends(self) -> None:
-        """The disclosure arm's planted artifact belongs to the run: a normal run removes it from the
-        home, so neither a caller's home nor this case's own keeps a fabricated file."""
-        code, _ = self.drive(mutate_during_resume=False)
+        """The disclosure arm's planted artifact belongs to the run: a run that keeps its scratch tree
+        still removes the artifact and the probe home it made for it, and nothing of it ever stands in
+        the caller's home."""
+        code, _ = self.drive(mutate_during_resume=False, keep=True)
         self.assertEqual(code, 0, f"exit {code} for an intact run: {self.last_stderr}")
-        probe = (self.last_home / "sessions" / "2026" / "01" / "01"
-                 / NATIVE_CHECK.ORACLE_PROBE_NAME)
-        self.assertFalse(probe.exists(),
-                         "the run ended with the disclosure arm's planted artifact still in the home")
+        self.assertTrue(self.last_scratch.exists(), "the --keep run removed the tree it named")
+        self.assertFalse(self.last_probe.exists(),
+                         "the run ended with the disclosure arm's planted artifact still there")
+        self.assertFalse((self.last_scratch / NATIVE_CHECK.PROBE_HOME).exists(),
+                         "the run left the probe home it created for its artifact behind")
+        self.assertFalse(self.last_caller_probe.exists(),
+                         "the disclosure arm's planted artifact stands in the caller's home")
 
     def test_a_write_that_fails_after_the_reservation_leaves_no_leftover(self) -> None:
         """R3-1's window: the exclusive create reserved the name and the write then failed.
@@ -1842,15 +1929,14 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         """
         code, results = self.drive(mutate_during_resume=False, plant_write_fails_at="probe")
         sessions = self.last_home / "sessions" / "2026" / "01" / "01"
-        probe = sessions / NATIVE_CHECK.ORACLE_PROBE_NAME
         self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
         self.assertIn("INCOMPLETE", self.last_stderr, self.last_stderr)
-        self.assertIn(str(probe), self.last_stderr,
+        self.assertIn(str(self.last_probe), self.last_stderr,
                       f"the failure does not name the path whose write failed: {self.last_stderr!r}")
         self.assertIn("cannot be written", self.last_stderr, self.last_stderr)
         self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
                          "the failed write came out as a traceback")
-        self.assertFalse(probe.exists(), "the failed write left its reserved name behind")
+        self.assertFalse(self.last_probe.exists(), "the failed write left its reserved name behind")
         self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
                          "the failed run left its other fabrication behind")
         self.assertFalse((self.last_home / "sessions" / "2026").exists(),
@@ -1858,7 +1944,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(results, {}, f"the INCOMPLETE run recorded checks: {sorted(results)}")
         # The retry arm: the same name, a fresh owner -- nothing of the failed run is left to meet.
         retry = NATIVE_CHECK.ForeignHome()
-        planted, failure = retry.plant(probe, b"a retry's own bytes\n")
+        planted, failure = retry.plant(self.last_probe, b"a retry's own bytes\n")
         self.assertEqual((planted, failure), (True, ""),
                          "a retry's plant still meets a leftover under the reserved name")
         retry.remove_all()
@@ -1867,20 +1953,19 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         """A removal that fails is INCOMPLETE naming the path, never a verdict that outruns it.
 
         The stub makes the run's own removal of the probe refuse. Every check the run made is green, so
-        a run that swallowed the failure would exit 0 while the home still held this harness's file;
-        with the ownership object the failure is reported once, by name, and the run answers 2. The file
-        stays where the removal could not take it -- reported, not pretended away.
-        """
-        code, results = self.drive(mutate_during_resume=False, unlink_fails_at="probe")
-        probe = self.last_home / "sessions" / "2026" / "01" / "01" / NATIVE_CHECK.ORACLE_PROBE_NAME
+        a run that swallowed the failure would exit 0 while the run's own tree still held this harness's
+        file; with the ownership object the failure is reported once, by name, and the run answers 2. The
+        file stays where the removal could not take it -- reported, not pretended away, and the kept
+        scratch tree is what the case reads it back from."""
+        code, results = self.drive(mutate_during_resume=False, unlink_fails_at="probe", keep=True)
         self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
         self.assertEqual(self.last_stderr.count("INCOMPLETE"), 1,
                          f"the removal failure was not reported exactly once: {self.last_stderr!r}")
-        self.assertIn(str(probe), self.last_stderr, self.last_stderr)
+        self.assertIn(str(self.last_probe), self.last_stderr, self.last_stderr)
         self.assertIn("cannot be removed", self.last_stderr, self.last_stderr)
         self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
                          "the refused removal came out as a traceback")
-        self.assertTrue(probe.exists(),
+        self.assertTrue(self.last_probe.exists(),
                         "the run reported the fabrication removed while it is still there")
         self.assertEqual(sorted(name for name, (state, _) in results.items() if state == "FAIL"), [],
                          f"the run's checks contain a failure that is not the leftover: {results}")
@@ -1925,7 +2010,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(code, 1, f"exit {code} for a run whose view checks failed: {results}")
 
     def test_a_file_racing_the_plant_is_neither_clobbered_nor_deleted(self) -> None:
-        """Two runs against one --codex-home: the second must not clobber or remove the first's file.
+        """Two writers at one name: the run must not clobber or remove the other writer's file.
 
         The other writer wins at the plant's own seam: the file appears the moment this run first
         reaches the name, which is the window the finding names -- after this run had begun and before
@@ -1933,17 +2018,19 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         removes it (measured: exit 0, the file gone, 29 checks recorded); with the exclusive create as
         the reservation the run refuses the name (exit 2, naming it), the file is left byte for byte as
         the other writer left it, this run's own other fabrication is removed, and no check was recorded
-        at all. Both plant names are driven: they are one seam, and either could lose it.
+        at all. Both plant sites are driven — the probe's, inside the run's own scratch tree, and the
+        unrelated session's, in the caller's home — and both runs keep their scratch trees, so the raced
+        file survives for the assertion.
         """
         for label, at in (("the probe's name", "probe"),
                           ("the unrelated session's name", "unrelated")):
             with self.subTest(collision=label):
-                code, results = self.drive(mutate_during_resume=False, race_plant_at=at)
+                code, results = self.drive(mutate_during_resume=False, race_plant_at=at, keep=True)
                 sessions = self.last_home / "sessions" / "2026" / "01" / "01"
-                raced = sessions / {"probe": NATIVE_CHECK.ORACLE_PROBE_NAME,
-                                    "unrelated": NATIVE_CHECK.UNRELATED_NAME}[at]
-                other = sessions / {"probe": NATIVE_CHECK.UNRELATED_NAME,
-                                    "unrelated": NATIVE_CHECK.ORACLE_PROBE_NAME}[at]
+                raced = (self.last_probe if at == "probe"
+                         else sessions / NATIVE_CHECK.UNRELATED_NAME)
+                other = (sessions / NATIVE_CHECK.UNRELATED_NAME if at == "probe"
+                         else self.last_probe)
                 self.assertEqual(code, 2, f"exit {code} for the raced {label}: {self.last_stdout!r}")
                 self.assertIn("already exists", self.last_stderr, self.last_stderr)
                 self.assertIn(str(raced), self.last_stderr,
@@ -2074,18 +2161,46 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("no --version answer", self.last_stderr, self.last_stderr)
         self.assertEqual(results, {}, f"a run with no fingerprint recorded checks: {sorted(results)}")
 
-    def test_a_symlinked_shim_is_launched_through_its_own_path(self) -> None:
-        """A `--codex` that is a symlink (a mise shim's shape) is not followed to its target.
+    def test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target(self) -> None:
+        """A `--codex` that is a symlink is not followed for *launching*, and its target's bytes are the
+        digest only where the target is the executable the name dispatches to.
 
         A mise shim is a symlink to the `mise` binary and dispatches on argv[0]; `resolve()`ing it lands
         on `mise` itself, whose `--version` is its own and whose `app-server` is not this harness's, so
-        the disclosure arm is answered by nothing. The header names the path `which()` returned, the way
-        the harness itself is launched.
+        the disclosure arm would be answered by nothing. The header therefore names the path `which()`
+        returned, the way the harness itself is launched, and the digest is the resolved file's own
+        bytes — which is a supported pair exactly here, where the resolved file answers the harness's
+        own `--version` and is the executable the name dispatches to.
         """
         code, results = self.drive(mutate_during_resume=False, codex_is_a_symlink=True)
-        self.assertIn(f"{self.last_codex} (codex-cli 0.test", self.last_stdout,
-                      "the run named a binary other than the path it launches")
+        target_digest = hashlib.sha256(self.last_codex_real.read_bytes()).hexdigest()
+        self.assertIn(f"{self.last_codex} (codex-cli 0.test, sha256 {target_digest})",
+                      self.last_stdout,
+                      "the header did not pair the launched path with the dispatched executable's own "
+                      "version and digest")
+        self.assertIn(f"codex file:  {self.last_codex_real}", self.last_stdout,
+                      "the run did not name the file whose bytes its digest records")
         self.assertEqual(code, 0, f"exit {code}: {self.last_stderr!r}")
+
+    def test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete(self) -> None:
+        """A symlink whose target answers its own words is a pair the run cannot support.
+
+        The staged shape is the one the finding measured: the name resolves to a launcher, so `open`
+        would read the launcher's bytes while `--version` answers the harness's — the pre-fix header
+        paired Codex's version with `mise`'s digest. The run must refuse to record that pair: it asks the
+        resolved file to identify itself, reads the launcher's own words, and answers INCOMPLETE (exit 2)
+        naming both, with no check recorded — a run that shipped the pair reads exit 0 here.
+        """
+        code, results = self.drive(mutate_during_resume=False, codex_is_a_launcher_shim=True)
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stdout!r} / {self.last_stderr!r}")
+        self.assertIn("INCOMPLETE", self.last_stderr, self.last_stderr)
+        self.assertIn(str(self.last_codex_real), self.last_stderr,
+                      f"the failure does not name the launcher it could not see past: {self.last_stderr!r}")
+        self.assertIn("mise 2026.11.10 linux-x64", self.last_stderr,
+                      f"the failure does not quote the launcher's own words: {self.last_stderr!r}")
+        self.assertIn("codex-cli 0.test", self.last_stderr,
+                      f"the failure does not name the harness's own answer: {self.last_stderr!r}")
+        self.assertEqual(results, {}, f"a run with no fingerprint recorded checks: {sorted(results)}")
 
     def test_the_fingerprint_pairs_one_executable_with_its_own_version(self) -> None:
         """A relative `--codex` under another `--repo` fingerprints the file it will launch.

@@ -3319,3 +3319,30 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   finding would reopen with it.
 - **Settled by:** the owner, or an increment that gives the byte layer and the text layer one shared
   reading for another reason.
+
+## Q-0009a-09 — A launcher's shim: identify the dispatch through the launcher, or end INCOMPLETE
+
+- **Status:** resolved by default (operator disposition, 2026-11-26, r5 fix round R4-2; the finding
+  allows either "resolve the *dispatched* executable for both the version and the digest, or report
+  `INCOMPLETE` when the dispatch cannot be identified"). On a host whose `PATH` resolves `codex` to a
+  launcher's shim — this host's mise shims are symlinks to `mise`, which dispatches on `argv[0]` — the
+  run now ends INCOMPLETE unless the caller names the real binary with `--codex`.
+- **Question:** the fingerprint's digest must belong to the binary that answered `--version`. A plain
+  symlink to the harness is settled by asking the resolved file to identify itself: its own `--version`
+  answer is the harness's, and its bytes are the digest. A launcher's shim resolves to the launcher,
+  whose answer is its own — and asking it where it dispatches would teach this check one launcher's own
+  subcommand (`mise which codex`).
+- **Options:** (a) the run refuses a pair it cannot support and ends INCOMPLETE, naming the launcher's
+  file and the words it answered, with a full run left to a caller who names the real binary (taken);
+  (b) the run asks the launcher's own `which` for the tool's path and digests that file — supported on
+  shim hosts, at the cost of one launcher-specific subcommand and a second invocation's answer this
+  harness would have to trust.
+- **Default taken:** (a). Measured on this host: the launcher's own answer is `mise 2026.11.10 linux-x64
+  (2026-11-18)` where the harness answers `codex-cli 0.172.0`, and the INCOMPLETE message names both
+  (`test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete`); a plain symlink to the
+  harness still runs, with its target's own bytes as the digest
+  (`test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target`), and the
+  launched path itself is still never `resolve()`d.
+- **Reversal:** (b) — one increment that teaches the fingerprint the launcher's own `which`; the
+  shim case's INCOMPLETE arm becomes the target-resolution arm.
+- **Settled by:** the owner, or a fix round that must run the check on a shim-only host.

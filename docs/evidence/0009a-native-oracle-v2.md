@@ -77,6 +77,38 @@ head this round started from (§3). The ownership object's one declared residual
 between the exclusive create and process exit leaves a file no `finally` runs for, answered by the next
 run's collision refusal rather than swept.
 
+The 2026-11-26 **r4 round** (the same lane's fourth pass) re-read the three seams' sites — the plant
+ownership object, the refusal's one sentence matcher and the fingerprint's launching rule — and
+corrected the fingerprint correction itself (§3's operator blockquote: the launched path is made
+absolute with `os.path.abspath`, **never** `resolve()`d, because this host's `codex` is a mise shim).
+The **r5 round** closes the four findings the cross-family lane left on that head
+(`review-lane-r4-fix-20261126.md`), each at the seam the finding names:
+
+- **The disclosure arm's artifact lives where only this run can write.** It is planted into a probe home
+  of its own under the run's scratch directory, never the target home, so no cleanup of this run can
+  unlink a file another writer put under the planted name; and the arm judges the bytes *read back* from
+  the planted name — requiring them equal to the bytes it planted — so a substitution of the planted file
+  is named by the arm's own comparison instead of passing on the committed fixture.
+- **The fingerprint pairs one executable's words with that executable's bytes.** Where the resolved name
+  is a symlink, the run asks the resolved file to identify itself: a plain symlink to the harness answers
+  its own version and its target's bytes are the digest, while a launcher's shim — answering its own
+  words — ends the run INCOMPLETE rather than printing Codex's version beside the launcher's digest. The
+  launched path itself is still never `resolve()`d.
+- **The `--selftest-mutations` help states the three-arm contract the corpus measures** (a pair cites the
+  rules its bytes break beside its own; with its own rule disabled it still cites those others, or is
+  INCOMPLETE where a `needs_text` rule was left unjudged) — the corpus is unchanged.
+- **The `oracle.jsonl-objects` citation is narrowed to what its Go case proves**: every line it decodes,
+  the artifact's surrounding blank lines trimmed first, is exactly one JSON object; the rule's statement
+  over every physical line belongs to the offline rule, whose blank line's refusal
+  `test_the_line_rule_is_the_whole_lines_own` pins.
+
+The suite moved with the seams (94 → 96): the drive hands `main` a fixed scratch directory of the case's
+own name (patched `mkdtemp`), so a case can address the run's own tree — the probe home above all —
+before the run starts; `seed_probe` now stages the held name at the plant's own site while the new
+`probe_in_caller_home` pins the caller's file under the probe's *name* being left byte for byte;
+`probe_replaced` pins the read-back comparison; and the symlink case split into the dispatched-target arm
+and the launcher-shim INCOMPLETE arm (§2, §3).
+
 ## 2. The deletion list
 
 **How it was derived.** `git diff 8989d2c..archive/0009a-pre-rescope --stat` names the attempt's
@@ -146,7 +178,11 @@ D1 corpus read through the shipped command, and D4's two receipt cases. The rest
 stubs gained the two host probes this increment's native half now makes (`codex --version`, and the
 loader's refusal of a session it does not hold — the disclosure arm's own subject), and one existing
 assertion ("1 pre-existing session file(s)") stands because the disclosure arm's planted file, like the
-unrelated session, is the harness's own fabrication rather than the caller's. The 2026-11-24
+unrelated session, is the harness's own fabrication rather than the caller's (the 2026-11-26 r5 round
+moved the arm's artifact out of the target home into the run's own probe home, so the capture never sees
+it at all and the count is unchanged) — the `probe_in_caller_home` case drives the other reading, where
+a file under the probe's *name* in the caller's home is compared as one of the home's own 2 sessions.
+The 2026-11-24
 simplify-apply round added four refusal-arm cases to the oracle class (its count moves 14 → 18) and five
 to `ProtectedArtifactsAfterNativeVerification` (the disclosure arm's own record, the handshake that must
 not read as a refusal, the resolved binary's version and digest, the planted probe's refusal and its
@@ -191,7 +227,16 @@ caller's `finally` would lose an answer to); `ThreadViewExtraction` (the extract
 kinds are the items' types, a kind word in message text is not a kind); and, in the oracle class,
 `test_a_disabled_utf8_rule_still_cites_the_line_rule` (R3-2's own bytes, through the command) and
 `test_every_pair_of_byte_rules_is_co_cited_by_a_mutation`, beside the byte-layer case rewritten for the
-not-evaluated contract and the closed-set case's input-kind assertions.
+not-evaluated contract and the closed-set case's input-kind assertions. The 2026-11-26 r4 round added
+one (93 → 94: `test_a_symlinked_shim_is_launched_through_its_own_path`, the shim correction's own pin),
+and the r5 round moves it 94 → 96 while one case's subject moves: `test_a_callers_file_under_the_probes_name_is_refused_without_leaving_a_fabrication`
+becomes `test_a_callers_file_under_the_probes_name_is_left_as_it_was_found` (the artifact now lives in
+the run's own probe home, so a caller's file under that name is a session the home already held), and
+two cases join it — `test_a_probe_replaced_while_the_run_goes_is_named_not_passed_on_the_fixture` (the
+read-back comparison) and `test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete` —
+while `test_a_symlinked_shim_is_launched_through_its_own_path` becomes
+`test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target` and the seam
+cases' staged paths move into the run's own tree (§1).
 
 **Documentation.** The attempt's `docs/harness.md` paragraph describing sixteen rules and the manifest
 receipt is replaced by the reduced oracle's description plus the disclosure (§4); its AGENTS.md edits of
@@ -286,7 +331,7 @@ pre-r3 reading answered PASS over bytes whose final byte was not a line feed; §
 
 ```
 $ python3 -m unittest discover -s scripts/tests -p 'test_codex_native_check.py'
-Ran 94 tests in 0.583s
+Ran 96 tests in 0.923s
 OK
 ```
 
@@ -299,12 +344,20 @@ OK
 > `resolve()` restored and passes without it). Re-measured on the corrected tree: `GATE: PASS`,
 > `selftest` 549, the narrowed suite 94, native `--json` exit 0 (27 passed / 0 failed / 2 skipped,
 > `codex-cli 0.172.0`).
+>
+> The **r5 round** renamed that case and split its subject:
+> `test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target` (the
+> `abspath`, never `resolve()`, rule is unchanged) and
+> `test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete` (the fingerprint's dispatch
+> rule, §1). The suite run above is the r5 round's own.
 
 The 48 → 57 movement is the simplify-apply round's nine added cases, 57 → 59 the review-fix round's two,
 59 → 62 the second fix pass's three and 62 → 64 the third pass's two (the unrelated-name guard's own
 refusal path and the `--keep` refusal), 64 → 69 the cross-family review round's five, 69 → 82 the
-2026-11-25 r2 round's thirteen, and 82 → 93 the 2026-11-25 r3 round's eleven (§2 names them); the run
-above is the r3 round's own, on the tree this record describes.
+2026-11-25 r2 round's thirteen, 82 → 93 the 2026-11-25 r3 round's eleven (§2 names them), and 93 → 94
+the 2026-11-26 r4 round's one; the r5 round moves it 94 → 96 (§1 names the two and the case whose
+subject moved with the artifact), and the run above is the r5 round's own, on the tree this record
+describes.
 
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
 exit 0). The header it records — this run's resolved binary, the same two values the run's `--json`
@@ -323,7 +376,28 @@ PASS: the harness refuses an artifact the offline rules accept — the offline r
 
 The r3 round re-ran that command on this record's tree: the same resolved version and digest, the same
 `27 check(s) passed, 0 failed, 2 skipped`, exit 0, and the arm's PASS above re-measured verbatim (the
-scratch path was this run's own) — the seam replacements move nothing the binary answers.
+scratch path was this run's own) — the seam replacements move nothing the binary answers. The r4 round's
+correction re-measured the same command again (§3's operator blockquote), and the **r5 round** ran it
+with the artifact moved into the run's own probe home: exit 0, the same `27 check(s) passed, 0 failed,
+2 skipped`, the same resolved version and digest (`codex-cli 0.172.0`, sha256
+`ad83b94c093f0cdd8176a6bc8005a461bdf23a759863e157d40f562b8a9d664d`), and the arm's PASS now naming the
+run's own probe home (the scratch path elided to `<scratch>`; this host's `codex` is a mise install
+whose `latest` component is a directory symlink, so the launched file itself is not one and the run
+records no `codex file:` line):
+
+```
+PASS: the harness refuses an artifact the offline rules accept — the offline rules: green; thread/resume answered: thread/resume failed: failed to read thread: thread-store internal error: failed to read session metadata <scratch>/probe-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl: rollout at <scratch>/probe-home/sessions/2026/01/01/rollout-2026-01-01T00-00-01-00000000-0000-7000-8000-00000000a009.jsonl is empty
+```
+
+The round's own cases pin what the binary cannot be asked here: the read-back comparison
+(`test_a_probe_replaced_while_the_run_goes_is_named_not_passed_on_the_fixture`, measured failing
+against the pre-fix arm that validated the committed fixture), the caller's file under the probe's name
+being left byte for byte (`test_a_callers_file_under_the_probes_name_is_left_as_it_was_found`), and the
+two symlink arms — the dispatched target's own bytes as the digest
+(`test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target`) and the
+launcher shim ending the run INCOMPLETE
+(`test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete`, measured: with the pre-fix
+digest pairing restored, the run answers exit 0 and pairs `codex-cli 0.test` with the launcher's bytes).
 
 The r2 round reads that arm and this run strictly: the arm's PASS requires the harness's measured
 refusal sentence about the *exact* planted path (`rollout at <the planted path> is empty`) — this answer
@@ -381,7 +455,8 @@ with the 2026-11-25 r2 round's two refinements appended as `Q-0009a-06` (the sta
 clause, superseding `Q-0009a-02`'s) and `Q-0009a-07` (the refusal criterion, superseding `Q-0009a-05`),
 and the r3 round's reading supersession as `Q-0009a-08` (every rule evaluated or explicitly
 `NotEvaluated`; `--disable-rule` a subtraction after evaluation, superseding `Q-0009a-02`'s evaluation
-clause).
+clause), and the r5 round appends `Q-0009a-09` (the launcher-shim dispatch: the run ends INCOMPLETE
+rather than printing a pair it cannot support, which is the finding's own allowed arm).
 
 ## 6. The gate, on the state this increment leaves
 
@@ -395,7 +470,7 @@ gate: go=<go 1.27.4> module=ccc targets=./cmd/ccc/... ./internal/ccc/...
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 549 tests in 17.839s (rc=0)
+  PASS     selftest    Ran 551 tests in 10.467s (rc=0)
   PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5775 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
   PASS     secrets     no leaks found in 230 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
@@ -404,10 +479,12 @@ GATE: PASS
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 22 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's row against the Go test it cites. The table is the 2026-11-25 r3 round's own
+which verifies the goal's row against the Go test it cites. The table is the 2026-11-26 r5 round's own
 run, on the tree that holds this record, and it printed the unqualified `GATE: PASS`; its `selftest`
 count moved 503 → 519 across the four rounds, → 524 in the cross-family review round, → 537 in the r2
-round and → 548 in the r3 round (§2 and §3 name the added cases), and its `secrets` count (230 files) is
+round, → 548 in the r3 round and → 549 in the r4 round (§2 and §3 name the added cases), and the r5
+round's own movement is 549 → 551 (its two cases and the renamed one, §1/§2); its `secrets` count (230
+files) is
 this worktree's own scope — the
 count includes untracked `__pycache__`/`bin` files — not a change the round made.
 

@@ -140,6 +140,14 @@ UNRELATED_NAME = "rollout-2026-01-01T00-00-00-00000000-0000-7000-8000-0000000000
 ORACLE_PROBE_ID = "00000000-0000-7000-8000-00000000a009"
 ORACLE_PROBE_NAME = f"rollout-2026-01-01T00-00-01-{ORACLE_PROBE_ID}.jsonl"
 
+#: The data directory the disclosure arm's artifact is planted into: a home of this run's own under the
+#: scratch directory, never the target home. Exclusive creation protects a *name*, not the file at it: a
+#: home another writer can reach (the caller's `--codex-home`) could have the planted file replaced
+#: during the run, and a cleanup that unlinked the name would then delete a file this run never wrote.
+#: The artifact therefore lives where only this run can write, and the arm reads it back so the bytes
+#: the harness is given are the bytes this run planted.
+PROBE_HOME = "probe-home"
+
 #: The harness's own sentence refusing the planted artifact, with the artifact's path standing where
 #: `{path}` is: what the real binary answers for the frozen artifact (measured on Codex 0.171.0, the
 #: version every run records). The disclosure arm's PASS requires this sentence *about the exact planted
@@ -799,6 +807,14 @@ def read_text_or_failure(path: Path) -> tuple[str, str]:
         return path.read_text(), ""
     except OSError as failure:
         return "", f"{path} cannot be read: {failure}"
+
+
+def read_bytes_or_failure(path: Path) -> tuple[bytes, str]:
+    """One path's bytes, or the failure that prevented reading it: the same rule as `sha256_or_failure`."""
+    try:
+        return path.read_bytes(), ""
+    except OSError as failure:
+        return b"", f"{path} cannot be read: {failure}"
 
 
 class ForeignHome:
@@ -1921,6 +1937,39 @@ def oracle_mutation_selftest() -> int:
     return 0
 
 
+def dispatched_executable(codex: str, version: str, cwd: Path) -> tuple[Path | None, str]:
+    """The file whose bytes the launched name runs, or the failure naming a dispatch this run cannot
+    establish.
+
+    `codex` is what every invocation launches and is never resolved past itself, because a launcher's
+    shim (a mise shim is a symlink to the launcher, which dispatches on argv[0]) must keep its own name.
+    Where that name *is* a symlink, `open` would read the target's bytes while `--version` answers for
+    whatever the name dispatches to -- a launcher's shim would pair the harness's words with the
+    launcher's digest. The resolved file is therefore asked to identify itself, and only a resolved file
+    whose own answer is `version` is the executable this name dispatches to; a launcher answering its
+    own words, no answer at all, or a file that cannot be started leaves the pair unattributable and the
+    caller answers INCOMPLETE.
+    """
+    launched = Path(codex)
+    if not launched.is_symlink():
+        return launched, ""
+    resolved = Path(os.path.realpath(codex))
+    try:
+        answer = run([str(resolved), "--version"], cwd=cwd)
+    except (OSError, subprocess.TimeoutExpired) as failure:
+        return None, (f"{codex} is a symlink whose target {resolved} cannot be asked for its own "
+                      f"version: {failure}")
+    if answer.returncode != 0:
+        return None, (f"{codex} is a symlink whose target {resolved} exits {answer.returncode} for "
+                      f"`--version`, so the executable this name dispatches to cannot be identified")
+    own_words = last_meaningful_line(answer.stdout or answer.stderr)
+    if own_words != version:
+        return None, (f"{codex} is a symlink whose target {resolved} answers its own words "
+                      f"({own_words!r}) where the harness answered {version!r}: the executable this "
+                      f"name dispatches to cannot be identified")
+    return resolved, ""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -1951,10 +2000,13 @@ def main(argv: list[str] | None = None) -> int:
                              "declare is refused")
     parser.add_argument("--selftest-mutations", action="store_true",
                         help="prove the rule registry against its mutation corpus and exit: for every "
-                             "declared rule id its positive fixture passes, its mutation fails citing "
-                             "that rule alone, and the same bytes pass with --disable-rule for it — "
-                             "each arm through this command's own --validate path, under a scratch "
-                             "directory")
+                             "declared rule id its positive fixture passes; the mutated fixture fails "
+                             "citing that rule beside the rules its bytes are declared to break; and "
+                             "with --disable-rule for its own rule the same bytes cite exactly those "
+                             "others — still failing, or passing where nothing is cited and every rule "
+                             "was evaluated, or INCOMPLETE where the disabled rule's refusal left a "
+                             "needs_text rule unjudged — each arm through this command's own --validate "
+                             "path, under a scratch directory")
     args = parser.parse_args(argv)
 
     if args.selftest_mutations:
@@ -1993,23 +2045,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.codex} is not on PATH: this harness verifies native behaviour, which needs the "
               f"target harness installed", file=sys.stderr)
         return 2
-    # One executable serves both halves of the fingerprint: a `which()` answer can preserve a relative
-    # PATH entry (`./codex`), and the digest would then be read from where this process stands while
-    # `--version` runs from `repo` -- one binary's words paired with another's bytes. Made absolute here,
-    # but deliberately *not* `resolve()`d: a mise shim is a symlink to the `mise` binary itself and
-    # dispatches on argv[0], so following the link launches `mise` (whose `--version` is its own, and
-    # whose `app-server` is not Codex's) instead of the harness. The digest, the version command and
-    # every harness invocation below therefore name this same path.
+    # One executable serves the version command and every harness invocation below: a `which()` answer
+    # can preserve a relative PATH entry (`./codex`), and the digest would then be read from where this
+    # process stands while `--version` runs from `repo` -- one binary's words paired with another's
+    # bytes. Made absolute here, but deliberately *not* `resolve()`d: a mise shim is a symlink to the
+    # `mise` binary itself and dispatches on argv[0], so following the link launches `mise` (whose
+    # `--version` is its own, and whose `app-server` is not Codex's) instead of the harness.
     codex = os.path.abspath(codex)
     # The Codex judgment is this binary's, and the owner's answer is to follow `latest`: no version is
     # pinned anywhere, so each run records what it resolved — the binary's own words and its digest. A
     # fingerprint this run cannot record — an unreadable digest, a command that never ran, an answer with
-    # no line in it — ends it INCOMPLETE: every verdict below is attributed to the binary the header
-    # names, and a run whose header cannot name it has none to attribute.
-    try:
-        codex_digest = sha256(Path(codex))
-    except OSError:
-        codex_digest = ""
+    # no line in it, a dispatched executable this run cannot identify — ends it INCOMPLETE: every verdict
+    # below is attributed to the binary the header names, and a run whose header cannot name it has none
+    # to attribute.
     version_failure = ""
     version = None
     try:
@@ -2020,6 +2068,18 @@ def main(argv: list[str] | None = None) -> int:
     if version is not None and version.returncode == 0:
         answer = last_meaningful_line(version.stdout or version.stderr)
         codex_version = "" if answer == NO_MEANINGFUL_LINE else answer
+    dispatched = Path(codex)
+    if codex_version:
+        dispatched, dispatch_failure = dispatched_executable(codex, codex_version, repo)
+        if dispatched is None:
+            print(f"the resolved binary {codex} cannot be fingerprinted: {dispatch_failure} — this "
+                  f"harness records the binary it verified against, so the run is INCOMPLETE",
+                  file=sys.stderr)
+            return 2
+    try:
+        codex_digest = sha256(dispatched)
+    except OSError:
+        codex_digest = ""
     if not codex_digest or not codex_version:
         print(f"the resolved binary {codex} cannot be fingerprinted: "
               f"{codex_version or version_failure or 'no --version answer'}, sha256 "
@@ -2072,7 +2132,8 @@ def main(argv: list[str] | None = None) -> int:
                              f"{seeding.report()}")
     sessions = home / "sessions" / "2026" / "01" / "01"
     unrelated = sessions / UNRELATED_NAME
-    probe = sessions / ORACLE_PROBE_NAME
+    probe_home = scratch / PROBE_HOME
+    probe = probe_home / "sessions" / "2026" / "01" / "01" / ORACLE_PROBE_NAME
     foreign = ForeignHome()
 
     def finish(code: int) -> int:
@@ -2103,7 +2164,8 @@ def main(argv: list[str] | None = None) -> int:
             return finish(2)
         if not planted:
             return refused(unrelated, "its own fabricated session")
-        planted, failure = foreign.plant(probe, oracle_fixture(ORACLE_ARTIFACT))
+        probe_bytes = oracle_fixture(ORACLE_ARTIFACT)
+        planted, failure = foreign.plant(probe, probe_bytes)
         if failure:
             print(f"INCOMPLETE — {failure}", file=sys.stderr)
             return finish(2)
@@ -2112,6 +2174,9 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"repo:        {repo}")
         print(f"codex:       {codex} ({codex_version}, sha256 {codex_digest})")
+        if dispatched != Path(codex):
+            print(f"codex file:  {dispatched} (the file this symlink name dispatches to; the version "
+                  f"and digest above are its own)")
         print(f"codex home:  {home}")
         if seeded_report:
             print(seeded_report)
@@ -2132,17 +2197,18 @@ def main(argv: list[str] | None = None) -> int:
             return finish(2)
         # Every session the home already held — the caller's own, when --codex-home names a real home — as
         # the dashed id its file name ends with, and its bytes: a conversion must not reuse an id and must
-        # not touch a file it did not write. The two fabrications this harness planted are in the id list
-        # (a conversion must not reuse their ids either) but not in the byte comparison, which is about the
-        # files this run did not write. An entry whose bytes cannot be read — a *dangling* symlink is
-        # listed by `rglob` like any other — is this run's own inability to verify that promise, so it is
-        # INCOMPLETE, named, before any check runs, rather than an exception out of the run.
+        # not touch a file it did not write. The unrelated fabrication this harness planted is in the id
+        # list (a conversion must not reuse its id either) but not in the byte comparison, which is about
+        # the files this run did not write; the disclosure arm's artifact lives in this run's own probe
+        # home, outside this tree. An entry whose bytes cannot be read — a *dangling* symlink is listed by
+        # `rglob` like any other — is this run's own inability to verify that promise, so it is INCOMPLETE,
+        # named, before any check runs, rather than an exception out of the run.
         rollouts = list(home.rglob("rollout-*.jsonl"))
         existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in rollouts]
         existing_sessions: dict[Path, str] = {}
         unreadable: list[str] = []
         for path in rollouts:
-            if path in (unrelated, probe):
+            if path == unrelated:
                 continue
             digest, failure = sha256_or_failure(path)
             if failure:
@@ -2167,20 +2233,31 @@ def main(argv: list[str] | None = None) -> int:
         record("ccc builds with the flags upstream ships", True)
 
         # The disclosure arm, side by side: the offline rules accept these bytes — they are a container,
-        # not a Codex session — and the harness's own loader answers for them. `record` says the pair
-        # held only where the harness refused: a binary that accepted the artifact turns this line red,
-        # which is the signal that the disclosure below the fold needs re-reading. The offline half has
-        # to be *green* for the pair to stand, which is what it is only where every rule judged the
-        # bytes and none was violated.
-        offline = validate_artifact(oracle_fixture(ORACLE_ARTIFACT))
-        offline_state = ("green" if offline.passed
-                         else "violations " + ", ".join(sorted({v.rule for v in offline.violations}))
-                         + ("; not evaluated " + ", ".join(entry.rule for entry in offline.not_evaluated)
-                            if offline.not_evaluated else ""))
-        refused, answer = resume_answer(codex, home, ORACLE_PROBE_ID, probe)
+        # not a Codex session — and the harness's own loader answers for them. `record` says the pair held
+        # only where the harness refused: a binary that accepted the artifact turns this line red, which
+        # is the signal that the disclosure below the fold needs re-reading. The offline half judges the
+        # bytes *read back* from the planted name — not the committed fixture, which the arm would pass
+        # on even where the planted file was replaced — and both that read-back and the offline reading
+        # have to hold for the pair to stand.
+        presented, presented_failure = read_bytes_or_failure(probe)
+        if presented_failure:
+            offline = None
+            offline_state = presented_failure
+        else:
+            offline = validate_artifact(presented)
+            offline_state = ("green" if offline.passed
+                             else "violations " + ", ".join(sorted({v.rule for v in offline.violations}))
+                             + ("; not evaluated "
+                                + ", ".join(entry.rule for entry in offline.not_evaluated)
+                                if offline.not_evaluated else ""))
+        planted_standing = not presented_failure and presented == probe_bytes
+        refused, answer = resume_answer(codex, probe_home, ORACLE_PROBE_ID, probe)
         record("the harness refuses an artifact the offline rules accept",
-               offline.passed and refused,
-               f"the offline rules: {offline_state}; {answer}")
+               planted_standing and offline is not None and offline.passed and refused,
+               ("" if planted_standing else
+                f"the bytes at {probe} are not the bytes this run planted"
+                + (f" ({presented_failure})" if presented_failure else "") + "; ")
+               + f"the offline rules: {offline_state}; {answer}")
 
         env = {"CLAUDE_PROJECTS_DIR": str(source_root)}
         try:
@@ -2488,7 +2565,8 @@ def main(argv: list[str] | None = None) -> int:
                               "target_session": thread_id, "installed": str(installed),
                               "second_session": second_thread_id, "second_installed": str(second_installed),
                               "codex": codex, "codex_home": str(home),
-                              "codex_version": codex_version, "codex_sha256": codex_digest}, indent=2))
+                              "codex_version": codex_version, "codex_sha256": codex_digest,
+                              "codex_dispatched": str(dispatched)}, indent=2))
         return finish(1 if failures else 0)
     finally:
         # The safety net for an exit no `finish` saw (an unexpected raise): every path this run owns is
