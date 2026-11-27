@@ -282,7 +282,26 @@ obligation ships no citations file, rather than an empty one.
   tokenizer is new enough to expose a replacement field's structure, reads the four PEP 701 f-string
   relaxations that constraint cannot see (a backslash, a comment, the literal's own quote, a field
   inside two format specs), each pinned against CPython 3.11.14's own verdicts; the suite's own
-  modules are inside that scope, because discovery imports them before any case runs. Where a rule
+  modules are inside that scope, because discovery imports them before any case runs.
+
+  The host's own filesystem answers are a seam of the same kind: `scripts/tests/_host_contract.py`
+  measures them once at import — case sensitivity, symlink capability, `link/..` traversal, `O_EXCL` on
+  a dangling link, and the two executable-bit answers (`mode_bits_stored` — whether `chmod` controls
+  what `stat` reads, the bit a git mode record is read with and what parity fixture staging reads;
+  `exec_lookup_follows_mode_bits` — whether `os.access(..., X_OK)` answers for a file whose stored
+  bits allow execution) — and offers the fixture constructors (`make_abs_path`,
+  `make_rooted_path`, `make_symlink`, `make_executable_stub`, `assert_create_refused`) so no case
+  hand-rolls a POSIX premise; a *pure* path rule is instead a question about a dialect and is driven
+  over both (`posixpath`/`ntpath`, `PurePosixPath`/`PureWindowsPath` — e.g. the Codex check's
+  `absolute_launch_path(pathmod=…, cwd=…)`). `scripts/tests/test_host_contract.py`, run by the
+  `selftest` step, lints every `scripts/tests/**/*.py` for the idioms that were each one red leg — a
+  fixture anchored on a bare separator, a raw `os.symlink`/`Path.symlink_to`, an errno subclass pinned
+  for a create collision (a deliberate injection marks itself `# host-contract: synthetic-errno`), a
+  literal `':'` splitting or joining `PATH`, and an `os.access(..., X_OK)` assertion that does not
+  consult `HOST_SEMANTICS.exec_lookup_follows_mode_bits` (the lookup, never folded into
+  `mode_bits_stored`) — so the next such case fails on this host rather than in a CI leg.
+
+  Where a rule
   cannot be exercised host-independently through a subprocess, the case drives the shipped module
   directly — `PATH` pinned to a stub bin, one probe patched, or a root whose children carry the
   Windows path flavour — instead of leaving the rule untested here and hoping a Windows job notices.

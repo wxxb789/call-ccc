@@ -388,10 +388,18 @@ relax that rule where the increment can, and flag it where it cannot.
   no reliance on a `pathlib` behaviour that differs between Python minors, no grammar above the oldest
   minor the docs name (`scripts/tests/test_python_floor.py` holds every `scripts/**/*.py` to it: the
   running parser constrained to 3.11, plus the four PEP 701 f-string relaxations `feature_version`
-  cannot see), and no expectation that only holds on the platform or the `PATH` the case happens to
-  run on: a case's stub bin answers the host probes it is not about, and the suite re-runs itself in
-  a child whose `PATH` holds no tools and, once, with the platform probe answering
-  Windows-without-a-compiler, so a host-dependent case fails on this host
+  cannot see), and no host filesystem answer spelled by hand: a case reads the answers
+  [`scripts/tests/_host_contract.py`](scripts/tests/_host_contract.py) measured once at import (case
+  sensitivity, symlink capability, `link/..` traversal, `O_EXCL` on a dangling link, mode-bit
+  enforcement) and stages its fixtures through that module's constructors, a pure path rule is driven
+  over both dialects (`posixpath`/`PureWindowsPath`) instead of the host's own, and
+  [`scripts/tests/test_host_contract.py`](scripts/tests/test_host_contract.py) — run inside the
+  `selftest` step — fails the banned idioms (a separator-built fixture, a raw symlink, an errno
+  subclass on a create collision, a literal `':'` PATH split or join, an executability premise that
+  does not consult the measured answer), and no expectation that only holds on the platform or the
+  `PATH` the case happens to run on: a case's stub bin answers the host probes it is not about, and the
+  suite re-runs itself in a child whose `PATH` holds no tools and, once, with the platform probe
+  answering Windows-without-a-compiler, so a host-dependent case fails on this host
   ([`docs/conventions.md`](docs/conventions.md)). The Go suites the gate's `test` step
   runs are held to the same rule: a case whose subject is what a check makes of a target harness's
   answer drives that harness through the check's own seam and answers the executable lookup the same

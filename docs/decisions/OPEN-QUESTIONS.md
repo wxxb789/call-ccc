@@ -3060,7 +3060,7 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 
 - **Status:** open (default taken: declared debt — kept, not extended, replaced by the carried reader's own
   answer or an authoritative read).
-- **Question:** `internal/ccc/route_shared.go`'s `pairReadBackMessage` matches the Codex read-back's text to the
+- **Question:** `internal/ccc/codex_install.go`'s `pairReadBackMessage` matches the Codex read-back's text to the
   records this build wrote by a **same-role subsequence** heuristic. That is a local rule about how the carried
   reader renders a record — the judgment the ownership rule gives to the reader — used where a projection cannot
   establish the pairing (both prompts projected away). It is what the swapped-prompt regression depends on.
@@ -3117,3 +3117,517 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
 - **Settled by:** the owner's word on whether the Windows claim should be widened (it costs runner
   minutes and changes what a green Windows run proves), or an increment that lands (b) with its own
   measured run.
+
+## Q-0009a-01 — The receipt document's shape, and the bytes one anchor covers
+
+- **Status:** open (default taken: the shape below; the oracle is frozen for the rest of goal 0009, so a
+  change is that lock's own subject until goal 0009 ends, an ordinary increment after).
+- **Question:** the re-scope's premise fixes "a frozen artifact's SHA-256 plus per-line anchors" but not
+  the document's schema. What does a receipt look like, and over what bytes is an anchor taken?
+- **Options:** (a) `{"bytes": <n>, "sha256": "<64 hex>", "lines": [{"sha256": "<64 hex>"}, …]}`, each
+  anchor over the line's own bytes **including its line feed**, further members not read (taken);
+  (b) anchors as bare hex strings; (c) anchors over the line's bytes **without** the feed.
+- **Default taken:** (a). The whole-file digest identifies the frozen bytes and the per-line anchors name
+  where a change landed, which is what a later increment reads to re-identify a fixture; the feed being
+  inside the anchor keeps it a byte fact (a line without its terminator can never equal a terminated
+  one — the same byte-level claim the container rules make), while (c) would let a line's identity
+  survive a missing terminator, i.e. agree with a file `oracle.whole-lines` refuses; `bytes` gives a
+  size mismatch an answer that needs no hashing. The committed fixture pair in this increment is
+  `scripts/tests/testdata/codex-oracle/artifact.jsonl` + `artifact-receipt.json`, and the convention is
+  stated in the rule's own sentence.
+- **Reversal:** one increment that changes the schema and regenerates the committed receipts; nothing
+  else reads the document (the manifest receipt of a selection is 0009c/0009d's own, and if it should
+  share this shape that is an increment of its own).
+- **Settled by:** an increment that needs a different shape (e.g. 0009c/0009d if their receipt is to
+  carry an artifact's identity), or an owner sentence.
+
+## Q-0009a-02 — A byte-layer violation ends the reading, and dropping that rule empties it
+
+- **Status:** open (default taken: the staged reading).
+- **Question:** an artifact whose bytes are not UTF-8 text (or open with a byte-order mark) is text no
+  rule below can read. Does the oracle report the byte-layer rule alone and stop — and what does
+  `--disable-rule oracle.utf8` leave?
+- **Options:** (a) staged: the byte layer is read first and a violation there is the reading's only
+  content (no line, JSON or receipt comparison), so dropping that rule hands back an empty reading — a
+  PASS (taken); (b) continue with replacement-decoded text and report the JSON defects too; (c) treat a
+  non-text artifact as `INCOMPLETE` rather than a rule violation (the superseded checker's shape).
+- **Default taken:** (a). (b) invents text the file does not hold, and the defects it would report are
+  defects of the invented text; (c) would take the rule out of the registry, and D1 requires every
+  surviving rule's negative fixture to *cite* it (the closure's third arm is exactly this flip, which is
+  why the flip is pinned: the corpus's BOM pair passes with the rule disabled). The reading's own
+  docstring states it.
+- **Reversal:** one increment that changes the reading's shape (e.g. an `INCOMPLETE`-class answer with
+  the rule kept as a *reason*), and the corpus's two `oracle.utf8` pairs move with it.
+- **Settled by:** an increment that needs a different reading, or an owner sentence.
+
+## Q-0009a-03 — The container refuses a blank line rather than skipping it
+
+- **Status:** open (default taken: a blank line is refused).
+- **Question:** "one JSON object per line" — a line that holds no bytes (or only whitespace) is no JSON
+  document; does the container refuse it or skip it the way many line readers do?
+- **Options:** (a) refuse: every line of the artifact is exactly one JSON object, so a blank line is an
+  `oracle.jsonl-objects` violation (taken); (b) skip blank lines (the superseded checker's "every
+  non-empty line").
+- **Default taken:** (a). A skip rule is a claim about what some *reader* does with the line, and this
+  oracle exists to hold no such claims: refusal is decidable from the bytes alone, and the writer under
+  it never emits a blank line. Consequence, stated so it is not rediscovered: a file with a trailing
+  blank line is refused (`test_the_line_rule_is_the_whole_lines_own` pins it).
+- **Reversal:** one increment that adds the skip clause and the mutation that turns its fixture red; the
+  rule's sentence and the corpus move together.
+- **Settled by:** an increment whose artifacts legitimately carry blank lines, or an owner sentence.
+
+## Q-0009a-04 — The empty artifact is not receipt-identified
+
+- **Status:** open (default taken: the non-empty `lines` clause stays, and the rule sentence now states
+  it; the oracle is frozen for the rest of goal 0009, so a change is that lock's own subject until goal
+  0009 ends, an ordinary increment after).
+- **Question:** the container blesses the empty artifact (`oracle.whole-lines` names "the empty
+  artifact", pinned by `CodexArtifactOracle.test_the_line_rule_is_the_whole_lines_own`), while
+  `oracle.receipt-integrity` refuses an empty `lines` array even when the artifact holds no lines — so
+  the one artifact a receipt could faithfully name with `lines: []` cannot be receipt-identified at all.
+  Is that the intended reading, or should the anchors clause admit `lines: []` exactly when the artifact
+  has no lines?
+- **Options:** (a) keep the non-empty requirement and state it in the rule's sentence (taken; the
+  wording arm of the 2026-11-24 simplify-apply round); (b) allow `lines: []` iff the artifact holds no
+  lines — the code path is `oracle_receipt_violations`'s anchors clause in
+  `scripts/codex-native-check.py`, and the corpus's `a receipt naming no lines` pair would move with it;
+  (c) forbid the empty artifact in the container — refused: `oracle.whole-lines` names it on purpose.
+- **Default taken:** (a). The narrow reading is the one the frozen corpus pins (all seven
+  `oracle.receipt-integrity` pairs are about a non-empty artifact), and a mechanism change under the
+  oracle lock would move both sides of "the implementation satisfies the oracle" at once — the
+  co-mutation the lock exists to prevent. The cost is stated rather than silent: a later increment that
+  re-identifies fixtures by receipt (0009c/0009d's manifest receipt) cannot do so for a zero-line
+  artifact.
+- **Reversal:** (b) — one increment that changes the anchors clause and the corpus together (a
+  `lines: []`-over-a-zero-line-artifact pair becomes positive, and `a receipt naming no lines` is
+  re-shaped onto an artifact that has lines), after goal 0009's oracle lock ends.
+- **Settled by:** the increment that first needs to receipt-identify an artifact with no lines (0009c or
+  0009d if their receipt must name one), or an owner sentence.
+
+## Q-0009a-05 — What the disclosure arm reads as the harness's refusal
+
+- **Status:** open (default taken: the arm's PASS requires the harness's own answer to name the planted
+  rollout, below). **Moved 2026-11-26 to [goal 0009e](../goals/0009e-native-check-hardening.md)** by the
+  re-cut (owner option C): the arm this decides is 0009e's; the default below stands as the moved work's
+  starting point.
+- **Question:** the disclosure arm records "the offline rules accept the artifact / the harness refuses
+  it". A JSON-RPC error answer to `thread/resume` is evidence about *this* artifact only if the harness
+  opened it; an answer naming the requested session id alone (`no session <id>`, `<id> not found`) is
+  what a lookup miss looks like, and the cross-family review round (2026-11-24) found the arm accepting
+  exactly that. Must a refusal name the artifact, or is any error naming the requested id enough?
+- **Options:** (a) require the harness's own words to identify the planted rollout — its file's own name,
+  as the measured answer holds it (`rollout at <path> is empty`, measured on 0.171.0; the file's name is
+  inside that path) (taken); (b) accept any error naming the requested id (the pre-fix behaviour —
+  refused: a store answers a lookup miss without opening the rollout, so the arm's name would claim
+  evidence it never obtained); (c) no error answer counts and only a load of some other session does —
+  refused: the harness's measured answer for this artifact *is* an error, and (c) would leave the arm
+  unable to pass at all.
+- **Default taken:** (a). The arm is this check's own evidence, and evidence that the rollout was read
+  and refused has to identify the rollout; the stub cases pin both directions
+  (`test_an_id_only_lookup_miss_is_not_read_as_the_refusal`,
+  `test_an_error_naming_another_artifact_is_not_read_as_the_refusal`, and the passing arm quoting the
+  measured answer). Not decided here: whether some later surface (a conversion's own verification, a
+  store reader) may read an id-only miss as "the session does not resolve" — that is a product question,
+  not this arm's.
+- **Reversal:** (b) — one increment that restores the id-or-name predicate and re-points the two stub
+  cases; the review round's finding would reopen with it.
+- **Settled by:** the owner, or the increment that gives the harness-answer reading another consumer.
+
+## Q-0009a-06 — The staged reading refined: a receipt is compared against the raw bytes whatever the text layer says (supersedes Q-0009a-02's receipt clause)
+
+- **Status:** resolved (operator disposition, 2026-11-25, r2 fix round R2-4; the clause it supersedes is
+  Q-0009a-02's "a violation there is the reading's only content (no line, JSON or receipt comparison)").
+- **Question:** an artifact whose bytes are not UTF-8 text still *has* bytes, and a supplied receipt
+  states things about them. Should a byte-layer violation hide the receipt's own disagreement — making
+  `--disable-rule oracle.utf8` hand back a PASS over a receipt the same bytes contradict — or is the
+  receipt compared independently of the text reading?
+- **Options:** (a) the receipt is compared against the artifact's raw bytes wherever one is supplied, and
+  a byte-layer violation ends only the *record* reading (taken); (b) the pre-fix staging, where a
+  byte-layer violation skipped the receipt comparison (refused by R2-4: it contradicts the flag's "drop
+  exactly this rule" promise and D4's byte-integrity claim — measured: one 0xFF byte under the unchanged
+  receipt **passed** with only `oracle.utf8` dropped).
+- **Default taken:** (a). The receipt's statements are about bytes, not about text the oracle can decode,
+  so decoding is not part of their comparison. The corpus gains one pair beside it
+  (`oracle.utf8` — `a byte that is not UTF-8 under the unchanged receipt`, whose `also_cited` arm pins
+  that `--disable-rule oracle.utf8` still fails citing `oracle.receipt-integrity` alone), and
+  `CodexArtifactOracle.test_a_receipt_still_answers_a_byte_the_text_layer_cannot_read` drives the same
+  shape in-process. This *strengthens* the frozen oracle (more artifacts refused, never fewer), so the
+  oracle lock's co-mutation concern does not arise; the operator dispositioned it as this increment's
+  fix round.
+- **Reversal:** one increment that restores the skip and re-points the combined pair; R2-4's finding
+  would reopen with it.
+- **Settled by:** the owner, or an increment that gives the byte layer and the receipt one shared
+  reading for another reason.
+
+## Q-0009a-07 — The refusal criterion refined: a read-and-reject of the *exact* planted artifact (supersedes Q-0009a-05)
+
+- **Status:** resolved (owner answer 2026-11-25, Q1 = B — the criterion keys on the artifact's file name
+  — refined by this increment's r2 fix round, R2-2: the name must be attached to a refusal of *this*
+  artifact's bytes rather than to any error mentioning the path). **Moved 2026-11-26 to [goal
+  0009e](../goals/0009e-native-check-hardening.md)** by the re-cut (owner option C): this criterion is
+  0009e's D1, and the default below stands as its reviewed starting point.
+- **Question:** Q-0009a-05 required the harness's own answer to name the planted rollout. A basename
+  match is still not evidence of a *read*: `permission denied opening <probe path>` names the artifact
+  and the harness never opened it, and a refusal of a same-named file in another directory names the
+  same basename while being about another artifact. What exactly must the answer be?
+- **Options:** (a) the harness's measured refusal sentence about the **exact planted path**
+  (`REFUSAL_SENTENCE`: `rollout at <the planted path> is empty`, measured on 0.171.0, the version every
+  run records) — a lookup miss, an I/O failure naming the path, and a refusal of a same-named file
+  elsewhere each fail the arm, in their own words (taken); (b) any error containing the artifact's file
+  name (the pre-fix behaviour — refused: R2-2 measured an open error and a same-name-elsewhere answer
+  both recorded PASS); (c) classify the harness's error prose into refusals and I/O failures (refused:
+  the arm reads the binary's own answer, and a private taxonomy of its errors would re-derive a foreign
+  judgment this repository may not keep).
+- **Default taken:** (a). The arm's PASS is evidence the harness read this artifact's bytes and rejected
+  them; a Codex release that rewords the sentence turns the arm red and a human re-reads the binary's new
+  answer beside the version the run records — the disclosure arm's contract, not a silent pass. The
+  cases pin both new negative shapes (`test_an_open_error_naming_the_artifact_is_not_read_as_the_refusal`,
+  `test_a_refusal_of_a_same_name_elsewhere_is_not_read_as_the_refusal`) beside the two Q-0009a-05 cases
+  and the passing arm quoting the measured answer.
+- **Reversal:** (b) — one increment that restores the name predicate and re-points the four negative
+  cases; R2-2's finding would reopen with it.
+- **Settled by:** the owner, or the increment that gives the harness-answer reading another consumer.
+
+## Q-0009a-08 — The reading evaluated, refined: every rule evaluated or explicitly `NotEvaluated` (supersedes Q-0009a-02's evaluation clause)
+
+- **Status:** resolved (operator disposition, 2026-11-25, r3 fix round R3-2 and the round's seam mandate;
+  the clause it supersedes is Q-0009a-02's "a violation there is the reading's only content (no line,
+  JSON or receipt comparison), so dropping that rule hands back an empty reading — a PASS").
+- **Question:** the staged reading left two shapes open and the r3 lane's cross-family pass found both.
+  A violation at the byte layer ends the *record* reading (settled in r2), but does it also gate the
+  *line* rule — a predicate over the artifact's bytes — and what does `--disable-rule oracle.utf8` leave
+  when the text a `needs_text` rule reads was never answered? Measured pre-fix: `b'{"note":"\xff"}`
+  (no final line feed, not UTF-8 text) answered **PASS** with only `oracle.utf8` disabled, hiding a
+  violation its own last byte proves.
+- **Options:** (a) every rule is evaluated or explicitly `NotEvaluated`: `oracle.whole-lines` reads the
+  artifact's own bytes (a decode result cannot gate it); `oracle.jsonl-objects` declares `needs_text`
+  and is `NotEvaluated(blocked_by="oracle.utf8")` where no text was answered; `--disable-rule` is a set
+  subtraction *after* evaluation; a verdict is PASS only where every rule was evaluated and no violation
+  remains, `oracle: INCOMPLETE` (exit 2) where none remains but a rule was left unjudged (taken);
+  (b) the pre-fix staging, where the decode result gated the line rule and the filter could hand back a
+  PASS over a demonstrable violation (refused by R3-2); (c) answer INCOMPLETE whenever the text layer
+  failed, byte-rule violations included (refused: the byte rules' violations are decidable from the
+  bytes and are what the finding's artifact proves).
+- **Default taken:** (a). The byte rules are predicates over bytes, so nothing about the text layer may
+  gate them; the one dependency that is real (`oracle.jsonl-objects` needs text) is declared and shown
+  as a result rather than as an absent violation; and the verdict vocabulary now keeps its own promise —
+  PASS only where every stated rule judged the bytes. The corpus is part of the seam: for every pair of
+  byte-reading rules one mutation violates both, declared in each rule's own arm, so disabling either
+  still cites the other (`test_every_pair_of_byte_rules_is_co_cited_by_a_mutation`; the pairs are
+  utf8×whole-lines, utf8×receipt-integrity, whole-lines×receipt-integrity), and R3-2's own bytes are
+  pinned through the shipped command by `test_a_disabled_utf8_rule_still_cites_the_line_rule`. This
+  *strengthens* the frozen oracle (more artifacts refused, and PASS now requires more), so the oracle
+  lock's co-mutation concern does not arise; the operator dispositioned it as this increment's fix
+  round.
+- **Reversal:** (b) — one increment that restores the gate and re-points the two cases above; R3-2's
+  finding would reopen with it.
+- **Settled by:** the owner, or an increment that gives the byte layer and the text layer one shared
+  reading for another reason.
+
+## Q-0009a-09 — A launcher's shim: identify the dispatch through the launcher, or end INCOMPLETE
+
+- **Status:** resolved by default (operator disposition, 2026-11-26, r5 fix round R4-2; the finding
+  allows either "resolve the *dispatched* executable for both the version and the digest, or report
+  `INCOMPLETE` when the dispatch cannot be identified"). On a host whose `PATH` resolves `codex` to a
+  launcher's shim — this host's mise shims are symlinks to `mise`, which dispatches on `argv[0]` — the
+  run now ends INCOMPLETE unless the caller names the real binary with `--codex`. **Moved 2026-11-26 to
+  [goal 0009e](../goals/0009e-native-check-hardening.md)** by the re-cut (owner option C): the
+  fingerprint this decides is 0009e's D2/D4(b) — including the round-5 #2 finding (an official npm
+  launcher fingerprinted instead of the native binary it forwards to) — and the default below stands as
+  its reviewed starting point.
+- **Question:** the fingerprint's digest must belong to the binary that answered `--version`. A plain
+  symlink to the harness is settled by asking the resolved file to identify itself: its own `--version`
+  answer is the harness's, and its bytes are the digest. A launcher's shim resolves to the launcher,
+  whose answer is its own — and asking it where it dispatches would teach this check one launcher's own
+  subcommand (`mise which codex`).
+- **Options:** (a) the run refuses a pair it cannot support and ends INCOMPLETE, naming the launcher's
+  file and the words it answered, with a full run left to a caller who names the real binary (taken);
+  (b) the run asks the launcher's own `which` for the tool's path and digests that file — supported on
+  shim hosts, at the cost of one launcher-specific subcommand and a second invocation's answer this
+  harness would have to trust.
+- **Default taken:** (a). Measured on this host: the launcher's own answer is `mise 2026.11.10 linux-x64
+  (2026-11-18)` where the harness answers `codex-cli 0.172.0`, and the INCOMPLETE message names both
+  (`test_a_launcher_shim_that_cannot_be_dispatched_ends_the_run_incomplete`); a plain symlink to the
+  harness still runs, with its target's own bytes as the digest
+  (`test_a_symlinked_name_is_launched_through_its_own_path_and_fingerprinted_by_its_target`), and the
+  launched path itself is still never `resolve()`d.
+- **Reversal:** (b) — one increment that teaches the fingerprint the launcher's own `which`; the
+  shim case's INCOMPLETE arm becomes the target-resolution arm.
+- **Settled by:** the owner, or a fix round that must run the check on a shim-only host.
+
+## Q-0009a-10 — The re-cut: the disclosure arm and the binary fingerprint move to 0009e
+
+- **Status:** resolved (owner decision 2026-11-26, option C — re-decompose, not harden again; executed by
+  this increment's re-cut).
+- **Question:** five cross-family review rounds on 0009a (lane rounds r1–r5) returned defects in the
+  **same three classes**, severity did not decay (a P1 every round) and the reviewed diff grew
+  171 KB → 194 KB → 338 KB → 364 KB. The root-cause consult named the abstraction boundary: the
+  increment carried two features — the **disclosure arm** (plant a fabricated artifact, drive the real
+  binary, require its refusal) and the **binary fingerprint** (`codex: <path> (version, sha256 …)`) —
+  and each round hardened one site while the next round found the next inherited environment variable
+  or the next launch indirection. Continue hardening, shrink in place, or re-cut?
+- **Options:** (a) another hardening round on the same surface (refused: the finding classes had
+  returned five times, and the addition of a fix round moved the reviewed diff up, never down);
+  (b) shrink the two features in place (refused: each class exists *because* the feature does, so
+  shrinking in place is the same iteration by another name); (c) **re-cut** — move both features out of
+  0009a into [goal 0009e](../goals/0009e-native-check-hardening.md) and let 0009a ship the offline
+  oracle plus the native check **without** them (taken).
+- **Default taken:** (c). The moved features' reviewed starting point is tag
+  `archive/0009a-r16-native-arm` (head `768df19`), where the five rounds' fixes to them are preserved;
+  0009e's `Done when` carries them with the owner's refusal criterion (`Q1 = B`, `Q-0009a-07`), the
+  dispatch resolution, the ownership seam for every root the harness can write (round-5 #1:
+  `CODEX_SQLITE_HOME`), and round-5 #2 (the npm launcher). 0009a keeps every diff that fixes a
+  reproducible defect of a surviving path (the dangling-symlink crash in a caller's `--codex-home`, the
+  portable held-name rule for the exclusive create, the `os.path.abspath` — never `resolve()` — launch
+  rule), and the three round-5 findings of the shipped half are fixed under its D1, its D4 and the run's
+  own turn count. The moved decisions are `Q-0009a-05`, `Q-0009a-07` and `Q-0009a-09` (marked moved
+  above); `Q-0009a-01`–`-04`, `-06` and `-08` stay with the frozen oracle.
+- **Reversal:** one increment that folds 0009e's two features back into the native check beside the
+  0009a half — it would have to answer the re-cut's premise first (each feature needs its own audit
+  surface) and to bound the diff that premise could not.
+- **Settled by:** the owner, or 0009e's own acceptance showing the moved features can be reviewed to a
+  clean verdict on their narrower surface.
+
+## Q-0009a-11 — A receipt document past the rule's stated nesting bound
+
+- **Status:** resolved (r7 fix round, finding R6-2, 2026-11-26 — this increment's own bounded round
+  after the re-cut).
+- **Question:** the receipt rule reads three members, but the document was materialized whole: a valid
+  2,000-level array under an *ignored* member raised `RecursionError` on Python 3.11 (an unchanged
+  receipt answered INCOMPLETE) and parsed on 3.15 (the same receipt answered PASS), so a member the rule
+  does not read decided the verdict with the reading interpreter. Read the three members without
+  materializing the rest, or bound the document?
+- **Options:** (a) a reader that skips ignored members and decodes only the three it reads (refused: it
+  would decode foreign structure member by member and still needs a bound for the members it does read
+  and for `lines`'s own entries); (b) give the document the same stated bound the artifact line rule
+  carries (`ORACLE_NESTING_BOUND`, 256), counted on the document's bytes before any member is
+  materialized, so a document past it is refused by `oracle.receipt-integrity`'s own sentence (taken).
+- **Default taken:** (b). `oracle_receipt_violations` refuses the past-bound sentinel by name; within the
+  bound an ignored member still passes (the 5,000-digit integer, a 255-level array), and past it the
+  same document answers the stated refusal on every interpreter (measured: exit 1 naming the bound on
+  Python 3.11/3.12/3.14/3.15, where the pre-fix answers were INCOMPLETE on 3.11 and PASS on 3.15). A
+  deep *ignored* member past the bound is still refused: the bound is the rule's own statement, and the
+  reading never consults the member.
+- **Reversal:** (a) — one increment that reads the three members without bounding the document, with the
+  case for a past-bound *read* member moved with it.
+- **Settled by:** the owner, or an increment that gives the receipt document another reader with a
+  reason to stream it.
+
+## Q-0009a-12 — The launch path keeps every component it was given (refines Q-0009a-10's launch clause)
+
+- **Status:** resolved (r7 fix round, finding R6-1, 2026-11-26).
+- **Question:** `main` made the `which()` answer absolute with `os.path.abspath`, which collapses
+  `alias/..` lexically: a `--codex` path or PATH entry that traverses a symlinked directory can be
+  rewritten to a name that does not exist, or to another file's name at that path (measured on this
+  host: `alias/../codex` traverses to the executable, while `abspath` names `<root>/codex`, which is
+  absent). Refuse such a path by name, or keep its traversal?
+- **Options:** (a) refuse a supplied path whose lexical and traversed forms differ (refused: a PATH entry
+  holding `..` is legal, and the refusal would be about the caller's spelling rather than about what the
+  run launches); (b) make the path absolute without normalizing a component — a relative path anchored to
+  the process's own directory, an absolute one answered unchanged (taken).
+- **Default taken:** (b). `absolute_launch_path` is the one site; `resolve()` stays forbidden (a mise
+  shim dispatches on `argv[0]` — the pre-r7 rule this clause refines). Pinned by `LaunchPathResolution`'s
+  cases and the drive case that reads the argv[0] the stub was launched with (pre-fix probe: the run
+  launched the collapsed `<root>/codex` while the caller's own path named the executable).
+- **Reversal:** (a) — one increment that refuses the differing spellings by name, with the drive case
+  moved from "not rewritten" to "refused".
+- **Settled by:** the owner, or a platform whose PATH semantics make the traversal-preserving answer
+  wrong.
+
+## Q-0009a-13 — The oracle lock's boundary: the offline oracle, not the whole file
+
+- **Status:** resolved (r7 fix round, finding R6-6, 2026-11-26 — decided from the mechanism: the
+  conductor's oracle-lock rule in `docs/plans/0009-decomposition.md`, instrument #3).
+- **Question:** the goal file called "the oracle file" read-only for the rest of goal 0009, while 0009e
+  (whose prerequisite 0009a is) changes that same file's native half: the two goal files required the
+  operator to pick which contract to break.
+- **Options:** (a) a file-wide lock with 0009e carrying a declared exception (refused: the mechanism the
+  instrument states is narrower — it blocks a fix round that moves a gate/checker script **alongside
+  production code** — and 0009e ships no production code, so a file-wide lock would forbid work the
+  mechanism admits); (b) the lock is the **offline oracle** — the rule table and its corpus, the
+  committed fixtures and the `--validate` reading (taken).
+- **Default taken:** (b), stated the same way in both goal files; `docs/harness.md`'s native-check
+  section ("this section, the rule table and `--validate`"), the decomposition plan's A2-1 row ("the
+  validator … read-only for the rest of goal 0009") and instrument #3 already agreed with it, and the
+  umbrella file states no lock of its own, so there is nothing there to contradict. The lock ends when
+  goal 0009 ends.
+- **Reversal:** (a) — one increment that widens the lock to the whole file and gives 0009e its declared
+  exception and removal condition.
+- **Settled by:** the owner, or a later increment that needs a *rule* change during goal 0009 — under
+  the lock that is an escalation, not an iteration.
+
+## Q-0009a-14 — Which answer stages and reads the mode-bit fixtures (r10c, NEON's prescription)
+
+- **Status:** resolved (default taken; r10c fix round, 2026-11-27).
+- **Question:** the suite stages executable bits in two ways and now has two answers for one host
+  fact: `scripts/tests/_host_contract.py`'s measured `HOST_SEMANTICS.posix_exec_bits_enforced`, and
+  `scripts/upstream-parity.py`'s own `executable_bit_supported()` seam (`os.name`-based). The parity
+  fixture staging (`apply_executable_bit`) and the five per-case guards
+  (`if os.name == "nt": assert executable_bit_supported() is False; return`) could each move to the
+  measured answer.
+- **Options:** (a) every site reads the measured answer; (b) the fixture *staging* reads the measured
+  answer (so the suite never infers a host fact from `os.name`) while the guard sites keep asserting
+  the *shipped probe's own* answer, which is the referee of the rule under test (taken); (c) every
+  site keeps reading the shipped seam.
+- **Default taken:** (b). `apply_executable_bit` now consults
+  `HOST_SEMANTICS.posix_exec_bits_enforced`; the per-case guards are unchanged and their docstrings
+  keep saying which platform each asserts. The two answers can only diverge on a host whose filesystem
+  carries no mode bits while `os.name` is not `nt` — where both readings fail loudly (the staged tree
+  cannot carry the pinned mode the checker compares), so neither silently downgrades.
+- **Reversal:** (c) — one increment that stages through `executable_bit_supported()` (or the seam
+  itself) again, with the two reading sites named; or (a) — moving the guard sites to the measured
+  answer with their assertions kept.
+- **Settled by:** the owner, or a host where the two answers diverge.
+
+## Q-0009a-15 — The receipt document's depth refusal is the reading's own, not a rule's (supersedes Q-0009a-11's "refused by `oracle.receipt-integrity`'s own sentence" clause)
+
+- **Status:** resolved (r11 fix round, r8 finding #1, 2026-11-27).
+- **Question:** Q-0009a-11 gave the receipt document its >256-level refusal as `oracle.receipt-integrity`'s
+  own violation. That made the refusal part of a *rule*, and `--disable-rule` is defined as "as if the
+  rule were not stated": a document with 257 openers and no closers answered only that violation, and
+  with `--disable-rule oracle.receipt-integrity` the command exited 0 — a PASS over a receipt nothing
+  read (measured on `7202fdf`; a *shallow* malformed receipt exits 2 even with the rule disabled).
+- **Options:** (a) keep the violation and exempt that one rule from `--disable-rule` (refused: the flag
+  would then have an exception no rule states, and the corpus's arm contract is "as if not stated");
+  (b) a past-bound receipt is an *input the reading cannot read* — the same class as a receipt that is
+  not UTF-8 or not JSON: `oracle: INCOMPLETE` (exit 2) on stderr, answered from the document's bytes
+  before any member is read, outside every rule's subject (taken).
+- **Default taken:** (b). `oracle_report` refuses a past-bound receipt before `json.loads`; the
+  `oracle.receipt-integrity` sentence no longer claims the bound (the rule judges the statements of a
+  readable receipt); the sentinel that carried the refusal into the rule is removed. Pinned by the
+  rewritten `test_a_receipt_document_nested_past_the_stated_bound_is_refused_by_name`: the
+  ignored-member arm and the 257-opener arm each exit 2 with the rule enabled **and** with it disabled,
+  and a document nested exactly at the bound is read and passes. The artifact-line bound is untouched: a
+  line's >256-level refusal stays `oracle.jsonl-objects`'s own statement — Q-0009a-11's mechanism moved
+  only where the subject is an input rather than a line of the artifact.
+- **Reversal:** (a) — one increment that restores the rule-attributed refusal and states the exception
+  `--disable-rule` would carry.
+- **Settled by:** the owner, or a later increment that gives the receipt document another reader with a
+  reason to stream it (Q-0009a-11's own reversal).
+
+## Q-0009a-16 — The launch spelling answered is the one the dialect's own join leaves alone (refines Q-0009a-12's "an absolute one answered unchanged")
+
+- **Status:** resolved (r11 fix round, r8 finding #2, 2026-11-27).
+- **Question:** Q-0009a-12's rule asked `pathmod.isabs` whether a spelling may pass unchanged. On
+  CPython 3.11/3.12 `ntpath.isabs` calls the drive-less rooted form (`\bin\codex`) absolute, so a
+  `which()` answer of that shape passed unchanged there while 3.13+ anchored it — and two consumers of
+  one run do not share a working directory (`ccc continue` runs from `--repo`, the app-server launches
+  from this check's own), so on different drives the same spelling selected different binaries
+  (measured: 3.11 answers it unchanged, 3.14 anchors it).
+- **Options:** (a) require `isabs` *and* a drive where the dialect has drives, refusing a spelling the
+  check cannot qualify (refused: a refusal channel for a spelling `shutil.which` can hand over in a
+  legal PATH shape); (b) the spelling is answered unchanged iff the dialect's own `join` onto the
+  process's directory answers the same string — the join supplies the drive for a rooted-without-drive
+  path, and a spelling carrying its own anchor joins to itself (taken).
+- **Default taken:** (b). `absolute_launch_path` answers `join(base, path)` where that differs from
+  `path`, and `path` otherwise; the answer is the same on every CPython minor and for every process of
+  one run. `abspath`'s lexical collapse and `resolve()` stay out (Q-0009a-12) and no component is
+  normalized. Pinned by the renamed `test_a_rooted_path_is_answered_by_the_dialects_own_join` (the win32
+  arm asserts the anchored answer and the process's own drive on every minor; the version arms keep
+  pinning the predicate spread the rule does *not* follow), beside the relative-path, absolute-path and
+  lexical-collapse cases unchanged — no case deleted, narrowed or skip-widened.
+- **Reversal:** (a) — one increment that adds the fully-qualified precondition and its refusal arm,
+  moving the rooted-path case from "answered anchored" to "refused".
+- **Settled by:** the owner, or a platform whose `join` answers a spelling whose consumers could still
+  disagree about (the drive-relative spelling).
+
+## Q-0009a-17 — A file this check reads is decoded as UTF-8, never through the process's locale
+
+- **Status:** resolved (r11 fix round, r8 finding #3, 2026-11-27).
+- **Question:** `read_text_or_failure` read with `Path.read_text()` (the locale encoding) and caught
+  only `OSError`: one invalid UTF-8 byte in an installed rollout raised `UnicodeDecodeError` out of
+  `main` where the locale was strict (measured on this host), and where a locale's decoder accepted the
+  byte, the structural check could pass text that is not valid UTF-8 on disk — one file's verdict
+  following the reading interpreter's locale.
+- **Options:** (a) keep the locale encoding and catch `UnicodeDecodeError` beside `OSError` (refused:
+  the lenient-locale arm's verdict would still differ from the strict locale's); (b) decode the file's
+  bytes as UTF-8 explicitly and answer a decode failure as the same named failure a read failure is
+  (taken).
+- **Default taken:** (b). The target harness writes these files as UTF-8, so the explicit decode is the
+  format's own encoding rather than a preference. Pinned by
+  `test_an_installed_session_that_is_not_utf8_is_a_named_failure`: one 0xFF byte inside a JSON string,
+  and the JSONL check and the appended-turn search each record `cannot be read as UTF-8` while the same
+  file's digest comparison still passes (the failure is exactly the text reads); pre-fix the same run
+  raised `UnicodeDecodeError` out of `main` on a UTF-8 locale.
+- **Reversal:** (a) — one increment that reintroduces the locale encoding with the byte-catch, and its
+  case says which locale each arm asserts.
+- **Settled by:** the owner, or a file this route must read in some other encoding.
+
+## Q-0009a-18 — Mode-bit storage and executable lookup are two measured answers (supersedes Q-0009a-14's `posix_exec_bits_enforced` reading)
+
+- **Status:** resolved (r11 fix round, r8 finding #4, 2026-11-27).
+- **Question:** Q-0009a-14's measured answer, `HOST_SEMANTICS.posix_exec_bits_enforced`, was the
+  conjunction "`chmod` controls `os.access(X_OK)`". On Linux `access(X_OK)` also consults the mount's
+  `noexec` policy, so on a writable `noexec` temp mount that one answer went False and `_assert_sane`
+  raised at import — before the required `selftest` step could start (measured: the probe answers a
+  single False and the sanity check raises). The parity fixture staging asked the same answer to decide
+  whether to `chmod` a bit the checker reads with `stat`, which `chmod` stores on a `noexec` mount too.
+- **Options:** (a) keep one answer and drop the import assertion (refused: a broken probe would go
+  silent, and the parity staging would still skip a bit the filesystem does store); (b) measure the two
+  questions separately — `mode_bits_stored` via `stat` (the bit a git mode record is read with, asserted
+  sane on POSIX) and `exec_lookup_follows_mode_bits` via `os.access` (measured, never asserted: a
+  `noexec` mount is a legitimate host, and win32 answers `X_OK` for any existing file) (taken).
+- **Default taken:** (b). `apply_executable_bit` consults `mode_bits_stored`; the AST lint's
+  executability rule now requires an `X_OK` assertion to consult `exec_lookup_follows_mode_bits` (the
+  same rule, read from the field that answers it). Pinned by
+  `TheProbeKeepsTheTwoExecBitQuestionsApart` (with `X_OK` refused as a `noexec` mount refuses it, the
+  storage answer stays at its measured value and `_assert_sane` accepts; a storage answer of False on
+  POSIX still raises) and `test_the_staged_executable_bit_follows_the_stored_bits` (staging sets a
+  `100755` record's bit where storage works and the lookup is refused, and does not `chmod` where
+  storage is answered False).
+- **Reversal:** (a) — one increment that folds the two answers back together and states which of the
+  two consumers it is willing to break.
+- **Settled by:** the owner, or a host that stores mode bits while refusing `X_OK` (or the converse) in
+  a way these two consumers must tell apart.
+
+## Q-0009a-19 — The nested run's expected-skip inventory is the host's own measured answer
+
+- **Status:** resolved (r12 fix round, Part A, 2026-11-28).
+- **Question:** `test_gate.HostCase`'s expected-skip inventory was a hand-written two-name tuple, and
+  the suite's own platform premise — a Windows host, whose `mode_bits_stored` answers false, skips the
+  storage-premise case — contradicted it: `windows-latest` failed the inventory assertion while the
+  child run itself was green (CI run `45949278359`). The two mode-bit-premised cases' dispositions were
+  independently open: each skipped where the measured answer says storage is absent, and
+  `test_the_staged_executable_bit_follows_the_stored_bits` has something true to assert there (staging
+  writes no bit such a host's `stat` can report).
+- **Options:** (a) the inventory is the tuple plus both mode-bit case names where the measured answer
+  says storage is absent, both cases keeping their skip (refused: the r9 lesson — a case that still has
+  a platform's own answer to assert asserts it instead of skipping); (b) the inventory is the tuple plus
+  the storage-premise case's name iff `HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored` is false, and the
+  staged-bit case asserts the no-storage arm through its patched control on every host, never skipping
+  (taken).
+- **Default taken:** (b). `expected_skips` reads the measured field, never a platform name; the
+  forced-Windows child on a storing host keeps its inventory at the tuple alone. Pinned by
+  `test_the_expected_skip_inventory_follows_the_host_s_measured_answer` — fabricated statuses under both
+  answers of the patched field: accepted without storage, refused with it, and a skip of the staged-bit
+  case's name refused under either answer (red pre-fix: the accepted arm failed).
+- **Reversal:** (a) — one increment that skips both cases by the measured answer and states the lost
+  assertion.
+- **Settled by:** the owner, or the `windows-latest` leg run against this tree (the accepted arm's
+  oracle — this host stores mode bits and cannot exercise it).
+
+## Q-0009a-20 — A drive-relative launch word is refused, never anchored to a guessed drive root (refines Q-0009a-16's "a spelling whose consumers could still disagree about")
+
+- **Status:** resolved (r12 fix round, r9 finding #2, 2026-11-28).
+- **Question:** Q-0009a-16's rule treats a join-unchanged spelling as one that names its own anchor.
+  `ntpath.join` also answers a *drive-relative* word (`D:tools\codex.exe`, from a `C:` directory)
+  unchanged — it discards the accumulated path when the second path's drive differs — while the
+  directory the word resolves against is the current directory on drive `D:`, held per process: the
+  same word can name a different executable, or none, in each of the processes this run starts (the
+  spelling Q-0009a-16's own "Settled by" line names).
+- **Options:** (a) anchor the word on its own drive's root (`D:\tools\codex.exe`) (refused: that names
+  a file the word need not mean, because the drive's current directory is process state this run can
+  neither read nor carry); (b) refuse the word where the join left a spelling that carries a drive and
+  no root (taken).
+- **Default taken:** (b). `absolute_launch_path` raises `ValueError`; the call site catches it and
+  answers exit 2 by name, launching nothing and making no scratch tree. The join-unchanged
+  fully-qualified shapes (drive-rooted, UNC, POSIX-absolute) and the anchored shapes (relative,
+  same-drive drive-relative, drive-less rooted) are answered exactly as before. Pinned by
+  `test_a_drive_relative_word_is_refused_and_never_returned` (the refused shapes beside every control
+  arm; red pre-fix: `ValueError` not raised) and
+  `test_a_drive_relative_executable_is_refused_by_name_before_anything_runs` (the call site: the
+  message on stderr, exit 2, nothing recorded, nothing launched).
+- **Reversal:** (a) — one increment that anchors drive-relative words on their drive roots and states
+  that the file it names is this build's guess.
+- **Settled by:** the owner, or a caller whose `--codex` is a drive-relative word the check must serve;
+  `windows-latest` is the default-path arm's oracle.

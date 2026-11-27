@@ -24,6 +24,7 @@ is not the same before and after 3.12.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import io
 import os
@@ -39,6 +40,9 @@ from unittest import mock
 
 GATE = Path(__file__).resolve().parents[1] / "gate.py"
 REPO_ROOT = GATE.parents[1]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
 
 #: Set for a nested run of this suite, so the child's ``HostCase`` copies skip
 #: instead of nesting a run of their own; nothing else in the suite reads it.
@@ -173,16 +177,12 @@ class GateTree:
 
         No case in this suite executes a stub: the cases that need a tool to
         answer with a specific exit code patch the gate's own ``run`` instead.
-        A stub therefore only has to be *found*, which is why it is written
-        twice -- as a POSIX script and as a Windows ``.bat`` (``shutil.which``
-        resolves that one through ``PATHEXT``) -- and why no stub is a binary.
+        A stub therefore only has to be *found*, and the host contract writes
+        the one shape this host's own lookup resolves -- a mode-bit script
+        where the bits exist, a ``PATHEXT``-suffixed ``.bat`` on Windows -- so
+        neither shape is hand-rolled and no stub is a binary.
         """
-        directory = where or self.stub_bin
-        directory.mkdir(parents=True, exist_ok=True)
-        script = directory / name
-        script.write_text(f"#!/bin/sh\nexit {exit_code}\n", encoding="utf-8")
-        script.chmod(0o755)
-        (directory / f"{name}.bat").write_text(f"@exit /b {exit_code}\r\n", encoding="utf-8")
+        HOST_CONTRACT.make_executable_stub(where or self.stub_bin, name, exit_code=exit_code)
 
     def write(self, relative: str, text: str) -> None:
         path = self.root / relative
@@ -1049,6 +1049,26 @@ class HostCase(GateTree, unittest.TestCase):
         "test_suite_holds_when_the_host_answers_windows_without_a_compiler",
     )
 
+    #: The one platform-premised skip a nested run may show besides ``GUARDED``: the case pins the
+    #: POSIX arm of ``_assert_sane``, and a host that stores no POSIX mode bits has no such arm. The
+    #: measured ``mode_bits_stored`` answer decides, never a platform name spelled here; the staged-bit
+    #: case, the suite's other mode-bit question, asserts its host's own answer instead of skipping, so
+    #: its name is never an expected skip.
+    MODE_BIT_PREMISE_CASE = "test_a_storage_answer_the_platform_contradicts_is_still_loud"
+
+    def expected_skips(self) -> list[str]:
+        """The names the nested run may skip: the guard's own, plus the platform-premised one where
+        this host's measured answer says its premise does not hold.
+
+        ``mode_bits_stored`` is the host contract's own measurement of whether ``chmod`` controls what
+        ``stat`` reads, so on a host that stores the bits both mode-bit cases must come out ``ok`` --
+        and every skip not named here still fails the assertion.
+        """
+        expected = list(self.GUARDED)
+        if not HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored:
+            expected.append(self.MODE_BIT_PREMISE_CASE)
+        return sorted(expected)
+
     def nested_run(self, windows_without_compiler: bool = False) -> subprocess.CompletedProcess:
         """Run this suite in a child process: no host tools, optionally Windows.
 
@@ -1192,15 +1212,16 @@ class HostCase(GateTree, unittest.TestCase):
     ) -> None:
         """The nested run's non-``ok`` cases must be exactly the expected skips.
 
-        A skipped case proves nothing, so the only legitimate skips are named and everything else is a
-        failure of this assertion: the child's own copies of this class skip because the guard told
-        them to, and no case may skip for any other reason -- a case that needs a host tool the child's
-        ``PATH`` does not hold is the defect these cases exist to catch, and every stub a case needs has
-        to live in the bin inside its own throw-away tree. That the guard *did* fire is asserted too: if
-        it stopped being set, a child that nested a third run would be the symptom, and this is the case
+        A skipped case proves nothing, so the only legitimate skips are named -- by ``expected_skips``,
+        which reads this host's own measured answer -- and everything else is a failure of this
+        assertion: the child's own copies of this class skip because the guard told them to, and no
+        case may skip for any other reason -- a case that needs a host tool the child's ``PATH`` does
+        not hold is the defect these cases exist to catch, and every stub a case needs has to live in
+        the bin inside its own throw-away tree. That the guard *did* fire is asserted too: if it
+        stopped being set, a child that nested a third run would be the symptom, and this is the case
         that would notice first.
         """
-        expected = sorted(self.GUARDED)
+        expected = self.expected_skips()
         self.assertEqual(
             sorted(key.rsplit(".", 1)[-1] for key, status in statuses.items() if status != "ok"),
             expected,
@@ -1283,6 +1304,43 @@ class HostCase(GateTree, unittest.TestCase):
         summary = self.nested_summary(proc)
         self.assertIn(f"broken: {case}", summary)
         self.assertNotIn("opencode session", summary)
+
+    def test_the_expected_skip_inventory_follows_the_host_s_measured_answer(self) -> None:
+        """The guard's expected skips are the host's own answer, both ways; nothing else is excused.
+
+        Driven directly with fabricated statuses -- the shape a Windows child printed before the r12
+        round: this class' two copies and the storage-premise case skipped -- under both answers of the
+        measured field. With storage absent the set is the legitimate one and must be accepted; with
+        storage present the same skip is an invented one and must fail, which is what keeps the
+        derivation from excusing a skip on a host whose own answer does not say so. The staged-bit case
+        asserts the host's answer instead of skipping (its own body is that assertion), so a skip of
+        its name is refused under either answer -- the case-level pin for its disposition.
+        """
+        storage_case = self.MODE_BIT_PREMISE_CASE
+        staged_case = "test_the_staged_executable_bit_follows_the_stored_bits"
+        semantics = HOST_CONTRACT.HOST_SEMANTICS
+
+        def statuses(*names: str) -> dict[str, str]:
+            return {f"test_gate.HostCase.{name}": "skipped" for name in names}
+
+        with mock.patch.object(HOST_CONTRACT, "HOST_SEMANTICS",
+                               dataclasses.replace(semantics, mode_bits_stored=False)):
+            self.assert_only_expected_skips(
+                statuses(*self.GUARDED, storage_case),
+                "a host that stores no mode bits may skip the storage-premise case")
+            with self.assertRaises(AssertionError):
+                self.assert_only_expected_skips(
+                    statuses(*self.GUARDED, staged_case),
+                    "the staged-bit case skipped where it must assert the host's own answer")
+        with mock.patch.object(HOST_CONTRACT, "HOST_SEMANTICS",
+                               dataclasses.replace(semantics, mode_bits_stored=True)):
+            self.assert_only_expected_skips(
+                statuses(*self.GUARDED),
+                "the guard's own two copies are the skips every nested run shows")
+            with self.assertRaises(AssertionError):
+                self.assert_only_expected_skips(
+                    statuses(*self.GUARDED, storage_case),
+                    "a storing host must not excuse the storage-premise case's skip")
 
     def broken_subtest_child(self) -> subprocess.CompletedProcess:
         """A child run whose one case fails inside a ``subTest``, executed here.

@@ -8,7 +8,11 @@ that decides whether a shell reads the line as the assignment at all), and the o
 source session and the planted session are compared **after** the harness's own native stages (``main``
 driven with its subprocess and app-server seams replaced by stubs). A third subject is driven the same
 way: the app server's diagnostics drainer, whose retained lines are bounded
-(``new_diagnostics``/``drain_diagnostics``).
+(``new_diagnostics``/``drain_diagnostics``). The increment's other seams carry their own classes in the
+same style: the ownership object every plant goes through (``ForeignHomeOwnership``), the client seam
+folding a dropped pipe (``BrokenPipeAtTheClientSeam``), the shipped view extraction
+(``ThreadViewExtraction``), and the offline oracle's rules, corpus and ``--validate`` mode
+(``CodexArtifactOracle``).
 
 The resume-invocation check is the harness's own rule about the line a caller pastes or an agent runs: it
 must name the data directory the session was installed into, because Codex takes that directory from
@@ -45,25 +49,49 @@ quote -- never about the separator this host happens to use.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
+import ntpath
+import os
+import posixpath
+import queue
+import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
+
+#: The two path dialects every pure path rule is driven over on every host, with the working directory
+#: each dialect's own spelling anchors against. ``ntpath``/``PureWindowsPath`` *is* what this host's
+#: ``os.path``/``Path`` is on Windows, so driving the pair here makes a win32 syntax rule fail on this
+#: host instead of in the one CI leg; the pure classes carry the strict absolute rule (a drive-less
+#: root is not absolute) that the running ``ntpath`` only aligned to in CPython 3.13.
+PATH_DIALECTS = (
+    ("posixpath", posixpath, PurePosixPath, "/work"),
+    ("ntpath", ntpath, PureWindowsPath, "C:\\work"),
+)
 
 #: A session id and binary the cases use: the check compares words, so their values only have to be
 #: spelled the same on both sides.
 SESSION = "01a1e225-a986-7372-bf0f-2c51da684752"
 OTHER_SESSION = "00000000-0000-0000-0000-000000000000"
 CODEX = "codex"
+
+#: A drive-relative executable word whose drive is not the one the refusal case drives the rule on:
+#: `which` answers it and the win32 dialect has no anchor for it, so the run must refuse it by name.
+DRIVE_RELATIVE_CODEX = "Z:tools\\codex.exe"
 
 RESUME_ARGUMENTS = [CODEX, "resume", SESSION]
 EXEC_RESUME_ARGUMENTS = [CODEX, "exec", "resume", SESSION, "<prompt>"]
@@ -551,6 +579,20 @@ PROTECTED_CHECKS = ("the source session is unchanged",
 #: host spells paths with.
 PRE_EXISTING_NAME = "rollout-2025-12-31T23-59-00-01a1e000-0000-7000-8000-000000000003.jsonl"
 
+#: The path a case's dangling symlink points at: inside the case's own scratch root, whose parent
+#: exists, so a run that wrote through the link would create this file — which no assertion permits.
+SYMLINK_TARGET_NAME = "caller-symlink-target.jsonl"
+
+#: The bytes the race cases' own "other writer" leaves at a plant's name the moment the run's plant
+#: reaches it: distinct from everything this run writes, so a clobbered file is visible as changed bytes
+#: and a deleted one as a missing file.
+RACE_PLANT_TEXT = b"a file another writer placed under this name while this run was starting\n"
+
+#: The name of the scratch directory the run is handed (the case patches ``tempfile.mkdtemp``): a fixed
+#: name, so every path under the run's tree can be addressed before the run starts and read back after
+#: it ends.
+RUN_SCRATCH_NAME = "run-scratch"
+
 #: The words the case's own growth fragment records, so the run has something to find in the *later*
 #: target's document and not in the earlier one. They are the case's, not the committed fixture's: what
 #: this half of the suite pins is that the shipped check reads the fragment it is given and searches the
@@ -628,9 +670,35 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               second_boundary: str | None = None,
               include_growth_in_second: bool = True,
               copy_mutation: str | None = None,
-              repeat_turn: bool = False
+              repeat_turn: bool = False,
+              seed_unrelated: bool = False,
+              keep: bool = False,
+              unreadable_home_entry: str | None = None,
+              installed_unreadable: bool = False,
+              installed_undecodable: bool = False,
+              race_plant: bool = False,
+              plant_write_fails: bool = False,
+              unlink_fails: bool = False,
+              view_reply: str = "typed",
+              raises_at: str | None = None,
+              dangling_symlink: bool = False,
+              lexical_codex: bool = False,
+              turn_exit_code: int | None = None,
+              json_report: bool = False,
+              host_configuration: str | None = None,
+              codex_launch_refusal: bool = False,
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
+
+        ``json_report`` adds ``--json``, so a case can read what the machine-readable report holds
+        beside the printed one -- both are the same recorded checks.
+
+        ``host_configuration`` drives the run the way a caller with no ``--codex-home`` does: the flag
+        is omitted, so the throw-away home is the one ``main`` makes for itself (under this case's
+        ``RUN_SCRATCH_NAME`` tree, this case's own name for the run's scratch directory), and
+        ``CODEX_HOME`` answers the host configuration the seeding reads. The run then exercises the
+        home's own seeding -- the read of the host file and the write into the scratch home -- which
+        every other case, naming ``--codex-home``, skips.
 
         ``installed_extra_line`` is a line the stub appends to the first installed file after its one
         object, so the JSONL check's own failure paths are exercised: the line may be unparseable JSON or
@@ -696,6 +764,53 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         comparisons. The two ``* turn`` windows require it, because a turn that did not run has no window
         to put a mutation in; their cases assert both turns' own checks passed, so a window whose turn was
         skipped cannot read as one whose mutation nothing caught.
+
+        ``seed_unrelated``, ``race_plant``, ``plant_write_fails``, ``unlink_fails`` and
+        ``dangling_symlink`` all stage their shape at the unrelated session's plant site — the one plant
+        the run makes, in the caller's home. ``seed_unrelated`` holds the name before ``main`` runs, the
+        collision guard's refusal path; ``race_plant`` writes the file *in the window* the plant's own
+        seam is about: the file appears when this run's plant first reaches the name, the shape two
+        overlapping runs against one home produce, so the plant must treat it as a collision and leave it
+        byte for byte (``RACE_PLANT_TEXT``) rather than truncate it or remove it later;
+        ``plant_write_fails`` makes the plant's own *write* fail after its exclusive create reserved the
+        name — the window the ownership object exists for — so the run must report the failure by name,
+        remove the reserved file, and leave no leftover a retry would meet; ``unlink_fails`` makes the
+        removal of that fabrication fail, so the run must report INCOMPLETE naming the path and answer
+        exit 2 rather than a verdict that outruns the leftover; ``dangling_symlink`` plants a caller's
+        *dangling symlink* there instead, whose target the run must neither follow nor delete — the
+        collision shape a guard asking ``exists()`` misses.
+        ``view_reply`` is what the stub answers `thread/read` with: ``"typed"`` (items whose own
+        ``type`` fields are the kinds the shipped extraction reads), ``"text-only"`` (a reply whose
+        message text spells the expected kind words while no item of those types exists, so a reading of
+        the rendered lines answers kinds the reply does not hold), or ``"read-fails"`` (no result answer
+        at all: every resume still answers the requested id and path, and the read's failure must be
+        named by the view checks rather than speak for the resume);
+        ``lexical_codex`` gives ``--codex`` a path that holds a ``..`` component after a directory —
+        ``<scratch>/alias/../codex`` — and has ``which`` answer the same path, so a run that normalized
+        the path it launches (``abspath``'s lexical collapse) is visible in the argv[0] the stub
+        records; ``codex_launch_refusal`` has ``which`` answer a drive-relative word and drives the pure
+        rule over the win32 dialect (a POSIX host has no drive-relative spelling), so the run's own
+        refusal of such a word -- the named message, the exit code, nothing launched, no scratch tree
+        made -- is exercised on every host; ``turn_exit_code`` makes the stub's turn process *answer*
+        non-zero without growing the session, the arm beside the timeout that asks whether the run's own
+        turn count follows the predicate its check records;
+        ``unreadable_home_entry`` (``"directory"`` or ``"link"``) puts an entry under the home whose
+        name matches ``rollout-*.jsonl`` and whose bytes cannot be read — a directory, or a dangling
+        link — so the snapshot of the sessions a conversion must not touch cannot be taken;
+        ``installed_unreadable`` makes the first conversion write nothing but a directory at the name it
+        reports, so every read of the installed session becomes a named failure rather than an
+        exception; ``installed_undecodable`` writes one 0xFF byte inside a JSON string of that file
+        instead, so the text reads answer the byte-level failure rather than letting the locale's
+        decoder decide (a lenient locale would decode the byte into text the line rule accepts).
+        ``raises_at`` makes one of the run's own invocations fail to *start*
+        (``"build"``, ``"convert"``, ``"inspect"`` or ``"turn"``): the command is never answered — an
+        ``OSError``, or a deadline the turn overruns (``TimeoutExpired``) — so every check standing on
+        it has to answer by name rather than letting the exception out of ``main``. The run's own stdout
+        and stderr are kept as
+        ``self.last_stdout``/``self.last_stderr``, the home it drove as ``self.last_home``, the scratch
+        tree it made for itself as ``self.last_scratch`` and the path it fabricated as
+        ``self.last_planted``, so a case can read what the run reported and what it left on disk after
+        ``main`` returned.
         """
         # The scratch root is resolved before anything is derived from it, because the shipped ``main``
         # resolves what it is handed (``--repo`` always, and ``--codex-home`` when the caller names one,
@@ -723,12 +838,36 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                             + json.dumps({"type": "assistant",
                                           "message": {"content": [{"type": "text",
                                                                    "text": GROWTH_ANSWER}]}}) + "\n")
-        home = scratch / "codex-home"
-        home.mkdir()
-        # The two tools the harness resolves: names it only compares and runs through the stub below,
-        # so no binary has to exist for this case.
-        codex = str(scratch / "codex")
+        # The scratch directory the *run* makes for itself: this case hands the shipped `main` a fixed
+        # one (the patch below), so every path under the run's own tree has a name this case can address
+        # before the run starts and read back after it ends. A run that asked for another directory is
+        # refused here instead of a case quietly addressing paths the run never used.
+        run_scratch = scratch / RUN_SCRATCH_NAME
+        # The home the run drives, and the tree this case stages its fixtures into. A case that names
+        # one (`--codex-home`) keeps it *outside* `run_scratch`, because a refusal path removes this
+        # run's own scratch tree and the fixtures there are the caller's; a case that omits the flag
+        # drives the home `main` makes for itself under its own scratch tree.
+        home = run_scratch / "codex-home" if host_configuration is not None else scratch / "codex-home"
+        home.mkdir(parents=True)
+
+        def case_mkdtemp(prefix="", dir=None, **kwargs):
+            run_scratch.mkdir(exist_ok=True)
+            return str(run_scratch)
+
+        # The two tools the harness resolves: names it only compares and runs through the stub below.
         go = str(scratch / "go")
+        codex = str(scratch / "codex")
+        Path(codex).write_text("the case's stub codex binary\n")
+        codex_argument = "codex"
+        which_answer: str | None = None
+        if lexical_codex:
+            # A `..` after a directory: the path's own traversal and its lexical collapse are different
+            # strings, so a run that launched the collapsed form would be visible in the stub's argv[0].
+            (scratch / "alias" / "sub").mkdir(parents=True)
+            codex_argument = str(scratch / "alias" / ".." / "codex")
+            which_answer = codex_argument
+        if codex_launch_refusal:
+            which_answer = DRIVE_RELATIVE_CODEX
 
         thread_id = "01a1e000-0000-7000-8000-000000000002"
         second_thread_id = "01a1e000-0000-7000-8000-000000000004"
@@ -743,6 +882,33 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         pre_existing = home / "sessions" / "2025" / "12" / "31" / PRE_EXISTING_NAME
         pre_existing.parent.mkdir(parents=True)
         pre_existing.write_text(json.dumps({"type": "session_meta"}) + "\n")
+        # A held name at the unrelated session's plant site: the collision guard's refusal path is
+        # reached (and its cleanup exercised) only from here.
+        if seed_unrelated:
+            planted.parent.mkdir(parents=True, exist_ok=True)
+            planted.write_text("the caller's own file under the unrelated session's name\n")
+        # A caller's *dangling* link at the plant's name: nothing is at that path by `exists()`, so a
+        # guard asking it writes through the link and the cleanup unlinks the caller's own link. The
+        # target sits in the case's own scratch root, whose parent exists, so a write through the link
+        # would create it there rather than fail somewhere else.
+        if dangling_symlink:
+            planted.parent.mkdir(parents=True, exist_ok=True)
+            if not HOST_CONTRACT.make_symlink(scratch / SYMLINK_TARGET_NAME, planted, is_dir=False):
+                self.skipTest("this host cannot create a symlink")
+        # An entry whose name is a rollout's and whose bytes cannot be read, under a path neither plant
+        # claims: the snapshot of the sessions a conversion must not touch cannot be taken from it. A
+        # directory is the shape every host can stage; a dangling link is the shape a half-synced home
+        # holds, staged where the host can make one.
+        if unreadable_home_entry is not None:
+            entry = home / "sessions" / "rollout-2026-01-01T00-00-02-00000000-0000-7000-8000-00000000a010.jsonl"
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            if unreadable_home_entry == "directory":
+                entry.mkdir()
+            elif unreadable_home_entry == "link":
+                if not HOST_CONTRACT.make_symlink(scratch / SYMLINK_TARGET_NAME, entry, is_dir=False):
+                    self.skipTest("this host cannot create a symlink")
+            else:
+                raise AssertionError(f"unknown unreadable_home_entry shape: {unreadable_home_entry}")
         # The two reported command lines are rendered the way the conversion's own renderer spells one
         # (`internal/ccc/continue.go`'s ``renderResumeCommand``/``shellQuote``: the environment's value,
         # then every argument word, quoted where a POSIX shell would act on it), because the harness
@@ -768,8 +934,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             root = Path((env or {}).get("CLAUDE_PROJECTS_DIR", str(scratch / "source")))
             return root / "-fake-project" / f"{NATIVE_CHECK.SOURCE_SESSION}.jsonl"
 
-        def document_for(which: str, env: dict | None) -> dict:
-            """One conversion's stub document: its own session id, path and boundary of the copy's bytes."""
+        def document_for(which: str, env: dict | None, binary: str) -> dict:
+            """One conversion's stub document: its own session id, path and boundary of the copy's bytes.
+
+            ``binary`` is the ``--target-binary`` the harness handed this conversion, so the document's
+            reported invocations are the words the harness will compare with its own resolved path.
+            """
             copy = source_copy(env)
             boundary = {"state": "taken", "detail": "the case's stub boundary", "path": str(copy),
                         "bytes": copy.stat().st_size, "sha256": NATIVE_CHECK.sha256(copy),
@@ -780,8 +950,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 boundary.update(second_boundary or {})
             session, path = ((thread_id, installed) if which == "first"
                              else (second_thread_id, second_installed))
-            resume_arguments = [codex, "resume", session]
-            exec_resume_arguments = [codex, "exec", "resume", session, "<prompt>"]
+            resume_arguments = [binary, "resume", session]
+            exec_resume_arguments = [binary, "exec", "resume", session, "<prompt>"]
             user_messages, assistant_messages = (1, 1) if which == "first" else (2, 2)
             return {
                 "conversion": {
@@ -829,8 +999,33 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         #: cannot guess its name).
         converted_copy: dict[str, Path] = {}
 
+        #: The argv[0] of every codex invocation the stub was asked for: the path this run resolved and
+        #: launched, which the lexical-codex case reads back against the path it handed in.
+        turn_paths: list[str] = []
+
+        #: The deadline `subprocess.run` was called with where the turn overran it: the duration the
+        #: run's own report has to name, read from the call rather than spelled here.
+        turn_deadlines: list[float] = []
+
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
+            if raises_at is not None:
+                # One of the run's own invocations never answers: the process cannot start, or the
+                # turn's deadline passes. Which one is this case's choice, so each check standing on a
+                # command has its own arm.
+                unstartable = {
+                    "build": command[0] == go,
+                    "convert": command[0] == str(repo / NATIVE_CHECK.BINARY)
+                    and command[1] == "continue",
+                    "inspect": command[0] == str(repo / NATIVE_CHECK.BINARY)
+                    and command[1] == "inspect",
+                    "turn": command[1:2] == ["exec"],
+                }[raises_at]
+                if unstartable:
+                    if raises_at == "turn":
+                        turn_deadlines.append(timeout)
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    raise OSError(f"the case's stub could not start {command[0]}")
             if command[0] == go:
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if command[0] == str(repo / NATIVE_CHECK.BINARY):
@@ -844,7 +1039,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         # mutated file's own -- what fails is the comparison against the earlier bytes, not
                         # a report that disagrees with the file it describes.
                         same_length_swap(converted_copy[which])
-                    document = document_for(which, env)
+                    document = document_for(which, env,
+                                            command[command.index("--target-binary") + 1])
                     path = Path(document["target_session"]["path"])
                     path.parent.mkdir(parents=True, exist_ok=True)
                     body = json.dumps({"type": "session_meta"}) + "\n"
@@ -856,7 +1052,16 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         body += fragment.read_text()
                     if which == "second" and mutate_first_session_by_second:
                         installed.write_text(installed.read_text() + json.dumps({"type": "turn"}) + "\n")
-                    path.write_text(body)
+                    if which == "first" and installed_unreadable:
+                        # The name the document reports holds a directory instead of the file: every
+                        # read of it must be the check's own named failure, never an exception.
+                        path.mkdir()
+                    elif which == "first" and installed_undecodable:
+                        # One 0xFF byte inside a JSON string: bytes no UTF-8 decoder reads, and text a
+                        # lenient locale's decoder would answer as a string the line rule accepts.
+                        path.write_bytes(body.encode("utf-8") + b'{"note": "\xff"}\n')
+                    else:
+                        path.write_text(body)
                     return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
                 if command[1] == "inspect":
                     which = "second" if second_thread_id in command[2] else "first"
@@ -865,12 +1070,23 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                               "tool_calls": 1, "tool_results": 1, "compact_boundaries": 0}
                     return subprocess.CompletedProcess(
                         cmd, 0, json.dumps({"source": {"counts": counts}}), "")
-            if command[0] == codex and command[1] == "exec":
+            if command[1:2] == ["exec"]:
                 # The resume stage: a turn that continued (the session it names grows) and, when this
-                # case asks for it, the mutation both protected artifacts have to survive.
+                # case asks for it, the mutation both protected artifacts have to survive. Matched by
+                # its own subcommand, so a run that spells the binary differently (a relative `--codex`
+                # the run did not resolve, the very defect the relative-codex case pins) still reaches
+                # the turn rather than failing inside this fixture first.
+                turn_paths.append(command[0])
+                if turn_exit_code is not None:
+                    return subprocess.CompletedProcess(cmd, turn_exit_code, "",
+                                                       "the stub turn refused\n")
                 second = second_thread_id in command
                 turned = second_installed if second else installed
-                turned.write_text(turned.read_text() + json.dumps({"type": "turn"}) + "\n")
+                if second or not (installed_unreadable or installed_undecodable):
+                    # `installed_unreadable` staged a directory at the first session's name and
+                    # `installed_undecodable` bytes no decoder reads: the turn cannot add a record to
+                    # either, and the turn's own check records the non-growth.
+                    turned.write_text(turned.read_text() + json.dumps({"type": "turn"}) + "\n")
                 if copy_mutation == ("second turn" if second else "first turn"):
                     # The copy the conversions read, changed while a real *turn* runs: for the first turn
                     # the growth's baseline comparison is still ahead of it (so that comparison, and only
@@ -885,42 +1101,75 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             raise AssertionError(f"the case's stub was asked for an unexpected command: {command}")
 
         class FakeAppServer:
-            """The app server this case never starts: it answers the loader with the installed file."""
+            """The app server this case never starts: it answers the loader with the installed file and
+            the view with a `thread/read` reply of its own.
+
+            The reply is a *reply*: the shipped `thread_view` extraction reads it, so a case that changes
+            what the reply lists -- or one whose message text spells an expected kind without an item of
+            that type existing -- exercises the shipped reading instead of standing in for its result.
+            """
 
             def __init__(self, binary, home):
                 self.binary, self.home = binary, home
 
-            def handshake(self) -> None:
-                pass
+            def handshake(self):
+                return None
 
-            def call(self, method: str, params: dict) -> dict:
-                if method != "thread/resume":
+            def call(self, method: str, params: dict):
+                if method not in ("thread/resume", "thread/read"):
                     raise AssertionError(f"the case's stub was asked for {method}")
                 session = str(params.get("threadId"))
+                if session not in (thread_id, second_thread_id):
+                    raise AssertionError(
+                        f"the case's stub was asked about session {session}, which this case did not "
+                        f"stage")
                 second = session == second_thread_id
                 path = second_installed if second else installed
+                if method == "thread/read":
+                    if view_reply == "read-fails":
+                        return NATIVE_CHECK.NoAnswer(
+                            "the app server closed its output while answering thread/read")
+                    if view_reply == "text-only":
+                        # The expected kind appears only inside message text: a reading that rendered the
+                        # lines and looked for the words there answers the kinds it sees here, where a
+                        # reading of the items' own `type` fields answers none of them.
+                        text = "userMessage agentMessage"
+                        if second:
+                            text = f"{GROWTH_QUESTION} {GROWTH_ANSWER} {text}"
+                        items = [{"type": "reasoning", "text": text}]
+                    else:
+                        question = GROWTH_QUESTION if second else "the case's own question"
+                        answer = GROWTH_ANSWER if second else "the case's own answer"
+                        if second and not include_growth_in_second:
+                            question = "a question without the appended turn"
+                            answer = "an answer without the appended turn"
+                        items = [
+                            {"type": "userMessage",
+                             "content": [{"type": "text", "text": question}]},
+                            {"type": "agentMessage", "text": answer},
+                        ]
+                    return NATIVE_CHECK.Thread({"thread": {
+                        "id": session, "historyMode": "legacy",
+                        "turns": [{"id": f"{session}-turn", "items": items}]}})
                 if copy_mutation == ("second load" if second else "first load"):
                     # The copy the conversions read, changed while the target harness's own loader runs:
                     # for the second session that is after the second conversion and its own comparison, so
                     # only the comparison that runs last can catch it; for the first it is before the
                     # growth, so the changed bytes would become every later comparison's baseline.
                     same_length_swap(converted_copy["second" if second else "first"])
-                return {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
-                                   "cwd": "/tmp"}}
+                return NATIVE_CHECK.Thread(
+                    {"thread": {"id": session, "path": str(path), "historyMode": "legacy",
+                                "cwd": "/tmp"}})
 
             def close(self) -> None:
                 pass
 
-        def fake_thread_view(server, thread):
-            lines = [f"thread {thread} (the case's stub's own view)"]
-            if str(thread) == second_thread_id and include_growth_in_second:
-                # The target's own view of the later session: the turn the source gained, as the harness
-                # itself lists it.
-                lines += [f"    userMessage: {GROWTH_QUESTION}", f"    agentMessage: {GROWTH_ANSWER}"]
-            return lines, ["userMessage", "agentMessage"]
-
         def fake_which(name, *args, **kwargs):
-            return codex if name == "codex" else go
+            # Asked by name or by path (`--codex` may be either), the harness is answered the codex
+            # stub; only the Go toolchain is answered its own name.
+            if name == "go":
+                return go
+            return which_answer if which_answer is not None else codex
 
         prompts = ["--resume-prompt", "answer only from this conversation"]
         if repeat_turn:
@@ -928,15 +1177,103 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             # turn each), so a case can put its mutation in either turn's own window.
             prompts += ["--repeat-resume-prompt", "answer only from this conversation"]
         before = len(NATIVE_CHECK.RESULTS)
-        with mock.patch.object(NATIVE_CHECK, "run", fake_run), \
-                mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer), \
-                mock.patch.object(NATIVE_CHECK, "thread_view", fake_thread_view), \
-                mock.patch("shutil.which", fake_which), \
-                contextlib.redirect_stdout(io.StringIO()):
-            code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", "codex",
-                                      "--codex-home", str(home)] + prompts)
-        results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
-        del NATIVE_CHECK.RESULTS[before:]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        race_path = planted if race_plant else None
+        write_fails_path = planted if plant_write_fails else None
+        unlink_fails_path = planted if unlink_fails else None
+        claimed = {"fired": False}
+        failed_write = {"fired": False}
+        real_open = Path.open
+        real_unlink = Path.unlink
+
+        class WriteFailsHandle:
+            """The handle a plant receives where this case makes its write fail: the name is already
+            reserved (the real exclusive create ran), and the write raises after closing it, so the
+            partial file the reservation left behind is what cleanup has to answer for."""
+
+            def __init__(self, handle):
+                self._handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._handle.close()
+                return False
+
+            def write(self, data):
+                self._handle.close()
+                raise OSError("the case's write failed after the name was reserved")
+
+        def case_open(self, *args, **kwargs):
+            # The other writer wins the race the moment this run's plant reaches the name: the file is
+            # there before the open that would create or truncate it, whatever that open is.
+            if race_path is not None and not claimed["fired"] and Path(self) == race_path:
+                claimed["fired"] = True
+                with real_open(race_path, "wb") as handle:
+                    handle.write(RACE_PLANT_TEXT)
+            handle = real_open(self, *args, **kwargs)
+            if write_fails_path is not None and not failed_write["fired"] and Path(self) == write_fails_path:
+                failed_write["fired"] = True
+                return WriteFailsHandle(handle)
+            return handle
+
+        def case_unlink(self, *args, **kwargs):
+            if unlink_fails_path is not None and Path(self) == unlink_fails_path:
+                raise PermissionError(f"the case's own removal of {self} is refused")
+            return real_unlink(self, *args, **kwargs)
+
+        patches = []
+        if race_path is not None or write_fails_path is not None:
+            patches.append(mock.patch.object(Path, "open", case_open))
+        if unlink_fails_path is not None:
+            patches.append(mock.patch.object(Path, "unlink", case_unlink))
+        host_home = scratch / "host-codex-home"
+        argv = ["--repo", str(repo), "--codex", codex_argument]
+        if host_configuration is None:
+            argv += ["--codex-home", str(home)]
+        else:
+            # No `--codex-home`: the run makes (and seeds) its own home under its scratch tree, and
+            # `CODEX_HOME` answers the "host's own configuration" the seeding reads, exactly as the
+            # caller's environment does.
+            host_home.mkdir()
+            (host_home / "config.toml").write_text(host_configuration, encoding="utf-8")
+        argv += prompts + (["--json"] if json_report else []) + (["--keep"] if keep else [])
+        try:
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                # The run's scratch directory is this case's own name for it (the patched `mkdtemp`),
+                # so the tree it leaves or keeps is addressable after the run.
+                stack.enter_context(mock.patch.object(tempfile, "mkdtemp", case_mkdtemp))
+                stack.enter_context(mock.patch.object(NATIVE_CHECK, "run", fake_run))
+                stack.enter_context(mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer))
+                stack.enter_context(mock.patch("shutil.which", fake_which))
+                if codex_launch_refusal:
+                    # The word is carried through `which`; the rule is driven over the win32 dialect,
+                    # because only it has a drive-relative spelling for the call site to refuse.
+                    real_launch = NATIVE_CHECK.absolute_launch_path
+                    stack.enter_context(mock.patch.object(
+                        NATIVE_CHECK, "absolute_launch_path",
+                        lambda path: real_launch(path, pathmod=ntpath, cwd="C:\\work")))
+                if host_configuration is not None:
+                    stack.enter_context(mock.patch.dict(os.environ,
+                                                        {"CODEX_HOME": str(host_home)}))
+                stack.enter_context(contextlib.redirect_stdout(stdout))
+                stack.enter_context(contextlib.redirect_stderr(stderr))
+                code = NATIVE_CHECK.main(argv)
+            results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
+        finally:
+            # A run that raised before recording its summary still wrote into the module's own list --
+            # and the *next* run's exit code is computed from that list, so a case that drives a raising
+            # run would redden every case after it.
+            del NATIVE_CHECK.RESULTS[before:]
+        self.last_stdout, self.last_stderr, self.last_home = stdout.getvalue(), stderr.getvalue(), home
+        self.last_scratch = run_scratch
+        self.last_planted = planted
+        self.last_turn_paths = turn_paths
+        self.last_turn_deadline = turn_deadlines[-1] if turn_deadlines else None
+        self.last_codex_argument = codex_argument
         return code, results
 
     def test_a_mutation_during_the_resume_stage_is_caught_by_the_last_comparison(self) -> None:
@@ -1243,6 +1580,894 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 self.assertEqual(code, 1,
                                  f"exit {code} for a run whose JSONL check failed: {results}")
 
+    def test_a_callers_dangling_symlink_under_a_plants_name_is_a_collision(self) -> None:
+        """A dangling symlink is a collision like any other, never written through or deleted.
+
+        The caller's own link sits under the plant's name with its target not created, so a guard asking
+        ``exists()`` sees nothing: the run must refuse (exit 2) naming the collision, leave the link
+        exactly as it found it, not follow it (the target is not created), and write no fabrication of
+        its own beside it. A guard asking ``exists()`` would write through the link with the plant's own
+        write and unlink the caller's link in the cleanup instead. The run keeps its scratch tree, so the
+        link staged under the caller's home survives for the assertions. Staging it needs the host to
+        make a symlink; the refusal path itself is pinned host-independently by the exclusive create's
+        seam case in ``ForeignHomeOwnership``, so a host without the privilege skips this arm.
+        """
+        code, _ = self.drive(mutate_during_resume=False, dangling_symlink=True, keep=True)
+        self.assertEqual(code, 2, f"exit {code} for the dangling symlink: {self.last_stderr}")
+        self.assertIn("already exists", self.last_stderr,
+                      f"the refusal does not name the collision: {self.last_stderr}")
+        link = self.last_planted
+        self.assertTrue(link.is_symlink() and not link.exists(),
+                        f"the run did not leave the caller's dangling link as it found it: "
+                        f"is_symlink={link.is_symlink()}, exists={link.exists()}")
+        target = self.last_home.parent / SYMLINK_TARGET_NAME
+        self.assertFalse(target.exists(),
+                         f"the run wrote through the caller's link: {target} was created")
+
+    def test_a_refused_collision_leaves_no_scratch_tree(self) -> None:
+        """A refused run owns nothing it created, and it leaves the caller's file alone.
+
+        The collision guard fires at the plant — the name the caller already holds — and the scratch tree
+        this run made for itself (the fixture copy and any seeded configuration) is removed on that
+        refusal path too, so a collision does not leave one tree per attempt behind. The refusal itself
+        must not write through the file or remove it: the caller's bytes stand exactly as they were.
+        """
+        code, _ = self.drive(mutate_during_resume=False, seed_unrelated=True)
+        self.assertEqual(code, 2, f"exit {code} for a collision: {self.last_stderr}")
+        self.assertIn("already exists", self.last_stderr, self.last_stderr)
+        self.assertFalse(self.last_scratch.exists(),
+                         "the refused run left its own scratch tree behind")
+        planted = (self.last_home / "sessions" / "2026" / "01" / "01"
+                   / NATIVE_CHECK.UNRELATED_NAME)
+        self.assertEqual(planted.read_text(),
+                         "the caller's own file under the unrelated session's name\n",
+                         "the run did not leave the caller's colliding file as it found it")
+
+    def test_a_keep_run_that_refuses_keeps_and_names_its_scratch_tree(self) -> None:
+        """`--keep` is honoured on the refusal path: a collision with `--keep` leaves this run's tree
+        where the run says it is, rather than removing it silently — the promise the flag's own help
+        makes, and the promise a refusal would otherwise break."""
+        code, _ = self.drive(mutate_during_resume=False, keep=True, seed_unrelated=True)
+        self.assertEqual(code, 2, f"exit {code} for a collision: {self.last_stderr}")
+        self.assertTrue(self.last_scratch.exists(),
+                        f"a --keep run removed its own scratch tree: {self.last_scratch}")
+        self.assertIn(f"kept {self.last_scratch}", self.last_stdout,
+                      f"the refusal does not say where the scratch tree it kept is: "
+                      f"{self.last_stdout!r}")
+
+    def test_a_write_that_fails_after_the_reservation_leaves_no_leftover(self) -> None:
+        """R3-1's window: the exclusive create reserved the name and the write then failed.
+
+        The stub makes the plant's own write raise after the real `O_EXCL` create succeeded, so the name
+        is reserved and the file is partial. The run must answer INCOMPLETE naming the path, remove the
+        partial file, and leave the home as it found it: the retry arm below plants the same name again
+        and finds it free, the state the finding measured the pre-fix run breaking (the partial file
+        stayed, and the next run refused the fixed name as a collision).
+        """
+        code, results = self.drive(mutate_during_resume=False, plant_write_fails=True)
+        sessions = self.last_home / "sessions" / "2026" / "01" / "01"
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
+        self.assertIn("INCOMPLETE", self.last_stderr, self.last_stderr)
+        self.assertIn(str(self.last_planted), self.last_stderr,
+                      f"the failure does not name the path whose write failed: {self.last_stderr!r}")
+        self.assertIn("cannot be written", self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "the failed write came out as a traceback")
+        self.assertFalse(self.last_planted.exists(),
+                         "the failed write left its reserved name behind")
+        self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
+                         "the failed run left its fabrication behind")
+        self.assertFalse((self.last_home / "sessions" / "2026").exists(),
+                         "the failed run left the tree it created for its fabrication behind")
+        self.assertEqual(results, {}, f"the INCOMPLETE run recorded checks: {sorted(results)}")
+        # The retry arm: the same name, a fresh owner -- nothing of the failed run is left to meet.
+        retry = NATIVE_CHECK.ForeignHome()
+        planted, failure = retry.plant(self.last_planted, b"a retry's own bytes\n")
+        self.assertEqual((planted, failure), (True, ""),
+                         "a retry's plant still meets a leftover under the reserved name")
+        retry.remove_all()
+
+    def test_a_fabrication_the_run_cannot_remove_is_incomplete_by_name(self) -> None:
+        """A removal that fails is INCOMPLETE naming the path, never a verdict that outruns it.
+
+        The stub makes the run's own removal of the planted session refuse. Every check the run made is
+        green, so a run that swallowed the failure would exit 0 while the run's own home still held this
+        harness's file; with the ownership object the failure is reported once, by name, and the run
+        answers 2. The file stays where the removal could not take it -- reported, not pretended away,
+        and the kept scratch tree is what the case reads it back from."""
+        code, results = self.drive(mutate_during_resume=False, unlink_fails=True, keep=True)
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
+        self.assertEqual(self.last_stderr.count("INCOMPLETE"), 1,
+                         f"the removal failure was not reported exactly once: {self.last_stderr!r}")
+        self.assertIn(str(self.last_planted), self.last_stderr, self.last_stderr)
+        self.assertIn("cannot be removed", self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "the refused removal came out as a traceback")
+        self.assertTrue(self.last_planted.exists(),
+                        "the run reported the fabrication removed while it is still there")
+        self.assertEqual(sorted(name for name, (state, _) in results.items() if state == "FAIL"), [],
+                         f"the run's checks contain a failure that is not the leftover: {results}")
+
+    def test_a_view_whose_kinds_appear_only_in_message_text_is_not_read_as_typed(self) -> None:
+        """R3-4's drive pin: the item kinds the checks require come from the reply's own item types.
+
+        The stub answers `thread/read` with a reply whose only item is a `reasoning` item whose *text*
+        spells `userMessage` and `agentMessage`, and whose second-session text also holds the appended
+        turn's words, so the words in the text cannot make the two kind checks pass while the appended
+        words are found. A shipped extraction that stopped collecting kinds answers the first check red
+        too; one that read the kinds out of the rendered lines turns this case's expected failure set
+        into a green pair, which fails the case's own assertion.
+        """
+        code, results = self.drive(mutate_during_resume=False, view_reply="text-only")
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the target's own view lists the converted turns",
+                                 "the target's own view of the second session lists the appended turn"]),
+                         f"a reply whose kinds appear only in message text was answered differently: "
+                         f"{results}")
+        self.assertIn("the appended turn's own words are in its own view",
+                      results["the target's own view of the second session lists the appended turn"][1])
+        self.assertEqual(code, 1, f"exit {code} for a run whose view checks failed: {results}")
+
+    def test_a_read_failure_does_not_speak_for_the_resume(self) -> None:
+        """R7-2's drive pin: `thread/resume` answered and `thread/read` answered no result.
+
+        The two outcomes are reported separately: each loader check is the resume's own verdict (PASS,
+        naming the id and path it answered) while the checks that stand on the read fail naming the
+        read's own words. A run that recorded the read failure under the loader's name shows the loader
+        FAIL here, and one whose view check passed despite the failed read shows no view failure; the
+        resume the stub's binary answered never reads as a failed open either way.
+        """
+        code, results = self.drive(mutate_during_resume=False, view_reply="read-fails")
+        for name in ("the target harness's own loader opens the installed session",
+                     "the target harness's own loader opens the second installed session"):
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "PASS",
+                             f"a read-only failure spoke for the resume at {name}: {results}")
+            self.assertIn("thread/resume ->", detail, detail)
+        failed = sorted(name for name, (state, _) in results.items() if state == "FAIL")
+        self.assertEqual(failed,
+                         sorted(["the target's own view lists the converted turns",
+                                 "the target's own view of the second session lists the appended turn",
+                                 "the first session's own view does not hold the appended turn"]),
+                         f"the failed reads were not answered by the view checks: {results}")
+        for name in ("the target's own view lists the converted turns",
+                     "the target's own view of the second session lists the appended turn"):
+            self.assertIn("thread/read", results[name][1],
+                          f"{name}: the read's own failure is not named: {results[name]}")
+        self.assertEqual(code, 1, f"exit {code} for a run whose view reads failed: {results}")
+
+    def test_a_file_racing_the_plant_is_neither_clobbered_nor_deleted(self) -> None:
+        """Two writers at one name: the run must not clobber or remove the other writer's file.
+
+        The other writer wins at the plant's own seam: the file appears the moment this run first
+        reaches the name, which is the window the finding names -- after this run had begun and before
+        its plant wrote. Pre-fix the run truncates that file with its own plant and its cleanup then
+        removes it (measured: exit 0, the file gone, 29 checks recorded); with the exclusive create as
+        the reservation the run refuses the name (exit 2, naming it), the file is left byte for byte as
+        the other writer left it, and no check was recorded at all. The run keeps its scratch tree, so
+        the raced file survives for the assertion.
+        """
+        code, results = self.drive(mutate_during_resume=False, race_plant=True, keep=True)
+        raced = self.last_planted
+        self.assertEqual(code, 2, f"exit {code} for the raced plant: {self.last_stdout!r}")
+        self.assertIn("already exists", self.last_stderr, self.last_stderr)
+        self.assertIn(str(raced), self.last_stderr,
+                      f"the refusal does not name the raced file: {self.last_stderr!r}")
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "the refusal came out as a traceback")
+        self.assertEqual(raced.read_bytes(), RACE_PLANT_TEXT,
+                         "the run changed the file another writer left at the name")
+        self.assertEqual(results, {},
+                         f"the refused run recorded checks: {sorted(results)}")
+
+    def test_an_unreadable_entry_in_the_home_ends_the_run_incomplete(self) -> None:
+        """The snapshot of the home's own sessions is taken or the run does not proceed.
+
+        A directory under a `rollout-*.jsonl` name is an entry whose bytes cannot be read -- the shape
+        every host can stage, with the dangling-link integration case below as its sibling. ``rglob``
+        lists it like any other entry, so the pre-fix snapshot raised out of the run (measured: exit 1
+        with ``IsADirectoryError``); the fix makes it INCOMPLETE (exit 2) naming the path and the
+        failure before any check runs, with the entry left exactly as found and this run's own
+        fabrications removed.
+        """
+        code, results = self.drive(mutate_during_resume=False, unreadable_home_entry="directory")
+        entry = (self.last_home / "sessions"
+                 / "rollout-2026-01-01T00-00-02-00000000-0000-7000-8000-00000000a010.jsonl")
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stdout!r} / {self.last_stderr!r}")
+        self.assertIn("INCOMPLETE", self.last_stderr, self.last_stderr)
+        self.assertIn(str(entry), self.last_stderr, self.last_stderr)
+        self.assertIn("cannot be read", self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "the unreadable entry came out as a traceback")
+        self.assertTrue(entry.is_dir(), "the run removed or replaced the entry it found")
+        sessions = self.last_home / "sessions" / "2026" / "01" / "01"
+        self.assertFalse((sessions / NATIVE_CHECK.UNRELATED_NAME).exists(),
+                         "the INCOMPLETE run left its own fabrication behind")
+        self.assertEqual(results, {},
+                         f"the run recorded checks before answering INCOMPLETE: {sorted(results)}")
+
+    def test_a_dangling_rollout_link_in_the_home_ends_the_run_incomplete(self) -> None:
+        """The same rule where the unreadable entry is a *dangling* link.
+
+        A half-synced home holds links like this one, and the operator's own probe crashed on exactly
+        the shape this case stages (a link under ``sessions/`` named like a rollout). Staging it needs
+        the host to make a symlink; the directory case above is the host-independent pin, so a host
+        without the privilege skips this arm rather than the rule.
+        """
+        code, results = self.drive(mutate_during_resume=False, unreadable_home_entry="link")
+        entry = (self.last_home / "sessions"
+                 / "rollout-2026-01-01T00-00-02-00000000-0000-7000-8000-00000000a010.jsonl")
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stdout!r} / {self.last_stderr!r}")
+        self.assertIn("INCOMPLETE", self.last_stderr, self.last_stderr)
+        self.assertIn(str(entry), self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "the dangling link came out as a traceback")
+        self.assertTrue(entry.is_symlink() and not entry.exists(),
+                        "the run followed or removed the caller's link")
+        self.assertFalse((self.last_home.parent / SYMLINK_TARGET_NAME).exists(),
+                         "the run wrote through the caller's link")
+        self.assertEqual(results, {},
+                         f"the run recorded checks before answering INCOMPLETE: {sorted(results)}")
+
+    def test_an_installed_session_that_cannot_be_read_is_a_named_failure(self) -> None:
+        """Every read of the installed file answers by name, never a traceback.
+
+        The stub's first conversion reports a name that holds a directory instead of the file (an
+        unreadable path every host can stage). The installed file's own checks -- the JSONL reading, the
+        digests bracketing the second conversion, the search for the appended turn -- each record their
+        own failure carrying the path and the failure, the closing comparisons still run and pass, and
+        the run exits 1 with no traceback. Pre-fix the first read raised ``IsADirectoryError`` out of
+        ``main``.
+        """
+        code, results = self.drive(mutate_during_resume=False, installed_unreadable=True)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "an unreadable installed session came out as a traceback")
+        self.assertEqual(code, 1, f"exit {code}: {self.last_stderr!r}")
+        state, detail = results.get("the installed file is one JSON object per line", ("missing", ""))
+        self.assertEqual(state, "FAIL", f"{state} — {detail}")
+        self.assertIn("cannot be read", detail, detail)
+        for name in ("the first conversion's session is unchanged by the second",
+                     "the second conversion carries the history the source gained"):
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "FAIL", f"{name}: {state} — {detail}")
+            self.assertIn("cannot be read", detail, detail)
+        self.assertEqual(results.get("the source session is unchanged", ("missing", ""))[0], "PASS",
+                         f"the closing comparison did not run on the unreadable run: {results}")
+
+    def test_an_installed_session_that_is_not_utf8_is_a_named_failure(self) -> None:
+        """An invalid UTF-8 byte in the installed file is a text read's named failure, not an exception.
+
+        The stub's first conversion reports a name whose file holds one 0xFF byte inside a JSON
+        string — bytes no UTF-8 decoder reads, and text a lenient locale's decoder would answer as a
+        string the line rule accepts. The text reads are decoded as UTF-8 explicitly, so each records
+        its own failure carrying the path (pre-fix the helper read through the locale encoding: the
+        strict locale raised ``UnicodeDecodeError`` out of ``main``, and the lenient locale's verdict
+        followed the locale instead of the file's bytes). The byte digest of the same file still
+        answers, so the pair's digest comparison passes — the failure is exactly the text reads — and
+        the run exits 1 with no traceback.
+        """
+        code, results = self.drive(mutate_during_resume=False, installed_undecodable=True)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "an undecodable installed session came out as a traceback")
+        self.assertEqual(code, 1, f"exit {code}: {self.last_stderr!r}")
+        for name in ("the installed file is one JSON object per line",
+                     "the second conversion carries the history the source gained"):
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "FAIL", f"{name}: {state} — {detail}")
+            self.assertIn("cannot be read as UTF-8", detail, detail)
+        self.assertEqual(results.get("the first conversion's session is unchanged by the second",
+                                     ("missing", ""))[0], "PASS",
+                         f"the same file's digest comparison did not run: {results}")
+        self.assertEqual(results.get("the source session is unchanged", ("missing", ""))[0], "PASS",
+                         f"the closing comparison did not run on the undecodable run: {results}")
+
+    def test_the_seeded_configuration_is_written_as_utf8_whatever_the_locale_answers(self) -> None:
+        """The scratch TOML is written as UTF-8: a host whose locale cannot encode the value still gets
+        the home seeded.
+
+        The locale's answer is stubbed the way a CP1252 Windows process answers it — the process's
+        default text encoding is ASCII, where this host's is not — and the control write below shows
+        the stub is live, so a green run is the shipped write naming UTF-8 rather than the stub having
+        gone quiet. A non-ASCII value travels both halves: the host configuration's provider name, read
+        from the host file (r11's UTF-8 read) and written into the scratch home (the r9 finding's own
+        write). A write that took the locale's answer instead raised out of ``main`` before any check
+        could run, so no verdict and no cleanup happened at all.
+        """
+        emoji = "\N{SNOWMAN}\N{VARIATION SELECTOR-16}"
+        host_configuration = (
+            'model = "a-host-model"\n'
+            'model_provider = "a-proxy"\n'
+            "\n"
+            "[model_providers.a-proxy]\n"
+            f'name = "A Proxy {emoji}"\n'
+            'base_url = "https://proxy.example/v1"\n'
+            'wire_api = "responses"\n'
+        )
+        real_text_encoding = io.text_encoding
+
+        def ascii_locale(encoding, stacklevel=2):
+            return "ascii" if encoding is None else real_text_encoding(encoding, stacklevel)
+
+        with tempfile.TemporaryDirectory(prefix="ccc-locale-probe-") as probe_dir:
+            with mock.patch.object(io, "text_encoding", ascii_locale):
+                with self.assertRaises(UnicodeEncodeError):
+                    (Path(probe_dir) / "probe.txt").write_text(emoji)
+                code, _ = self.drive(mutate_during_resume=False,
+                                     host_configuration=host_configuration, keep=True)
+        self.assertEqual(code, 0, f"exit {code}: {self.last_stderr!r}")
+        seeded = self.last_scratch / "codex-home" / "config.toml"
+        seeded_text = seeded.read_bytes().decode("utf-8")
+        self.assertEqual(seeded_text, NATIVE_CHECK.seed_configuration(host_configuration, {}).text,
+                         "the home's bytes are not the seeding this run read")
+        self.assertIn(emoji, seeded_text, "the non-ASCII value did not survive into the home")
+        self.assertEqual(tomllib.loads(seeded_text)["model_providers"]["a-proxy"]["name"],
+                         f"A Proxy {emoji}")
+
+    def test_a_command_that_cannot_be_started_is_a_named_failure(self) -> None:
+        """Every invocation the run stands on answers by name when the process never starts.
+
+        One at a time (``raises_at``): the build, a conversion, the reader's read-back and a real turn
+        (whose stub overruns its deadline instead). Pre-fix each ``OSError``/``TimeoutExpired`` left
+        ``main`` as a traceback; with the fix the check standing on the command is recorded FAIL
+        carrying the failure, so the run's verdict and exit code stay answerable — 2 where no check
+        could run at all, 1 where one did.
+        """
+        for label, at, check_name, want_exit in (
+                ("the build", "build", "ccc builds with the flags upstream ships", 2),
+                ("the first conversion", "convert",
+                 "ccc continue converts, installs and verifies", 1),
+                ("the reader's read-back", "inspect",
+                 "the inherited reader reads the installed file back as what was written", 1),
+                ("a real turn", "turn",
+                 "a real turn continues from the installed session", 1),
+        ):
+            with self.subTest(unstartable=label):
+                code, results = self.drive(mutate_during_resume=False, raises_at=at)
+                self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                                 f"{label}: the failure came out as a traceback")
+                state, detail = results.get(check_name, ("missing", ""))
+                self.assertEqual(state, "FAIL", f"{label}: {check_name}: {state} — {detail}")
+                self.assertIn("could not run", detail,
+                              f"{label}: the failure is not its own words: {detail}")
+                self.assertEqual(code, want_exit, f"{label}: exit {code}: {self.last_stderr!r}")
+
+    def test_a_turn_that_never_answered_is_not_counted_as_run(self) -> None:
+        """The run's own count of turns is the turns that ran, never the prompt flags a caller passed.
+
+        The intact run's turn answers, and the count says one. With the turn's process unable to answer
+        (``raises_at="turn"``: the stub overruns the deadline), the check records its own FAIL and the
+        count must say zero — a count derived from ``--resume-prompt`` alone would still say one, which
+        is the reading this case pins.
+        """
+        code, _ = self.drive(mutate_during_resume=False)
+        self.assertEqual(code, 0, f"exit {code}: {self.last_stderr!r}")
+        self.assertIn("real turn(s) run: 1", self.last_stdout)
+        code, results = self.drive(mutate_during_resume=False, raises_at="turn")
+        self.assertEqual(results["a real turn continues from the installed session"][0], "FAIL",
+                         f"the unanswering turn was not recorded as a failure: {results}")
+        self.assertIn("real turn(s) run: 0", self.last_stdout,
+                      "a turn that never answered was counted as run")
+
+    def test_a_turn_that_overran_its_deadline_names_the_duration_not_the_command(self) -> None:
+        """The deadline is reported as a duration; the command line — which carries the prompt — is not.
+
+        ``TimeoutExpired``'s own ``str`` holds the whole argument vector, and this run's turn carries
+        the prompt as one of its words, so formatting the exception into the check's detail put the
+        prompt into the printed report and, with ``--json``, into the machine-readable one (both read
+        the same recorded detail). The stub overruns the deadline with the argv this run really built
+        and the timeout it was really given, so the words this case asserts are the run's own.
+        """
+        prompt = "answer only from this conversation"
+        code, results = self.drive(mutate_during_resume=False, raises_at="turn", json_report=True)
+        state, detail = results.get("a real turn continues from the installed session",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL", f"the turn's own check: {state} — {detail}")
+        self.assertIsNotNone(self.last_turn_deadline,
+                             "the stub was never handed the turn's own deadline")
+        self.assertIn(f"did not finish within {self.last_turn_deadline} seconds", detail,
+                      f"the report does not name the deadline the turn was given: {detail}")
+        self.assertNotIn(prompt, detail, f"the recorded detail holds the prompt: {detail}")
+        self.assertNotIn(prompt, self.last_stdout,
+                         "a report (the printed one or --json) holds the turn's prompt")
+        self.assertEqual(code, 1, f"exit {code}: {self.last_stderr!r}")
+
+    def test_a_turn_that_exited_non_zero_without_growing_the_session_is_not_counted(self) -> None:
+        """The count is the predicate the turn's own check records, for the answer as well as the silence.
+
+        ``turn_exit_code`` makes the turn's process *answer* non-zero and leave the session's bytes
+        alone — the shape of a harness that refuses the turn. The check records FAIL (its own predicate:
+        exit zero and a grown session) and the run's count must say zero: counting the *attempt* would
+        print one real turn where the check the run stands on answered no, which is the half of the
+        round-5 finding the timeout arm above does not reach.
+        """
+        code, results = self.drive(mutate_during_resume=False, turn_exit_code=3)
+        state, detail = results.get("a real turn continues from the installed session", ("missing", ""))
+        self.assertEqual(state, "FAIL", f"the refused turn was not recorded as a failure: {results}")
+        self.assertIn("exit 3", detail, detail)
+        self.assertIn("real turn(s) run: 0", self.last_stdout,
+                      "a turn whose process answered non-zero was counted as run")
+        self.assertEqual(code, 1, f"exit {code}: {self.last_stderr!r}")
+
+    def test_a_codex_argument_with_a_lexical_shortcut_is_not_rewritten(self) -> None:
+        """The path this run launches is the path the caller handed in, not its lexical collapse.
+
+        ``--codex <scratch>/alias/../codex`` traverses ``alias`` and then ``..``; ``abspath`` would
+        collapse that lexically to ``<scratch>/codex`` — a different name, and where ``alias`` is a
+        symlink a different file. Every codex invocation the stub sees must carry the path as given, so
+        a run that normalized it fails here even though its stubs answer every command.
+        """
+        code, _ = self.drive(mutate_during_resume=False, lexical_codex=True)
+        self.assertEqual(code, 0, f"exit {code}: {self.last_stderr!r}")
+        self.assertTrue(self.last_turn_paths, "the run made no turn, so nothing was launched")
+        self.assertNotEqual(os.path.abspath(self.last_codex_argument), self.last_codex_argument,
+                            "this case's path has no lexical collapse for the assertion to be about")
+        for launched in self.last_turn_paths:
+            self.assertEqual(launched, self.last_codex_argument,
+                             "the run launched a path other than the one the caller's path traverses")
+            self.assertTrue(os.path.exists(launched),
+                            f"the launched path does not name an existing file: {launched}")
+
+    def test_a_drive_relative_executable_is_refused_by_name_before_anything_runs(self) -> None:
+        """The refused word reaches no launch: the run answers with the rule's message and exits 2.
+
+        The rule's own refusal is pinned in `LaunchPathResolution`; this case is the call site's half.
+        `which` answers a drive-relative word and the rule is driven over the win32 dialect (a POSIX
+        host has no such spelling, and on win32 the pure case's default-host arm is the same answer),
+        so the refusal the shipped `main` must turn into a named exit — message on stderr, nothing
+        launched, nothing recorded, not even the scratch directory made — is exercised here on every
+        host.
+        """
+        code, results = self.drive(mutate_during_resume=False, codex_launch_refusal=True)
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
+        self.assertIn(DRIVE_RELATIVE_CODEX, self.last_stderr, self.last_stderr)
+        self.assertIn("drive Z:", self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stderr,
+                         f"the refusal came out as a traceback: {self.last_stderr!r}")
+        self.assertEqual(results, {}, f"the refused run recorded checks: {sorted(results)}")
+        self.assertFalse(self.last_scratch.exists(),
+                         "the refused run made its scratch tree before refusing the executable")
+        self.assertEqual(self.last_turn_paths, [], "the refused run asked for a turn")
+
+
+class LaunchPathResolution(unittest.TestCase):
+    """The path the check launches is the path the caller's own path names.
+
+    A `which()` answer can preserve a relative PATH entry (`./codex`), so the run has to make it
+    absolute; it must do so without normalizing a component, because `abspath` collapses `alias/..`
+    lexically where the filesystem follows `alias` first — a path that resolved to the installed
+    executable can be rewritten to a name that does not exist, or to another file's name at that path.
+    A launcher shim is not `resolve()`d either: it dispatches on `argv[0]`.
+
+    The rule's pure half is driven over both path dialects on every host (`PATH_DIALECTS`), so a
+    spelling that holds for one dialect alone fails here instead of in the `windows-latest` job; the
+    filesystem half is staged and read under `HOST_CONTRACT`, whose measured answers the cases follow
+    rather than second-guess.
+    """
+
+    def test_a_relative_path_is_anchored_without_a_component_being_normalized(self) -> None:
+        """Every relative shape keeps its own components; the answer is absolute under either dialect."""
+        shapes = ("codex", "./codex", "alias/../codex", "a//b/codex")
+        for given in shapes:
+            with self.subTest(dialect="this host", path=given):
+                answered = NATIVE_CHECK.absolute_launch_path(given)
+                self.assertEqual(answered, os.path.join(os.getcwd(), given),
+                                 f"{given!r} was not anchored to the process's own directory unchanged")
+                self.assertTrue(os.path.isabs(answered), answered)
+        for label, pathmod, _, cwd in PATH_DIALECTS:
+            for given in shapes:
+                with self.subTest(dialect=label, path=given):
+                    answered = NATIVE_CHECK.absolute_launch_path(given, pathmod=pathmod, cwd=cwd)
+                    self.assertEqual(answered, pathmod.join(cwd, given),
+                                     f"{given!r} was not anchored to the dialect's own directory "
+                                     f"unchanged")
+                    self.assertTrue(pathmod.isabs(answered), answered)
+
+    def test_an_absolute_path_is_answered_unchanged(self) -> None:
+        """An absolute path — a `..` component included — is not touched at all, under either dialect.
+
+        The fixtures come from each dialect's own anchor (`make_abs_path`), so each is fully qualified
+        by that dialect's own definition: a bare-separator root spells a Windows *drive-less* path,
+        which the platform does not call absolute (CPython >= 3.13), and this case's premise would then
+        hold on POSIX alone.
+        """
+        for label, pathmod, _, _cwd in PATH_DIALECTS:
+            for parts in (("opt", "bin", "codex"), ("opt", "alias", "..", "codex")):
+                given = HOST_CONTRACT.make_abs_path(*parts, pathmod=pathmod)
+                with self.subTest(dialect=label, path=given):
+                    self.assertEqual(NATIVE_CHECK.absolute_launch_path(given, pathmod=pathmod), given)
+        for parts in (("opt", "bin", "codex"), ("opt", "alias", "..", "codex")):
+            given = HOST_CONTRACT.make_abs_path(*parts)
+            with self.subTest(dialect="this host", path=given):
+                self.assertEqual(NATIVE_CHECK.absolute_launch_path(given), given)
+
+    def test_a_rooted_path_is_answered_by_the_dialects_own_join(self) -> None:
+        """The rooted, drive-less shape: rooted on both dialects, answered unchanged on one.
+
+        `/opt/bin/codex` names its own anchor to `posixpath`, so the join onto any directory answers it
+        unchanged and the rule returns it; a root with no drive is a spelling whose drive comes from
+        the *consumer's* current directory, so the win32 dialect's join onto the process's directory
+        spells it out (`C:\\opt\\bin\\codex`) and the rule answers that instead — the same answer on
+        every CPython minor, which the predicate does not decide: `PureWindowsPath` has answered
+        `False` for the shape's absoluteness since 3.4 while `ntpath.isabs` answered `True` until
+        3.13, and the two version arms below pin that spread, so a rule that followed the predicate
+        instead of the join would answer differently on 3.11/3.12 than on 3.13+.
+        """
+        rooted = {label: HOST_CONTRACT.make_rooted_path("opt", "bin", "codex", pathmod=pathmod)
+                  for label, pathmod, _, _ in PATH_DIALECTS}
+        self.assertFalse(PureWindowsPath(rooted["ntpath"]).is_absolute(),
+                         "the pure class says a drive-less root is not absolute: the rule CPython 3.13's "
+                         "ntpath aligned to")
+        if sys.version_info >= (3, 13):
+            self.assertFalse(ntpath.isabs(rooted["ntpath"]),
+                             "ntpath did not answer the 3.13 rule on a 3.13+ host")
+        else:
+            self.assertTrue(ntpath.isabs(rooted["ntpath"]),
+                            "the running ntpath stopped answering a drive-less root as absolute before "
+                            "3.13; this case's version gate is stale")
+        for label, pathmod, _, cwd in PATH_DIALECTS:
+            given = rooted[label]
+            with self.subTest(dialect=label, path=given):
+                answered = NATIVE_CHECK.absolute_launch_path(given, pathmod=pathmod, cwd=cwd)
+                self.assertEqual(pathmod.join(cwd, answered), answered,
+                                 f"{answered!r} is not anchored under {cwd!r}")
+                if pathmod is ntpath:
+                    self.assertNotEqual(answered, given,
+                                        "a drive-less rooted path was answered as itself: its drive "
+                                        "would come from whichever process joins the spelling")
+                    self.assertEqual(answered, pathmod.join(cwd, given))
+                    self.assertEqual(pathmod.splitdrive(answered)[0], pathmod.splitdrive(cwd)[0],
+                                     f"{answered!r} is not anchored to the dialect's own drive")
+                else:
+                    self.assertEqual(answered, given,
+                                     "a spelling that names its own anchor was rewritten")
+        given = HOST_CONTRACT.make_rooted_path("opt", "bin", "codex")
+        answered = NATIVE_CHECK.absolute_launch_path(given)
+        self.assertEqual(os.path.join(os.getcwd(), answered), answered,
+                         f"{answered!r} is not anchored under the process's own directory")
+        if os.name == "nt":
+            self.assertNotEqual(answered, given,
+                                "a drive-less rooted path was answered as itself on win32: its drive "
+                                "would come from whichever process joins the spelling")
+            self.assertEqual(os.path.splitdrive(answered)[0], os.path.splitdrive(os.getcwd())[0],
+                             f"{answered!r} is not anchored to the process's own drive")
+        else:
+            self.assertEqual(answered, given,
+                             "this host's rooted path names its own anchor and must be returned")
+
+    def test_a_drive_relative_word_is_refused_and_never_returned(self) -> None:
+        """A join-unchanged word whose own anchor is another drive's current directory is refused.
+
+        `ntpath.join` discards the accumulated path when the word carries a different drive, so a
+        drive-relative spelling (`D:tools\\codex.exe`) comes back unchanged -- no anchor for the join
+        to supply -- and the directory it resolves against is the *resolving* process's current
+        directory on drive `D:`. The processes this run starts do not share one (`ccc continue` runs
+        from `--repo`), so the word can name a different executable in each, or none, and the rule
+        raises instead of answering it. The same-drive form is *not* refused: the join anchors it
+        through this process's own directory, which is how the platform resolves a word whose drive is
+        the current one; every other shape the cases above pin (drive-rooted, UNC, drive-less rooted,
+        relative) is a control arm here, and POSIX has no drive-relative spelling at all.
+        """
+        cwd = "C:\\work"
+        for given in ("D:tools\\codex.exe", "D:tools", "D:", "d:tools\\x"):
+            with self.subTest(path=given):
+                with self.assertRaises(ValueError) as refusal:
+                    NATIVE_CHECK.absolute_launch_path(given, pathmod=ntpath, cwd=cwd)
+                self.assertIn(given, str(refusal.exception),
+                              f"the refusal does not name the word it answered: "
+                              f"{refusal.exception}")
+        for given in ("C:tools\\codex.exe", "D:\\", "D:\\tools\\x", "D:/tools/x",
+                      "\\\\srv\\share\\x", "tools\\x", "\\opt\\bin\\codex"):
+            with self.subTest(path=given):
+                self.assertEqual(NATIVE_CHECK.absolute_launch_path(given, pathmod=ntpath, cwd=cwd),
+                                 ntpath.join(cwd, given),
+                                 f"{given!r} is not the join's own answer")
+        posix_cwd = "/work"
+        for given in ("/opt/bin/codex", "codex", "./codex", "../codex"):
+            with self.subTest(path=given):
+                self.assertEqual(
+                    NATIVE_CHECK.absolute_launch_path(given, pathmod=posixpath, cwd=posix_cwd),
+                    posixpath.join(posix_cwd, given),
+                    f"{given!r} is not the join's own answer under posixpath")
+        if os.name == "nt":
+            letter = "Z" if not os.getcwd().upper().startswith("Z") else "Y"
+            with self.assertRaises(ValueError):
+                NATIVE_CHECK.absolute_launch_path(f"{letter}:tools\\codex.exe")
+            current = os.getcwd()
+            self.assertEqual(
+                NATIVE_CHECK.absolute_launch_path(f"{os.path.splitdrive(current)[0]}tools\\codex.exe"),
+                os.path.join(current, f"{os.path.splitdrive(current)[0]}tools\\codex.exe"),
+                "the shipped defaults stopped anchoring a same-drive drive-relative word")
+
+    def test_a_lexical_collapse_would_name_another_file(self) -> None:
+        """Which file each form names is the host's own resolution; the answer keeps the caller's path.
+
+        `alias` is a symlink into `real/sub`, and both names are staged with distinct bytes: where the
+        host's kernel follows the link before the `..` (POSIX), `alias/../codex` traverses to
+        `real/codex` while `abspath`'s lexical collapse names `<root>/codex`; where the platform removes
+        the component before following the link (win32), both spellings name `<root>/codex`. The branch
+        is `HOST_SEMANTICS.symlink_dotdot_follows_link`, checked for the `alias` arm against what this
+        filesystem actually answered, so a broken probe fails here instead of quietly picking a branch.
+        `into-root` targets a direct child of the root, so its traversal is `<root>/codex` under every
+        platform's own resolution -- the same-file arm a lexical platform reaches is exercised on this
+        host too. Every platform keeps the invariants: the answer is the caller's path unchanged, it
+        exists, and the collapse is a different string. Staging needs the host to make a symlink; the
+        dialect cases above are the host-independent half, so a host without the privilege skips here.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "real" / "sub").mkdir(parents=True)
+            (root / "real" / "codex").write_text("the executable's own bytes\n")
+            (root / "codex").write_text("the file the lexical collapse names\n")
+            linked = HOST_CONTRACT.make_symlink(root / "real" / "sub", root / "alias", is_dir=True)
+            linked = linked and HOST_CONTRACT.make_symlink(root / "real", root / "into-root", is_dir=True)
+            if not linked:
+                self.skipTest("this host cannot create a symlink")
+            follows = HOST_CONTRACT.HOST_SEMANTICS.symlink_dotdot_follows_link
+            for name in ("alias", "into-root"):
+                given = os.path.join(str(root), name, "..", "codex")
+                collapsed = os.path.abspath(given)
+                with self.subTest(link=name):
+                    self.assertNotEqual(collapsed, given,
+                                        "this case's path has no lexical collapse for the assertion "
+                                        "to be about")
+                    answered = NATIVE_CHECK.absolute_launch_path(given)
+                    self.assertEqual(answered, given)
+                    self.assertTrue(os.path.exists(answered), answered)
+                    if name == "alias":
+                        measured = (Path(given).read_bytes()
+                                    == (root / "real" / "codex").read_bytes())
+                        self.assertEqual(measured, follows,
+                                         "the precomputed host answer and this host's own resolution "
+                                         "disagree, so the probe is broken")
+                    if follows and name == "alias":
+                        self.assertEqual(Path(given).read_bytes(), (root / "real" / "codex").read_bytes(),
+                                         "the traversal does not name the executable the link's `..` "
+                                         "reaches")
+                        self.assertEqual(Path(collapsed).read_bytes(), (root / "codex").read_bytes(),
+                                         "the collapse does not name the file at the name it spells")
+                    else:
+                        self.assertEqual(Path(answered).read_bytes(), (root / "codex").read_bytes(),
+                                         "the host's own resolution of the traversal does not name "
+                                         "the collapse's file, which this case stages")
+
+
+class ForeignHomeOwnership(unittest.TestCase):
+    """The exclusive create is the reservation, and only what this run created is ever removed.
+
+    The collision shapes a host without symlink privileges cannot stage -- a name under a dangling link,
+    an unreadable entry -- all meet the exclusive create as `FileExistsError`; the first case drives
+    that answer through the seam for every one of them, asserting the create asks for exclusivity and
+    writes nothing, so the guards are pinned on every platform rather than on the hosts that can make a
+    link. The drive-level cases above are the behavioural halves (the race pins the ownership, the
+    failed write pins the rollback, the refused removal pins the INCOMPLETE answer); the unit cases here
+    are the seam's own mutation pins: the path is recorded before the write, so a write that fails after
+    the name is reserved is still removed by the same object -- a cleanup consulting a caller's success
+    flag would leave the partial file -- and a removal that fails is answered by name instead of
+    swallowed or raised.
+    """
+
+    def test_the_plant_asks_for_exclusive_creation_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / "planted.jsonl"
+            real_open = Path.open
+            modes: list[str] = []
+
+            def refusing_open(self, *args, **kwargs):
+                modes.append(args[0] if args else kwargs["mode"])
+                if Path(self) == target:
+                    raise FileExistsError(17, "File exists", str(self))
+                return real_open(self, *args, **kwargs)
+
+            with mock.patch.object(Path, "open", refusing_open):
+                self.assertEqual(NATIVE_CHECK.ForeignHome().plant(target, b"this run's bytes\n"),
+                                 (False, ""),
+                                 "a create that met a held name did not answer as a collision")
+            self.assertEqual(modes, ["xb"],
+                             f"the plant did not ask for an exclusive create: {modes}")
+            self.assertFalse(target.exists(), f"the refused plant wrote {target}")
+
+    def test_the_create_is_the_reservation_on_a_held_name(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            owner = NATIVE_CHECK.ForeignHome()
+            claimed = root / "planted.jsonl"
+            self.assertEqual(owner.plant(claimed, b"this run's bytes\n"), (True, ""))
+            self.assertEqual(claimed.read_bytes(), b"this run's bytes\n")
+            HOST_CONTRACT.assert_create_refused(owner.plant, claimed)
+            self.assertEqual(claimed.read_bytes(), b"this run's bytes\n",
+                             "the collision wrote over the file it found")
+            held = root / "a-directory"
+            held.mkdir()
+            HOST_CONTRACT.assert_create_refused(owner.plant, held)
+            self.assertTrue(held.is_dir(), "the directory was replaced by a file")
+            self.assertEqual(owner.remove_all(), [])
+            self.assertFalse(claimed.exists(), "the removal left this run's own file behind")
+
+    def test_a_write_that_fails_after_the_reservation_is_removed_by_the_owner(self) -> None:
+        """The seam's own mutation pin: a cleanup that omits a recorded path fails this case.
+
+        The handle hands the plant an exclusive create that already succeeded and then raises from the
+        write -- the window R3-1 was about, where a caller-set success flag never becomes true. The
+        owner answers the failure by name, and because it recorded the path at the instant the create
+        returned, `remove_all` removes the partial file: a cleanup consulting the caller's flag instead
+        leaves it (measured at head: the file stayed, and the next run met its fixed probe name as a
+        collision).
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / "planted.jsonl"
+            real_open = Path.open
+
+            class WriteFailsHandle:
+                def __init__(self, handle):
+                    self._handle = handle
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    self._handle.close()
+                    return False
+
+                def write(self, data):
+                    self._handle.close()
+                    raise OSError("the case's write failed after the name was reserved")
+
+            def failing_open(self, *args, **kwargs):
+                handle = real_open(self, *args, **kwargs)
+                if Path(self) == target:
+                    return WriteFailsHandle(handle)
+                return handle
+
+            owner = NATIVE_CHECK.ForeignHome()
+            with mock.patch.object(Path, "open", failing_open):
+                planted, failure = owner.plant(target, b"this run's bytes\n")
+            self.assertFalse(planted, "a write that failed was answered as a completed plant")
+            self.assertIn("cannot be written", failure, failure)
+            self.assertTrue(target.exists(),
+                            "the case's own premise: the reservation left a partial file")
+            self.assertEqual(owner.remove_all(), [])
+            self.assertFalse(target.exists(),
+                             "the owner did not remove the path it recorded before the write")
+
+    def test_a_removal_that_fails_is_named_not_swallowed(self) -> None:
+        """The other mutation pin: a cleanup that drops the failure, or one that raises it, fails here.
+
+        The unlink refuses while the removal runs, so `remove_all` has to answer the failure naming the
+        path -- the contract the run's own INCOMPLETE exit code stands on -- and the recorded paths are
+        answered once: the second call answers nothing, and the file stays where the removal could not
+        take it.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / "planted.jsonl"
+            owner = NATIVE_CHECK.ForeignHome()
+            self.assertEqual(owner.plant(target, b"this run's bytes\n"), (True, ""))
+            real_unlink = Path.unlink
+
+            def refusing_unlink(self, *args, **kwargs):
+                if Path(self) == target:
+                    raise PermissionError("the case refuses the removal")
+                return real_unlink(self, *args, **kwargs)
+
+            with mock.patch.object(Path, "unlink", refusing_unlink):
+                problems = owner.remove_all()
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn(str(target), problems[0], problems[0])
+            self.assertIn("cannot be removed", problems[0], problems[0])
+            self.assertTrue(target.exists(), "the removal took a path it reported as unstuck")
+            self.assertEqual(owner.remove_all(), [],
+                             "a second removal answered something: the paths were not answered once")
+            self.assertTrue(target.exists())
+
+
+class ThreadViewExtraction(unittest.TestCase):
+    """The item kinds a view check reads are the reply's own item types, never its message text.
+
+    The drive cases exercise this through `load_and_view` and the stubbed `thread/read` reply; these
+    cases pin the shipped extraction itself, so a kind word a message body happens to spell cannot be
+    answered as an item of that type, and the text a reply holds is still rendered into the lines the
+    checks search for dialogue.
+    """
+
+    def test_the_kinds_are_the_items_own_types(self) -> None:
+        reply = {"thread": {"id": "t", "historyMode": "legacy", "turns": [
+            {"id": "turn-1", "items": [
+                {"type": "userMessage", "content": [{"type": "text", "text": "a question"}]},
+                {"type": "agentMessage", "text": "an answer"},
+            ]},
+        ]}}
+        lines, kinds = NATIVE_CHECK.thread_view(reply)
+        self.assertEqual(kinds, ["userMessage", "agentMessage"])
+        self.assertIn("    userMessage: a question", "\n".join(lines))
+        self.assertIn("    agentMessage: an answer", "\n".join(lines))
+
+    def test_a_kind_word_in_message_text_is_not_a_kind(self) -> None:
+        reply = {"thread": {"id": "t", "historyMode": "legacy", "turns": [
+            {"id": "turn-1", "items": [
+                {"type": "reasoning", "text": "userMessage and agentMessage are words in this text"},
+            ]},
+        ]}}
+        lines, kinds = NATIVE_CHECK.thread_view(reply)
+        self.assertEqual(kinds, ["reasoning"],
+                         "the extraction answered the words a message holds as item types")
+        self.assertIn("userMessage and agentMessage are words in this text", "\n".join(lines))
+
+
+class BrokenPipeAtTheClientSeam(unittest.TestCase):
+    """A pipe that dropped under the client is `NoAnswer` at the seam, never an exception out of it.
+
+    R3-3's shape: the harness exits after the handshake, and the next write to its stdin fails. The
+    client object owns the pipe, so `call`, `notify` and `close` fold that failure. The case drives
+    them against a *real* pipe whose read end is already closed -- the write's own failure, with no
+    process to race -- and the stub process only has to answer the three names `close` calls, so no
+    subprocess starts here: measured at head, the same write raised `BrokenPipeError` out of `call`,
+    `notify` and `close` alike, and out of a caller's `finally` it would have replaced an answer that
+    was already in hand.
+    """
+
+    def test_the_three_interactions_fold_a_broken_pipe(self) -> None:
+        read_end, write_end = os.pipe()
+        os.close(read_end)
+        stdin = os.fdopen(write_end, "w")
+        self.addCleanup(stdin.close)
+
+        class ExitedProcess:
+            def __init__(self):
+                self.stdin = stdin
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        server = NATIVE_CHECK.AppServer.__new__(NATIVE_CHECK.AppServer)
+        server.next_id = 0
+        server.process = ExitedProcess()
+        server.responses = queue.Queue()
+        server.diagnostics = NATIVE_CHECK.new_diagnostics()
+        answer = server.call("thread/resume", {"threadId": "x"})
+        self.assertIsInstance(answer, NATIVE_CHECK.NoAnswer,
+                              f"a broken input pipe was not answered as NoAnswer: {answer!r}")
+        self.assertIn("input pipe failed", answer.reason, answer.reason)
+        answer = server.notify("initialized", {})
+        self.assertIsInstance(answer, NATIVE_CHECK.NoAnswer,
+                              f"a broken input pipe was not answered as NoAnswer: {answer!r}")
+        # The `finally` arm: a close that raised here would replace whatever answer the caller held.
+        server.close()
+        self.assertTrue(stdin.closed, "close did not close the pipe it owns")
+
+
+class HarnessThatCannotBeStarted(unittest.TestCase):
+    """A harness the run cannot start is a named answer, never an exception out of the run.
+
+    Every app-server check stands on the process starting; a binary that cannot be executed (a stale
+    path, a permissions change after the run resolved it) is the same shape as a handshake that never
+    answered, and the loader records its check's FAIL in the failure's own words.
+    """
+
+    def test_a_binary_that_cannot_be_started_is_a_named_answer(self) -> None:
+        missing = str(Path(tempfile.gettempdir()) / "no-such-codex-for-this-case")
+        home = Path(tempfile.gettempdir())
+        absent = home / "absent.jsonl"
+        before = len(NATIVE_CHECK.RESULTS)
+        try:
+            view, kinds, view_failure = NATIVE_CHECK.load_and_view(
+                missing, home, "00000000-0000-0000-0000-000000000000", absent,
+                "the case's loader", "the case's view:")
+            recorded = NATIVE_CHECK.RESULTS[before:]
+        finally:
+            del NATIVE_CHECK.RESULTS[before:]
+        self.assertEqual((view, kinds, view_failure), ([], [], ""),
+                         "a start failure is the loader's own record, not a read that answered no view")
+        self.assertEqual(len(recorded), 1, recorded)
+        name, state, detail = recorded[0]
+        self.assertEqual((name, state), ("the case's loader", "FAIL"))
+        self.assertIn("cannot be started", detail, detail)
+
 
 #: This increment's evidence record: the file whose §6 and §13 passages state where the native check
 #: takes the comparison the growth is measured from.
@@ -1329,6 +2554,863 @@ class RecordStatesTheChecksOwnOrder(unittest.TestCase):
         self.assertNotIn(WRONG_ORDER, document,
                          f"{RECORD.name} places the comparison ahead of both real turns: the shipped "
                          f"script takes it after the first session's turn and before the second's")
+
+
+def decoded_json_words(data: bytes) -> list[str]:
+    """Every string a JSON reader answers for one fixture's own bytes: member names and string leaves
+    at every depth, so a token spelled with JSON escapes is read as the word it decodes to rather than
+    as its spelling. An artifact is one document per line and a receipt one document; a line no reader
+    can read contributes no words, and its own spelling stays in the scanned surface."""
+    text = data.decode("utf-8", "replace")
+    roots: list[object] = []
+    try:
+        roots.append(json.loads(text))
+    except ValueError:
+        for line in text.splitlines():
+            try:
+                roots.append(json.loads(line))
+            except ValueError:
+                continue
+    words: list[str] = []
+    stack: list[object] = list(roots)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            words.append(item)
+        elif isinstance(item, dict):
+            for name, member in item.items():
+                words.append(name)
+                stack.append(member)
+        elif isinstance(item, list):
+            stack.extend(item)
+    return words
+
+
+class CodexArtifactOracle(unittest.TestCase):
+    """The offline oracle (goal 0009a, re-scoped): the container and receipt rules, their corpus, and
+    the `--validate` mode.
+
+    Every case drives the shipped module in-process, imported by path, with no harness and no source
+    session: the oracle's subject is an artifact's own bytes. The corpus lives in the shipped script
+    beside the registry and this class drives the same objects — each rule has at least one mutation
+    that removes it, each mutation turns its own rule red and no other, the two tables are in bijection,
+    and every arm is read through the shipped command's own
+    `--validate`/`--receipt`/`--disable-rule` path, so `--disable-rule` is exercised for every declared
+    rule. What the rules can no longer say is part of the subject: the registry names no foreign
+    format's vocabulary, and an artifact that is a container and no agent's session passes.
+    """
+
+    #: Spellings that belong to a foreign session format. A rule that names one is a rule about that
+    #: format — the judgment this oracle deleted — so none may appear anywhere on its frozen surface
+    #: (the ids, the sentences, the corpus's labels, the fixtures' names).
+    FOREIGN_VOCABULARY = ("codex", "rollout", "session_meta", "response_item", "event_msg",
+                          "turn_context", "compacted", "token_usage", "world_state", "call_id",
+                          "tool_call", "tool_result", "function_call", "input_text", "output_text",
+                          "input_image", "input_audio", "occurrence", "disposition", "manifest",
+                          "emitted", "omitted", "payload", "turn", "replay")
+
+    def validate(self, data: bytes, receipt: dict | None = None,
+                 disabled: tuple[str, ...] = ()) -> "NATIVE_CHECK.OracleReading":
+        """One reading through the shipped validator, its own result object."""
+        if receipt is None:
+            return NATIVE_CHECK.validate_artifact(data, disabled=disabled)
+        return NATIVE_CHECK.validate_artifact(data, receipt=receipt, disabled=disabled)
+
+    def reading(self, data: bytes, receipt: dict | None = None,
+                disabled: tuple[str, ...] = ()) -> list:
+        """The violations of one reading through the shipped validator."""
+        return self.validate(data, receipt, disabled).violations
+
+    def test_the_frozen_artifact_validates(self) -> None:
+        """The committed artifact is green alone and with its receipt (D4's verify case), and the
+        receipt's own statements are the artifact's bytes: its size, its whole-file digest, and one
+        anchor per line over that line's own bytes with its line feed included. Green is the reading
+        where *every* rule judged the bytes -- a rule the reading could not judge is not a pass."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        self.assertEqual(self.reading(data), [])
+        self.assertEqual(self.reading(data, receipt), [])
+        self.assertTrue(self.validate(data, receipt).passed,
+                        "the frozen artifact is not a full pass: "
+                        f"{self.validate(data, receipt)}")
+        self.assertEqual(receipt["bytes"], len(data))
+        self.assertEqual(receipt["sha256"], hashlib.sha256(data).hexdigest())
+        spans = NATIVE_CHECK.oracle_line_bytes(data)
+        self.assertEqual([entry["sha256"] for entry in receipt["lines"]],
+                         [hashlib.sha256(span).hexdigest() for span in spans],
+                         "the anchors are not the lines' own bytes, line feed included")
+
+    def test_a_container_of_json_objects_that_is_no_agents_session_passes(self) -> None:
+        """D2, behaviourally: an artifact no agent's reader would read — JSON objects carrying members
+        no harness defines, no record vocabulary at all — passes the offline rules, so a schema rule
+        that crept back fails here."""
+        data = b"".join(json.dumps({"anything": f"goes {n}"}, separators=(",", ":")).encode() + b"\n"
+                        for n in range(3))
+        self.assertEqual(self.reading(data), [])
+        with tempfile.TemporaryDirectory() as scratch:
+            artifact = Path(scratch) / "artifact.jsonl"
+            artifact.write_bytes(data)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact)])
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertEqual(output.getvalue().strip().splitlines()[-1], "oracle: PASS — 3 record(s)")
+
+    def test_the_registry_holds_no_foreign_format_vocabulary(self) -> None:
+        """D2, over the frozen surface: the id set is the four container/receipt rules, and nothing the
+        registry, its sentences, the corpus's labels, the fixtures' names or the fixtures' own bytes
+        spell — as raw text or as the words their JSON documents decode to — is a foreign format's
+        vocabulary, so a Codex-shaped fixture reappearing fails here however it spells a token (a JSON
+        escape included): the committed artifact and receipt are read as JSON, not just named (the claim
+        the fixture root's own comment makes)."""
+        self.assertEqual(sorted(NATIVE_CHECK.ORACLE_RULES),
+                         ["oracle.jsonl-objects", "oracle.receipt-integrity", "oracle.utf8",
+                          "oracle.whole-lines"])
+        surface = " ".join(list(NATIVE_CHECK.ORACLE_RULES)
+                           + list(NATIVE_CHECK.ORACLE_RULES.values())
+                           + list(NATIVE_CHECK.ORACLE_RULE_INPUTS)
+                           + list(NATIVE_CHECK.ORACLE_RULE_INPUTS.values())
+                           + [f"{mutation.label} {mutation.artifact} {mutation.receipt or ''}"
+                              for mutations in NATIVE_CHECK.ORACLE_MUTATIONS.values()
+                              for mutation in mutations]
+                           + [NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT]
+                           + [NATIVE_CHECK.oracle_fixture(name).decode("utf-8", "replace")
+                              for name in (NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT)]
+                           + [word
+                              for name in (NATIVE_CHECK.ORACLE_ARTIFACT, NATIVE_CHECK.ORACLE_RECEIPT)
+                              for word in decoded_json_words(NATIVE_CHECK.oracle_fixture(name))]
+                           ).lower()
+        found = sorted(token for token in self.FOREIGN_VOCABULARY if token in surface)
+        self.assertEqual(found, [],
+                         f"the oracle's own surface names a foreign format's vocabulary: {found}")
+
+    def test_the_registry_and_its_corpus_are_one_closed_set(self) -> None:
+        """D1's closure, read from both ends: every declared rule has at least one mutation and every
+        mutation names a declared rule, each rule states something and declares what it reads
+        (`on_bytes` or `needs_text`), and every fixture the corpus names is committed (a pair naming an
+        absent fixture would fail the command, not this reading)."""
+        self.assertEqual(set(NATIVE_CHECK.ORACLE_MUTATIONS), set(NATIVE_CHECK.ORACLE_RULES),
+                         "a rule has no mutation, or a mutation has no rule")
+        self.assertEqual(set(NATIVE_CHECK.ORACLE_RULE_INPUTS), set(NATIVE_CHECK.ORACLE_RULES),
+                         "a rule has no declared input, or an input names no rule")
+        self.assertEqual(set(NATIVE_CHECK.ORACLE_RULE_INPUTS.values()), {"on_bytes", "needs_text"},
+                         "a rule declares an input kind outside the two the reading implements")
+        for rule, sentence in NATIVE_CHECK.ORACLE_RULES.items():
+            self.assertTrue(sentence.strip(), f"the rule {rule} states nothing")
+        for rule, mutations in sorted(NATIVE_CHECK.ORACLE_MUTATIONS.items()):
+            self.assertTrue(mutations, f"{rule} has no mutation")
+            for mutation in mutations:
+                fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / mutation.artifact
+                self.assertTrue(fixture.is_file(), f"{rule} names an absent fixture {fixture}")
+                if mutation.receipt is not None:
+                    receipt = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / mutation.receipt
+                    self.assertTrue(receipt.is_file(), f"{rule} names an absent receipt {receipt}")
+                for other in mutation.also_cited:
+                    self.assertIn(other, NATIVE_CHECK.ORACLE_RULES,
+                                  f"{rule} / {mutation.label!r} co-cites an undeclared rule {other}")
+                self.assertNotIn(rule, mutation.also_cited,
+                                 f"{rule} / {mutation.label!r} co-cites its own rule")
+                for other in mutation.unjudged:
+                    self.assertIn(other, NATIVE_CHECK.ORACLE_RULES,
+                                  f"{rule} / {mutation.label!r} leaves an undeclared rule unjudged: "
+                                  f"{other}")
+                    self.assertNotIn(rule, mutation.unjudged,
+                                     f"{rule} / {mutation.label!r} leaves its own rule unjudged")
+                    self.assertEqual(NATIVE_CHECK.ORACLE_RULE_INPUTS[other], "needs_text",
+                                     f"{rule} / {mutation.label!r} declares {other} unjudged, but only a "
+                                     f"`needs_text` rule can be left unjudged")
+
+    def test_every_pair_of_byte_rules_is_co_cited_by_a_mutation(self) -> None:
+        """The corpus property the byte rules' independence stands on: a pair of `on_bytes` rules has a
+        mutation whose bytes violate both, declared in *each* rule's own arm, so disabling either still
+        cites the other. The reading evaluates every byte rule before the disabled set is subtracted;
+        this is the corpus half, and a new byte rule without its co-citation pair fails here."""
+        byte_rules = sorted(rule for rule, kind in NATIVE_CHECK.ORACLE_RULE_INPUTS.items()
+                            if kind == "on_bytes")
+        for index, first in enumerate(byte_rules):
+            for second in byte_rules[index + 1:]:
+                with self.subTest(pair=(first, second)):
+                    self.assertTrue(
+                        any(second in mutation.also_cited
+                            for mutation in NATIVE_CHECK.ORACLE_MUTATIONS[first]),
+                        f"no {first} mutation has bytes that also break {second}")
+                    self.assertTrue(
+                        any(first in mutation.also_cited
+                            for mutation in NATIVE_CHECK.ORACLE_MUTATIONS[second]),
+                        f"no {second} mutation has bytes that also break {first}")
+
+    def test_every_rule_has_a_mutation_that_turns_its_fixture_red(self) -> None:
+        """Every mutation changes its fixture and turns its own rule red, with a detail that
+        says what was found — beside the other rules its bytes are known to break, never a rule it does
+        not (`also_cited`: the corpus is a reading of named defects, not a net that catches everything at
+        once) — and with this pair's rule disabled the same bytes fail citing exactly those others, or
+        are green where there are none."""
+        for rule, mutations in sorted(NATIVE_CHECK.ORACLE_MUTATIONS.items()):
+            for mutation in mutations:
+                with self.subTest(rule=rule, mutation=mutation.label):
+                    co_cited = set(mutation.also_cited)
+                    data = NATIVE_CHECK.oracle_fixture(mutation.artifact)
+                    receipt = (NATIVE_CHECK.oracle_receipt(mutation.receipt)
+                               if mutation.receipt is not None else None)
+                    self.assertEqual(self.reading(data, receipt), [],
+                                     f"{mutation.artifact} is not green before {mutation.label!r}")
+                    before = (data, json.dumps(receipt, sort_keys=True))
+                    mutated, mutated_receipt = mutation.mutate(
+                        data, NATIVE_CHECK.oracle_receipt(mutation.receipt)
+                        if mutation.receipt is not None else None)
+                    self.assertNotEqual((mutated, json.dumps(mutated_receipt, sort_keys=True)), before,
+                                        f"the mutation {mutation.label!r} changed nothing")
+                    violations = self.reading(mutated, mutated_receipt)
+                    self.assertEqual({violation.rule for violation in violations}, {rule} | co_cited,
+                                     f"{mutation.label!r} on {mutation.artifact} turned "
+                                     f"{sorted({violation.rule for violation in violations})} red "
+                                     f"instead of {sorted({rule} | co_cited)}: {violations}")
+                    for violation in violations:
+                        self.assertTrue(violation.detail.strip(),
+                                        f"the {rule} violation says nothing: {violation}")
+                    remaining = self.reading(mutated, mutated_receipt, (rule,))
+                    self.assertEqual({violation.rule for violation in remaining}, co_cited,
+                                     f"the mutation {mutation.label!r} with `{rule}` disabled cites "
+                                     f"{sorted({violation.rule for violation in remaining})} instead of "
+                                     f"{sorted(co_cited)}")
+
+    def test_the_corpus_arms_run_the_shipped_command_not_the_python_validator(self) -> None:
+        """The corpus's arms are the command's own: the Python validator's entry point refuses for the
+        duration, every arm judges a file on disk written under a scratch directory, and every declared
+        rule appears as the `--disable-rule` argument of at least one invocation — a corpus that
+        reached for the validator, or skipped a rule's flip, fails here rather than closing."""
+        real_main = NATIVE_CHECK.main
+        seen: list[list[str]] = []
+
+        def spy(argv):
+            seen.append(list(argv))
+            judged = Path(argv[argv.index("--validate") + 1])
+            self.assertTrue(judged.is_file(), f"an arm judged a path that is not a file on disk: {argv}")
+            return real_main(argv)
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the corpus read through the Python validator instead of the command")
+
+        output = io.StringIO()
+        with mock.patch.object(NATIVE_CHECK, "main", spy), \
+                mock.patch.object(NATIVE_CHECK, "validate_artifact", refuse), \
+                contextlib.redirect_stdout(output):
+            code = NATIVE_CHECK.oracle_mutation_selftest()
+        self.assertEqual(code, 0, f"the corpus does not close through the command: {output.getvalue()}")
+        disabled = [argv[argv.index("--disable-rule") + 1] for argv in seen
+                    if "--disable-rule" in argv]
+        self.assertEqual(sorted(set(disabled)), sorted(NATIVE_CHECK.ORACLE_RULES),
+                         f"the corpus did not exercise --disable-rule for every rule: {sorted(disabled)}")
+
+    def test_the_corpus_notices_unjudged_reporting_that_disappeared(self) -> None:
+        """The corpus asserts the unjudged rules it declares, independently of the validator's reply.
+
+        The masked-byte pairs' disabled arm is declared to leave `oracle.jsonl-objects` unjudged; the
+        corpus checks the reading it gets against that declaration. A reading that stopped reporting
+        `NotEvaluated` — the round-5 finding's shape, where the disabled arm's expected exit came from
+        the reply's own not-evaluated list — must turn `--selftest-mutations` red: with the reporting
+        gone, those bytes answer PASS having never been judged, and a corpus that agreed with the reply
+        would close green. This case drives exactly that reading and requires the command to fail,
+        naming the rule whose reporting disappeared.
+        """
+        real_reading = NATIVE_CHECK.oracle_reading
+
+        def without_not_evaluated(data, receipt=NATIVE_CHECK._NO_RECEIPT, disabled=frozenset()):
+            return real_reading(data, receipt, disabled)._replace(not_evaluated=[])
+
+        output = io.StringIO()
+        with mock.patch.object(NATIVE_CHECK, "oracle_reading", without_not_evaluated), \
+                contextlib.redirect_stdout(output):
+            code = NATIVE_CHECK.oracle_mutation_selftest()
+        self.assertEqual(code, 1,
+                         f"the corpus closed green with the unjudged reporting gone: "
+                         f"{output.getvalue()}")
+        self.assertIn("oracle.jsonl-objects", output.getvalue(),
+                      f"the corpus failure does not name the unjudged rule: {output.getvalue()}")
+
+    def test_the_corpus_notices_a_verdict_field_that_disagrees_with_the_reading(self) -> None:
+        """The corpus reads the machine-readable verdict the command emits, not only its exit code.
+
+        A report whose `verdict` member were a constant would leave an arm's exit code honest and its
+        JSON document lying to a consumer that reads the field. This case rewrites that member — and
+        nothing else — in every emitted document while the reading, the violations and the exit codes
+        stay the shipped ones, so a corpus that checked only codes and cited rules closes green; with
+        the field asserted against each arm's declared expectation, the negative arms' rewritten
+        `PASS` turns the run red.
+        """
+        real_report = NATIVE_CHECK.oracle_report
+
+        def verdict_always_pass(artifact, receipt, as_json, disabled=frozenset()):
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                code = real_report(artifact, receipt, as_json, disabled)
+            print(re.sub(r'"verdict": "[A-Z]+"', '"verdict": "PASS"', stream.getvalue()), end="")
+            return code
+
+        output = io.StringIO()
+        with mock.patch.object(NATIVE_CHECK, "oracle_report", verdict_always_pass), \
+                contextlib.redirect_stdout(output):
+            code = NATIVE_CHECK.oracle_mutation_selftest()
+        self.assertEqual(code, 1,
+                         f"the corpus closed green with a verdict field that disagrees with the "
+                         f"reading: {output.getvalue()}")
+        self.assertIn("verdict 'PASS'", output.getvalue(),
+                      f"the corpus failure does not name the verdict it read: {output.getvalue()}")
+
+    def test_a_mutated_byte_breaks_the_receipt(self) -> None:
+        """D4's second case: one line's own byte changed under the unchanged receipt fails, naming the
+        line — and the mutated artifact is not otherwise defective, so the failure is the receipt's
+        statement and not the container's; a receipt recomputed for those bytes passes, which is the
+        verify arm's control."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        mutated, _ = NATIVE_CHECK._mutation_artifact_byte_changed(data, None)
+        self.assertNotEqual(mutated, data)
+        self.assertEqual(self.reading(mutated), [],
+                         "the mutated artifact is the container's own defect too, so this case could "
+                         "not attribute the failure to the receipt")
+        violations = self.reading(mutated, receipt)
+        self.assertEqual({violation.rule for violation in violations}, {"oracle.receipt-integrity"},
+                         f"the receipt did not answer the changed byte: {violations}")
+        self.assertIn(3, {violation.line for violation in violations},
+                      f"no violation names the line the byte moved on: {violations}")
+        recomputed = {"bytes": len(mutated), "sha256": hashlib.sha256(mutated).hexdigest(),
+                      "lines": [{"sha256": hashlib.sha256(span).hexdigest()}
+                                for span in NATIVE_CHECK.oracle_line_bytes(mutated)]}
+        self.assertEqual(self.reading(mutated, recomputed), [],
+                         "a receipt recomputed for the mutated bytes is not green")
+
+    def test_the_receipt_compares_the_lines_own_bytes(self) -> None:
+        """The receipt's comparison is over the artifact's bytes, not the JSON values a reader makes of
+        them: a carriage return the container rules read as whitespace is a byte the receipt refuses —
+        under the committed receipt, and under one whose count and digest are the CRLF bytes' own while
+        its anchors state the LF lines', so an anchor comparison that normalized line endings, and
+        nothing else, would accept the second."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT).replace(b"\n", b"\r\n")
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        self.assertEqual(self.reading(data), [], "the CRLF artifact is the container's own defect")
+        violations = self.reading(data, receipt)
+        self.assertEqual({violation.rule for violation in violations}, {"oracle.receipt-integrity"},
+                         f"the receipt did not answer the changed bytes: {violations}")
+        lf_anchors = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                      "lines": receipt["lines"]}
+        violations = self.reading(data, lf_anchors)
+        self.assertEqual({(violation.rule, violation.line) for violation in violations},
+                         {("oracle.receipt-integrity", number) for number in (1, 2, 3)},
+                         f"the LF anchors were not answered as the anchors they are not: {violations}")
+
+    def test_a_line_feed_moved_is_named_by_the_line_whose_bytes_diverged(self) -> None:
+        """A byte moved between two lines is refused with a line, not only with the file's digest.
+
+        The first line feed replaced by a space leaves the file's size the same and merges the first two
+        lines, so the receipt's anchor count no longer equals the artifact's line count *and* the first
+        line's own bytes diverged. The anchors the two sides still share are compared even on that count
+        mismatch, so the reading names the line the moved byte diverged on, and the count statement
+        itself names the first line with no counterpart — anchor 3, whose line the merge removed; a
+        reading that skipped the comparison whenever the counts differed would report only the
+        whole-file digest and the count, where a reader cannot find the byte — the receipt-integrity
+        line a moved line feed is.
+        """
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        first_feed = data.index(b"\n")
+        moved = data[:first_feed] + b" " + data[first_feed + 1:]
+        self.assertEqual(len(moved), len(data), "the case's own mutation moved the file's size")
+        violations = self.reading(moved, receipt)
+        named = {(violation.rule, violation.line) for violation in violations}
+        self.assertIn(("oracle.receipt-integrity", 1), named,
+                      f"the receipt did not name the line the moved byte diverged on: {violations}")
+        self.assertIn(("oracle.receipt-integrity", 3), named,
+                      f"the count statement no longer names the first line without a counterpart: "
+                      f"{violations}")
+
+    def test_a_line_the_receipt_gives_no_anchor_for_is_named(self) -> None:
+        """R7-3's regression case: one line feed appended, so the artifact holds a fourth line.
+
+        Every anchor the two sides share still matches and the file-level statements (byte count,
+        digest) disagree; the count statement has to name the line the way a changed byte is named by
+        the line it moved on, so a reader meets line 4 and what is unmatched about it rather than only
+        two numbers that differ. The appended line feed is a blank line, which the container rule
+        refuses as well — this case reads the receipt's own statement.
+        """
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT) + b"\n"
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        violations = [violation for violation in self.reading(data, receipt)
+                      if violation.rule == "oracle.receipt-integrity"]
+        self.assertEqual({violation.line for violation in violations}, {0, 4},
+                         f"the appended-LF shape is not the file-level pair plus the gained line: "
+                         f"{violations}")
+        naming = [violation.detail for violation in violations if violation.line == 4]
+        self.assertTrue(any("no anchor" in detail for detail in naming),
+                        f"line 4 is named without saying what is unmatched about it: {violations}")
+
+    def test_the_byte_layer_ends_the_record_reading(self) -> None:
+        """A violation at the byte layer ends the *record* reading — the BOM and a byte that is not
+        UTF-8 are `oracle.utf8` alone, never also a line's JSON defect — while dropping that rule hands
+        back a reading whose violations are empty and whose text-dependent rule is `NotEvaluated`: not a
+        pass, and shown as such, because the bytes were never judged for the JSON rule (the state the
+        command answers INCOMPLETE for, exit 2)."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        broken_byte, _ = NATIVE_CHECK._mutation_byte_not_utf8(data, None)
+        for label, broken in (("a byte-order mark", b"\xef\xbb\xbf" + data),
+                              ("a byte that is not UTF-8", broken_byte)):
+            reading = self.validate(broken)
+            self.assertEqual([violation.rule for violation in reading.violations], ["oracle.utf8"],
+                             f"{label} is not the byte layer's own defect alone")
+            self.assertEqual(reading.records, [], f"{label}: a record was read past the byte layer")
+            self.assertEqual(reading.not_evaluated,
+                             [NATIVE_CHECK.NotEvaluated("oracle.jsonl-objects", "oracle.utf8")],
+                             f"{label}: the rule the bytes left unjudged is not named")
+            self.assertFalse(reading.passed, f"{label}: a reading that judged no text passed")
+            disabled = self.validate(broken, disabled=("oracle.utf8",))
+            self.assertEqual(disabled.violations, [],
+                             f"{label}: dropping the rule left another rule's violation standing")
+            self.assertEqual(disabled.not_evaluated, reading.not_evaluated,
+                             f"{label}: dropping the rule changed what was left unjudged")
+            self.assertFalse(disabled.passed,
+                             f"{label}: a reading with an unjudged rule passed after the subtraction")
+
+    def test_a_disabled_utf8_rule_still_cites_the_line_rule(self) -> None:
+        """R3-2's own artifact, through the command: ``b'{"note":"\\xff"}'`` with no final line feed.
+
+        The bytes are not UTF-8 *and* their last byte is not a line feed. Both byte rules are evaluated
+        before the disabled set is subtracted, so `--disable-rule oracle.utf8` still cites
+        `oracle.whole-lines` and exits 1 — the pre-fix reading answered PASS here, hiding a violation
+        its own bytes prove. Dropping both byte rules is not a pass either: the text-dependent rule was
+        not judged, and the command answers INCOMPLETE (exit 2) naming it.
+        """
+        data = b'{"note":"\xff"}'
+        self.assertEqual([violation.rule for violation in self.reading(data)],
+                         ["oracle.utf8", "oracle.whole-lines"])
+        reading = self.validate(data, disabled=("oracle.utf8",))
+        self.assertEqual([violation.rule for violation in reading.violations], ["oracle.whole-lines"])
+        self.assertEqual(reading.not_evaluated,
+                         [NATIVE_CHECK.NotEvaluated("oracle.jsonl-objects", "oracle.utf8")])
+        with tempfile.TemporaryDirectory() as scratch:
+            artifact = Path(scratch) / "masked-no-lf.jsonl"
+            artifact.write_bytes(data)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact),
+                                          "--disable-rule", "oracle.utf8"])
+            self.assertEqual(code, 1, f"exit {code}: {output.getvalue()}")
+            self.assertIn("oracle: oracle.whole-lines", output.getvalue())
+            self.assertNotIn("oracle: oracle.utf8 —", output.getvalue(),
+                             "the disabled rule is still cited as a violation")
+            self.assertIn("not evaluated: oracle.utf8 answered no text", output.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(artifact),
+                                          "--disable-rule", "oracle.utf8",
+                                          "--disable-rule", "oracle.whole-lines"])
+            self.assertEqual(code, 2, f"exit {code}: {output.getvalue()}")
+            self.assertTrue(output.getvalue().strip().splitlines()[-1].startswith("oracle: INCOMPLETE"),
+                            output.getvalue())
+
+    def test_a_receipt_still_answers_a_byte_the_text_layer_cannot_read(self) -> None:
+        """`--disable-rule oracle.utf8` drops the byte layer, not the receipt.
+
+        The receipt's statements are about the artifact's raw bytes, so the same masked byte that is the
+        UTF-8 violation alone without a receipt is *also* the receipt's own disagreement (a same-length
+        change: the whole-file digest and the first line's anchor) with one — and the pair is green only
+        when the receipt is dropped too. A reading that skipped the receipt wherever the text layer
+        failed would answer PASS here, which contradicts the flag's "drop exactly this rule" promise.
+        """
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        broken, _ = NATIVE_CHECK._mutation_byte_not_utf8_under_receipt(data, None)
+        self.assertEqual(len(broken), len(data), "this case's mutation is not a same-length change")
+        self.assertEqual({violation.rule for violation in self.reading(broken, receipt)},
+                         {"oracle.utf8", "oracle.receipt-integrity"},
+                         f"the receipt did not answer the masked byte: {self.reading(broken, receipt)}")
+        self.assertEqual({violation.rule for violation in self.reading(broken, receipt, ("oracle.utf8",))},
+                         {"oracle.receipt-integrity"},
+                         "dropping oracle.utf8 also dropped the receipt's own answer")
+        self.assertEqual(self.reading(broken, receipt,
+                                      ("oracle.utf8", "oracle.receipt-integrity")), [],
+                         "the masked byte is not green with both of its rules dropped")
+
+    def test_the_line_rule_is_the_whole_lines_own(self) -> None:
+        """An artifact whose last record has no line feed is `oracle.whole-lines` alone — its last line
+        is still one JSON object — the empty artifact holds no unterminated record, and a line that is
+        no JSON document (a blank one included) is `oracle.jsonl-objects` alone."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        self.assertEqual([violation.rule for violation in self.reading(data[:-1])],
+                         ["oracle.whole-lines"])
+        self.assertEqual(self.reading(b""), [], "the empty artifact is not an unterminated record")
+        self.assertEqual([violation.rule for violation in self.reading(data + b"\n")],
+                         ["oracle.jsonl-objects"],
+                         "a blank line was skipped rather than refused as no JSON object")
+
+    def test_a_line_at_the_stated_nesting_bound_is_accepted_and_past_it_refused(self) -> None:
+        """The nesting bound is the rule's own statement, not the reading interpreter's recursion
+        limit: a line nested exactly at ``ORACLE_NESTING_BOUND`` levels is one JSON object like any
+        other, and a line one level deeper — or far deeper — is refused by `oracle.jsonl-objects`
+        alone, naming that bound, so the verdict is a function of the line's bytes. A refusal that
+        fired on the interpreter's limit instead would accept the deeper line here and answer the
+        mutation's own bytes with the interpreter's words."""
+        bound = NATIVE_CHECK.ORACLE_NESTING_BOUND
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+
+        def nested(arrays: int) -> bytes:
+            return b'{"n": ' + b"[" * arrays + b"]" * arrays + b"}"
+
+        at = NATIVE_CHECK.oracle_replace_line(data, 2, nested(bound - 1))
+        self.assertEqual(self.reading(at), [],
+                         f"a line nested at the stated bound of {bound} levels is not accepted")
+        for label, arrays in (("one level past the bound", bound),
+                              ("far past the bound", 200000)):
+            violations = self.reading(NATIVE_CHECK.oracle_replace_line(data, 2, nested(arrays)))
+            self.assertEqual([violation.rule for violation in violations], ["oracle.jsonl-objects"],
+                             f"{label}: {violations}")
+            self.assertIn(f"nested deeper than {bound} levels", violations[0].detail,
+                          f"{label}: {violations[0].detail}")
+        self.assertIn(f"nested deeper than {bound} levels",
+                      NATIVE_CHECK.ORACLE_RULES["oracle.jsonl-objects"],
+                      "the rule's own sentence does not state the bound the code enforces")
+
+    def test_a_bracket_inside_a_string_is_not_nesting(self) -> None:
+        """The bound is counted outside the line's string literals: a legitimate container line whose
+        string holds a great many brackets is one object like any other, and a string closed by an
+        escaped quote does not end the scan early. A pre-scan that counted brackets inside a string — or
+        that read an escaped quote as the string's own end — refuses both as "nested deeper than the
+        stated bound", a false refusal of bytes this rule admits."""
+        bound = NATIVE_CHECK.ORACLE_NESTING_BOUND
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        depth_of_brackets = "[" * (bound + 44)
+        shapes = (("brackets inside a string", json.dumps({"note": depth_of_brackets})),
+                  ("a string closed by an escaped quote",
+                   '{"note": "a\\"' + depth_of_brackets + '"}'))
+        for label, line in shapes:
+            with self.subTest(shape=label):
+                violations = self.reading(NATIVE_CHECK.oracle_replace_line(data, 2,
+                                                                           line.encode("utf-8")))
+                self.assertEqual(violations, [],
+                                 f"{label}: a line this rule admits was refused: {violations}")
+
+    def test_a_line_holding_a_big_integer_is_one_json_object_whatever_the_limit(self) -> None:
+        """The line rule reads a number's syntax, never its value: a line carrying a 5,000-digit
+        integer is one JSON object by the rule's own sentence, on this interpreter's default
+        integer-string limit and on one whose limit is lowered under the number's digits, because the
+        reading never converts the digits to an integer. A reading that did would refuse the line with
+        the interpreter's own words here — the same artifact's verdict moving with the interpreter's
+        settings."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        line = b'{"n": ' + b"9" * 5000 + b"}"
+        mutated = NATIVE_CHECK.oracle_replace_line(data, 2, line)
+        self.assertEqual(self.reading(mutated), [],
+                         "a 5,000-digit integer refused a line this rule admits")
+        previous = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(640)
+            self.assertEqual(self.reading(mutated), [],
+                             "the line's verdict moved with the interpreter's digit limit")
+        finally:
+            sys.set_int_max_str_digits(previous)
+
+    def test_a_receipt_member_the_rule_does_not_read_is_not_converted(self) -> None:
+        """The receipt's parse converts no member this rule does not read.
+
+        The rule reads three members; an ignored fourth holding a 5,000-digit integer must not make the
+        document unreadable under the interpreter's integer-string conversion limit — the round-5
+        finding's shape, where the parse converted every member and an unchanged receipt turned
+        INCOMPLETE. The documents are written as text (the case never builds those integers). The
+        ignored member passes; a number standing where one of the three string/integer members belongs
+        is still read and still refused — a reading that stopped converting the members of the document
+        altogether would swallow the `bytes` member, and one that handed numbers through as strings
+        would accept a 64-digit number as a digest.
+        """
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+        lines = json.dumps(receipt["lines"], sort_keys=True)
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            wide = root / "wide.receipt.json"
+            text = (NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_RECEIPT) \
+                .read_text(encoding="utf-8").rstrip("\n")
+            self.assertTrue(text.endswith("}"), text[-80:])
+            wide.write_text(text[:-1] + ', "metadata": ' + "9" * 5000 + "}", encoding="utf-8")
+            oversized = root / "oversized.receipt.json"
+            oversized.write_text('{"bytes": ' + "9" * 5000 + ', "sha256": "'
+                                 + receipt["sha256"] + '", "lines": ' + lines + "}",
+                                 encoding="utf-8")
+            numeric_digest = root / "numeric-digest.receipt.json"
+            numeric_digest.write_text('{"bytes": ' + str(len(data)) + ', "sha256": ' + "1" * 64
+                                      + ', "lines": ' + lines + "}", encoding="utf-8")
+            for label, document, want_code, want_line in (
+                    ("an ignored member's 5,000-digit integer", wide, 0, "oracle: PASS — 3 record(s)"),
+                    ("a 5,000-digit byte count", oversized, 1, "oracle: FAIL — 3 record(s), 1 violation(s)"),
+                    ("a 64-digit digest written as a number", numeric_digest, 1,
+                     "oracle: FAIL — 3 record(s), 1 violation(s)"),
+            ):
+                with self.subTest(document=label):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        code = NATIVE_CHECK.main(["--validate", str(fixture),
+                                                  "--receipt", str(document)])
+                    self.assertEqual(code, want_code, f"{label}: {output.getvalue()}")
+                    self.assertEqual(output.getvalue().strip().splitlines()[-1], want_line,
+                                     f"{label}: {output.getvalue()}")
+
+    def test_a_receipt_document_nested_past_the_stated_bound_is_refused_by_name(self) -> None:
+        """A receipt's own byte statement decides a nested document, not the reading interpreter.
+
+        A document nesting an *ignored* member past ``ORACLE_NESTING_BOUND`` — the shape measured
+        answering PASS on Python 3.15 and `RecursionError`/INCOMPLETE on 3.11, because the whole
+        document was materialized — is an input the reading cannot read: refused by name, before any
+        member is read, as INCOMPLETE (exit 2) like a document that is not JSON, and never masked by
+        ``--disable-rule`` (the r8 finding: the pre-fix refusal was `oracle.receipt-integrity`'s own
+        violation, so 257 openers and no closers turned into a PASS once that rule was disabled). A
+        document nested exactly at the bound is read like any other, and the ignored member passes
+        within it.
+        """
+        bound = NATIVE_CHECK.ORACLE_NESTING_BOUND
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        frozen = (NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_RECEIPT) \
+            .read_text(encoding="utf-8").rstrip("\n")
+        self.assertTrue(frozen.endswith("}"), frozen[-80:])
+
+        def with_ignored_member(arrays: int) -> str:
+            return frozen[:-1] + ', "metadata": ' + "[" * arrays + "]" * arrays + "}"
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            at_bound = root / "at-bound.receipt.json"
+            at_bound.write_text(with_ignored_member(bound - 1), encoding="utf-8")
+            deep = root / "deep.receipt.json"
+            deep.write_text(with_ignored_member(2000), encoding="utf-8")
+            unbalanced = root / "unbalanced.receipt.json"
+            unbalanced.write_text("[" * (bound + 1), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(fixture), "--receipt", str(at_bound)])
+            self.assertEqual(code, 0, f"a receipt at the stated bound was refused: {output.getvalue()}")
+            self.assertEqual(output.getvalue().strip().splitlines()[-1], "oracle: PASS — 3 record(s)",
+                             output.getvalue())
+            for label, document in (("an ignored member nested 2,000 deep", deep),
+                                    (f"{bound + 1} openers and no closers", unbalanced)):
+                argv = ["--validate", str(fixture), "--receipt", str(document)]
+                with self.subTest(receipt=label):
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors):
+                        code = NATIVE_CHECK.main(argv)
+                    self.assertEqual(code, 2, f"{label}: exit {code}, {errors.getvalue()}")
+                    self.assertIn("oracle: INCOMPLETE", errors.getvalue(), label)
+                    self.assertIn(f"nested deeper than {bound} levels", errors.getvalue(), label)
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors):
+                        code = NATIVE_CHECK.main(argv + ["--disable-rule", "oracle.receipt-integrity"])
+                    self.assertEqual(code, 2, f"{label} with its rule disabled: exit {code}, "
+                                              f"{errors.getvalue()}")
+                    self.assertIn("oracle: INCOMPLETE", errors.getvalue(), label)
+                    self.assertIn(f"nested deeper than {bound} levels", errors.getvalue(), label)
+        self.assertNotIn(f"nested deeper than {bound} levels",
+                         NATIVE_CHECK.ORACLE_RULES["oracle.receipt-integrity"],
+                         "the receipt rule still claims the depth refusal, which is the reading's "
+                         "own unreadable-input answer rather than this rule's to disable")
+
+    def test_the_unterminated_tail_is_counted_in_the_artifact_s_own_bytes(self) -> None:
+        """`oracle.whole-lines` states a byte count: an unterminated record holding multi-byte text is
+        reported by the bytes after the last line feed, not by the decoded characters it happens to
+        hold, so a reader comparing the count against the artifact's own size gets that number."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        fed, _, _ = data.rpartition(b"\n")
+        payload = '{"note": "\u00e9\u00e9"}'.encode("utf-8")
+        violations = self.reading(fed + b"\n" + payload)
+        self.assertEqual([violation.rule for violation in violations], ["oracle.whole-lines"],
+                         f"{violations}")
+        self.assertIn(f"last {len(payload)} byte(s)", violations[0].detail, violations[0].detail)
+        self.assertNotIn(f"last {len(payload.decode('utf-8'))} byte(s)", violations[0].detail,
+                         "the tail is counted in characters, not in the artifact's own bytes")
+
+    def test_an_unreadable_input_is_incomplete_never_a_pass(self) -> None:
+        """The mode's third outcome: an artifact that cannot be opened, a receipt that is not JSON, and
+        a receipt document whose object writes a member name twice each exit 2 with the reason on
+        stderr — nothing was validated, so nothing may read as a pass."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            artifact = root / "artifact.jsonl"
+            artifact.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT))
+            not_json = root / "not-json.receipt.json"
+            not_json.write_text("this is not JSON", encoding="utf-8")
+            repeated = root / "repeated.receipt.json"
+            repeated.write_text('{"bytes": 1, "bytes": 2}', encoding="utf-8")
+            for label, argv in (
+                ("an artifact that cannot be opened", ["--validate", str(root / "absent.jsonl")]),
+                ("a receipt that is not JSON",
+                 ["--validate", str(artifact), "--receipt", str(not_json)]),
+                ("a receipt writing a member name twice",
+                 ["--validate", str(artifact), "--receipt", str(repeated)]),
+            ):
+                with self.subTest(input=label):
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors):
+                        code = NATIVE_CHECK.main(argv)
+                    self.assertEqual(code, 2, f"{label}: exit {code}, {errors.getvalue()}")
+                    self.assertIn("oracle: INCOMPLETE", errors.getvalue(), label)
+
+    def test_the_validate_mode_reports_a_verdict(self) -> None:
+        """The mode's own three outcomes and its JSON document: PASS (exit 0), FAIL naming the
+        violations (exit 1), and the receipt/flag refusals, with the verdict line last."""
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        receipt = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_RECEIPT
+        with tempfile.TemporaryDirectory() as scratch:
+            mutated = Path(scratch) / "mutated.jsonl"
+            mutated.write_bytes(NATIVE_CHECK._mutation_artifact_byte_changed(
+                NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT), None)[0])
+            for label, argv, want_code, want_line in (
+                ("the artifact alone", ["--validate", str(fixture)], 0, "oracle: PASS — 3 record(s)"),
+                ("the artifact with its receipt", ["--validate", str(fixture), "--receipt", str(receipt)],
+                 0, "oracle: PASS — 3 record(s)"),
+                ("a changed byte under the receipt",
+                 ["--validate", str(mutated), "--receipt", str(receipt)], 1,
+                 "oracle: FAIL — 3 record(s), 2 violation(s)"),
+            ):
+                with self.subTest(invocation=label):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        code = NATIVE_CHECK.main(argv)
+                    self.assertEqual(code, want_code, f"{label}: {output.getvalue()}")
+                    self.assertEqual(output.getvalue().strip().splitlines()[-1], want_line,
+                                     f"{label}: {output.getvalue()}")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(fixture), "--receipt", str(receipt), "--json"])
+            self.assertEqual(code, 0, output.getvalue())
+            document = json.loads(output.getvalue()[:output.getvalue().index("\noracle: ")])
+            self.assertEqual((document["verdict"], document["records"], document["violations"],
+                              document["disabled_rules"]), ("PASS", 3, [], []), document)
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                NATIVE_CHECK.main(["--receipt", str(receipt)])
+            self.assertEqual(refusal.exception.code, 2,
+                             f"--receipt without --validate was accepted: {errors.getvalue()}")
+
+    def test_selftest_mutations_refuses_corpus_flags(self) -> None:
+        """The corpus mode takes none of the single-artifact flags: an invocation that also names
+        ``--validate``, ``--receipt`` or ``--disable-rule`` is refused (exit 2) rather than running the
+        corpus under a flag it would ignore."""
+        for flags in (["--validate", "any-artifact.jsonl"], ["--receipt", "any-receipt.json"],
+                      ["--disable-rule", "oracle.utf8"]):
+            with self.subTest(flags=flags):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                    NATIVE_CHECK.main(["--selftest-mutations", *flags])
+                self.assertEqual(refusal.exception.code, 2, errors.getvalue())
+                self.assertIn("--selftest-mutations runs the whole corpus", errors.getvalue())
+
+    def test_the_offline_modes_refuse_a_native_turn_flag(self) -> None:
+        """A native-turn flag on an offline mode is refused by name, never accepted and dropped.
+
+        ``--resume-prompt``/``--repeat-resume-prompt`` ask a native run for a real turn; ``--validate``
+        and ``--selftest-mutations`` run no harness at all, so the combination is refused (exit 2) with
+        the flag named. The flag's *presence* is what is tested, not its value: an empty prompt is the
+        same request as a spelled one and is refused the same way, where a truthiness test accepted it,
+        ran no turn and said nothing — a caller could ask for a turn and read a report that answered a
+        different request.
+        """
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        for mode in (["--validate", str(fixture)], ["--selftest-mutations"]):
+            for flag in ("--resume-prompt", "--repeat-resume-prompt"):
+                for value in ("a question", ""):
+                    argv = mode + [flag, value]
+                    with self.subTest(argv=argv):
+                        errors = io.StringIO()
+                        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+                            NATIVE_CHECK.main(argv)
+                        self.assertEqual(refusal.exception.code, 2, f"{argv}: {errors.getvalue()}")
+                        self.assertIn("runs no harness turn", errors.getvalue(), argv)
+                        self.assertIn("--resume-prompt", errors.getvalue(), argv)
+
+    def test_disable_rule_without_validate_is_refused(self) -> None:
+        """``--disable-rule`` turns a rule off for ``--validate``, which names the artifact the reading
+        is about: without one there is no reading to modify, and the invocation is refused (exit 2)."""
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as refusal:
+            NATIVE_CHECK.main(["--disable-rule", "oracle.utf8"])
+        self.assertEqual(refusal.exception.code, 2, errors.getvalue())
+        self.assertIn("--disable-rule turns a rule off for --validate", errors.getvalue())
+
+    def test_a_receipt_that_is_not_utf8_text_is_incomplete(self) -> None:
+        """A receipt whose bytes are not UTF-8 text cannot be read as one: exit 2 with the reason,
+        never a pass — the arm a receipt with a stray byte lands on."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            artifact = root / "artifact.jsonl"
+            artifact.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT))
+            not_text = root / "not-text.receipt.json"
+            not_text.write_bytes(b"\xff\xfe{}")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact), "--receipt", str(not_text)])
+            self.assertEqual(code, 2, errors.getvalue())
+            self.assertIn("is not UTF-8 text", errors.getvalue())
+
+    def test_a_receipt_that_cannot_be_read_is_incomplete(self) -> None:
+        """A receipt path that cannot be opened is an input that cannot be read, the same way: exit 2
+        with the reason on stderr, never a pass."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            artifact = root / "artifact.jsonl"
+            artifact.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT))
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(artifact),
+                                          "--receipt", str(root / "absent-receipt.json")])
+            self.assertEqual(code, 2, errors.getvalue())
+            self.assertIn("cannot be read", errors.getvalue())
+
+    def test_disable_rule_turns_exactly_one_rule_off(self) -> None:
+        """`--disable-rule` drops exactly the named rule's violations, through the shipped command: the
+        same bytes pass again without a file being edited, an id the registry does not declare is
+        refused before any artifact is read, and the JSON document names the reading it was taken
+        under."""
+        fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
+        with tempfile.TemporaryDirectory() as scratch:
+            unterminated = Path(scratch) / "unterminated.jsonl"
+            unterminated.write_bytes(NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)[:-1])
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(unterminated)])
+            self.assertEqual(code, 1, output.getvalue())
+            self.assertIn("oracle: oracle.whole-lines line 3 —", output.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(unterminated),
+                                          "--disable-rule", "oracle.whole-lines"])
+            self.assertEqual(code, 0, output.getvalue())
+            self.assertNotIn("oracle.whole-lines", output.getvalue())
+            self.assertEqual(output.getvalue().strip().splitlines()[-1], "oracle: PASS — 3 record(s)")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                code = NATIVE_CHECK.main(["--validate", str(fixture),
+                                          "--disable-rule", "oracle.nope"])
+            self.assertEqual(code, 2, f"exit {code} for an undeclared id: {errors.getvalue()}")
+            self.assertIn("names no rule this oracle declares: oracle.nope", errors.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = NATIVE_CHECK.main(["--validate", str(unterminated), "--json",
+                                          "--disable-rule", "oracle.whole-lines"])
+            document = json.loads(output.getvalue()[:output.getvalue().index("\noracle: ")])
+            self.assertEqual((code, document["disabled_rules"], document["violations"]),
+                             (0, ["oracle.whole-lines"], []), document)
+
+    def test_the_validator_reads_no_file(self) -> None:
+        """`validate_artifact`'s input is the artifact's bytes and nothing else: with every
+        file-opening name refused it still answers, which is the property that lets a reduced artifact
+        be validated with the source absent from the process (D2)."""
+        data = NATIVE_CHECK.oracle_fixture(NATIVE_CHECK.ORACLE_ARTIFACT)
+        receipt = NATIVE_CHECK.oracle_receipt(NATIVE_CHECK.ORACLE_RECEIPT)
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the validator opened a file")
+
+        with mock.patch("builtins.open", refuse), mock.patch("io.open", refuse), \
+                mock.patch("os.open", refuse):
+            reading = NATIVE_CHECK.validate_artifact(data, receipt=receipt)
+            self.assertEqual(reading.violations, [])
+            self.assertEqual(reading.not_evaluated, [])
 
 
 if __name__ == "__main__":

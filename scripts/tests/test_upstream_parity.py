@@ -16,6 +16,7 @@ Python 3 the repository documents.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib.util
 import io
@@ -33,6 +34,9 @@ from unittest import mock
 SCRIPTS = Path(__file__).resolve().parents[1]
 REPO_ROOT = SCRIPTS.parent
 SCRIPT_DIRS = (str(SCRIPTS),)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
 
 #: A revision-shaped pin; the exact digits do not matter to any rule under test.
 PIN = "0123456789abcdef0123456789abcdef01234567"
@@ -170,8 +174,8 @@ class ParityTree:
         (self.root / relative).unlink()
 
     def apply_executable_bit(self, relative: str, mode: str) -> None:
-        """Match the file's mode to the manifest's, where the platform has POSIX mode bits."""
-        if mode == "100755" and os.name != "nt":
+        """Match the file's mode to the manifest's, where this host's filesystem stores the bits."""
+        if mode == "100755" and HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored:
             path = self.root / relative
             path.chmod(path.stat().st_mode | 0o111)
 
@@ -232,9 +236,7 @@ class ParityTree:
             "symlink_target": self.link_seam({path: target.decode("utf-8")})}
         link = self.root / path
         link.unlink()
-        try:
-            os.symlink(target.decode("utf-8"), link)
-        except (OSError, NotImplementedError):
+        if not HOST_CONTRACT.make_symlink(target.decode("utf-8"), link, is_dir=False):
             # This host cannot create a link: the file form above is the whole of what it can hold, and
             # the case's seam answers the target that link holds.
             self.write_bytes(path, target)
@@ -818,6 +820,36 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         code, output = self.tree.run_parity(executable_bit_supported=lambda: True)
         self.assert_failed(code, output, "executable bit")
 
+    def test_the_staged_executable_bit_follows_the_stored_bits(self) -> None:
+        """The parity fixture's staging asks whether this host *stores* mode bits, not whether its
+        vfs *lookups* honour them.
+
+        The checker reads the staged copy with ``stat``, whose answer a ``noexec`` mount does not
+        change -- so staging must set the bit where storage works even when the host refuses
+        ``os.access(..., X_OK)`` for the same file (the r8 finding: the pre-fix answer folded the two
+        questions together, and a ``noexec`` mount silently staged ``100755`` records without their
+        bit). A Windows filesystem stores no POSIX mode bits, so this case asserts that measured
+        answer's own arm there instead of skipping: staging leaves the file without the bit, which is
+        every bit such a host's ``stat`` can report.
+        """
+        path = self.tree.root / "src/b.sh"
+        semantics = HOST_CONTRACT.HOST_SEMANTICS
+        path.chmod(0o644)
+        if semantics.mode_bits_stored:
+            with mock.patch.object(HOST_CONTRACT, "HOST_SEMANTICS",
+                                   dataclasses.replace(semantics, mode_bits_stored=True,
+                                                       exec_lookup_follows_mode_bits=False)):
+                self.tree.apply_executable_bit("src/b.sh", "100755")
+            self.assertEqual(path.stat().st_mode & 0o100, 0o100,
+                             "staging left a 100755 record's file without its bit where the host stores "
+                             "the bits and refuses only the exec lookup")
+            path.chmod(0o644)
+        with mock.patch.object(HOST_CONTRACT, "HOST_SEMANTICS",
+                               dataclasses.replace(semantics, mode_bits_stored=False)):
+            self.tree.apply_executable_bit("src/b.sh", "100755")
+        self.assertEqual(path.stat().st_mode & 0o100, 0,
+                         "a host that stores no bits was answered with a chmod'ed bit")
+
     def test_the_owner_executable_bit_is_the_one_compared_with_the_record(self) -> None:
         """Git's executable mode *is* the owner's execute bit, so ``0655`` is ``100644`` to git.
 
@@ -826,6 +858,9 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         ``core.filemode=false`` the pinned index blob, ``git status`` and the recorded bytes all agree
         with the modified tree -- the modification git would record is exactly the owner bit that was
         cleared. The comparison therefore asks for ``S_IXUSR``, the bit git's own mode is derived from.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of changing a bit.
         """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)
@@ -991,6 +1026,9 @@ class StoredDeviationCase(ParityTreeCase, unittest.TestCase):
         changed, and no git-backed answer has to disagree for that to be a difference (a checkout with
         ``core.filemode=false`` never records one). The case below reaches the same rule through the
         git-backed branch, where the index mode and a clean status would both pass it.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of a mode change.
         """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)
@@ -1212,7 +1250,11 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         self.assert_failed(*self.run_with_git(porcelain=b""), "changed file type")
 
     def test_a_worktree_executable_bit_git_status_cannot_report_is_still_caught(self) -> None:
-        """The mode is checked on the file itself, the way the bytes-only branch always checked it."""
+        """The mode is checked on the file itself, the way the bytes-only branch always checked it.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of a mode change.
+        """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)
             return
@@ -1328,6 +1370,9 @@ class GitBranchCase(ParityTreeCase, unittest.TestCase):
         record's mode, and ``git status`` reports nothing. The working tree's own mode is therefore
         asked of the file itself for that path too, which is what makes the declared allowance cover
         its bytes and nothing else.
+
+        Windows reports no POSIX mode bits at all, so this case asserts the probe's own answer there
+        (``executable_bit_supported()`` False) instead of a mode change.
         """
         if os.name == "nt":
             self.assertEqual(self.tree.parity.executable_bit_supported(), False)

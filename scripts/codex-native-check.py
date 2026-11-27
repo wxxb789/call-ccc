@@ -42,6 +42,8 @@ the run; those diagnostics are a bounded tail of bounded lines, read in bounded 
 floods that pipe cannot grow this harness's memory either.
 
     python3 scripts/codex-native-check.py
+    python3 scripts/codex-native-check.py --validate artifact.jsonl --receipt artifact-receipt.json --json
+    python3 scripts/codex-native-check.py --selftest-mutations
     python3 scripts/codex-native-check.py --resume-prompt "Which file did you read, and why?"
     python3 scripts/codex-native-check.py --model-provider tencent-litellm --model deepseek-v4.1-flash-fast \
         --resume-prompt "Which file did you read, and why?"
@@ -67,6 +69,10 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
+import errno
+import hashlib
+import io
 import json
 import os
 import queue
@@ -244,7 +250,8 @@ class SeededConfiguration(NamedTuple):
         return head
 
 
-def seed_configuration(host_text: str, overrides: dict[str, str]) -> SeededConfiguration:
+def seed_configuration(host_text: str, overrides: dict[str, str], problem: str = ""
+                       ) -> SeededConfiguration:
     """The throw-away home's configuration, built from the settings of the host's own configuration.
 
     The host's `config.toml` is *not* copied: a configuration is where credentials live -- provider
@@ -255,9 +262,10 @@ def seed_configuration(host_text: str, overrides: dict[str, str]) -> SeededConfi
     the caller names them, so `--model-provider`/`--model` still decide what the home answers with.
 
     A document this function cannot read as TOML is not one it copies from: it contributes nothing and
-    the caller is told, rather than having its bytes written out unexamined.
+    the caller is told, rather than having its bytes written out unexamined. `problem` is how a caller
+    that already failed to read the file says so: the same nothing-is-copied answer with the failure in
+    place of the seed, never an exception out of the run.
     """
-    problem = ""
     document: dict[str, object] = {}
     if host_text.strip():
         try:
@@ -433,6 +441,46 @@ def drain_diagnostics(stream: Iterable[str], retained: collections.deque[str]) -
         pass
 
 
+class OtherError(NamedTuple):
+    """A JSON-RPC error answer to one call: the harness's own error document, folded into one shape."""
+
+    message: str
+
+
+class NoAnswer(NamedTuple):
+    """No answer was obtained: the harness cannot be started, stopped answering, its output closed, or
+    the pipe failed (`BrokenPipeError`, any other `OSError` on it, a close failure)."""
+
+    reason: str
+
+
+class Thread(NamedTuple):
+    """The harness's own answer to one call that succeeded: its result document."""
+
+    result: dict
+
+
+def answer_problem(answer: Thread | OtherError | NoAnswer) -> str:
+    """The reason one call did not answer a `Thread`, or "" where it did."""
+    if isinstance(answer, OtherError):
+        return answer.message
+    if isinstance(answer, NoAnswer):
+        return answer.reason
+    return ""
+
+
+def start_app_server(binary: str, home: Path) -> "AppServer | NoAnswer":
+    """Start one app server over stdio in `home`, or answer the `NoAnswer` that it cannot be started.
+
+    The start failure is the same variant every pipe failure answers: "the harness did not start" is
+    no answer, wherever in an interaction it happens.
+    """
+    try:
+        return AppServer(binary, home)
+    except OSError as failure:
+        return NoAnswer(f"the app server {binary} cannot be started: {failure}")
+
+
 class AppServer:
     """A minimal client for the target's own app-server protocol over stdio.
 
@@ -444,10 +492,17 @@ class AppServer:
     reported is the *tail* of them: the drainer retains ``APP_SERVER_DIAGNOSTICS_MAX`` lines, each cut to
     ``APP_SERVER_DIAGNOSTICS_LINE_MAX`` characters and read in bounded pieces, so a server that logs for
     the whole run -- or writes one line it never ends -- cannot grow this harness's memory with it.
+
+    Every interaction answers one of `Thread` / `OtherError` / `NoAnswer` and none raises a transport
+    failure: `call` and `notify` fold a write, flush or read failure (`BrokenPipeError`, any other
+    `OSError`, a closed output) at this object, the pipe's owner, and `close` folds its own so a
+    caller's `finally` cannot replace an answer already in hand. Construction goes through
+    `start_app_server`, which folds the start failure the same way.
     """
 
     def __init__(self, binary: str, home: Path):
         self.next_id = 0
+        # An OSError from here is the start failure `start_app_server` folds into a `NoAnswer`.
         self.process = subprocess.Popen(
             [binary, "app-server", "--listen", "stdio://"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -479,33 +534,63 @@ class AppServer:
         drain_diagnostics(stream, self.diagnostics)
 
     def close(self) -> None:
+        """Terminate the server, folding every pipe failure at this object, which owns the pipe.
+
+        `stdin.close()` flushes, and a server that already exited comes back as a `BrokenPipeError`
+        there (measured); a `finally` that let it escape would replace an answer already in hand.
+        """
         try:
-            if self.process.stdin:
+            if self.process.stdin is not None:
                 self.process.stdin.close()
-        finally:
+        except OSError:
+            pass
+        try:
             self.process.terminate()
             try:
                 self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+        except OSError:
+            pass
 
     def stderr_tail(self, limit: int = 3) -> str:
         # The sink is a deque (its maxlen is the bound), and a deque takes no slice: the last `limit`
         # lines are copied out of a ring that is already bounded.
         return " | ".join(list(self.diagnostics)[-limit:])[:400]
 
-    def call(self, method: str, params: dict) -> dict:
+    def _write(self, payload: str) -> str:
+        """Write one protocol line to the server, answering "" or the failure's own words.
+
+        The write and its flush are where a server that exited comes back as a `BrokenPipeError`: it is
+        folded here, at the pipe this object owns, so no caller has to know which write can fail.
+        """
+        stdin = self.process.stdin
+        if stdin is None:
+            return "the app server has no input pipe"
+        try:
+            stdin.write(payload + "\n")
+            stdin.flush()
+        except (OSError, ValueError) as failure:
+            return f"the app server's input pipe failed: {failure}"
+        return ""
+
+    def call(self, method: str, params: dict) -> Thread | OtherError | NoAnswer:
+        """One request and its answer: the harness's result, its JSON-RPC error, or no answer.
+
+        One vocabulary for every interaction: a write, flush or read failure is `NoAnswer` folded at
+        this object; a JSON-RPC error answer is `OtherError`; a result is `Thread`.
+        """
         self.next_id += 1
         request_id = self.next_id
         payload = json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        assert self.process.stdin is not None
-        self.process.stdin.write(payload + "\n")
-        self.process.stdin.flush()
+        failure = self._write(payload)
+        if failure:
+            return NoAnswer(failure)
         deadline = time.monotonic() + APP_SERVER_TIMEOUT
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RuntimeError(
+                return NoAnswer(
                     f"the app server did not answer {method} within {APP_SERVER_TIMEOUT}s"
                     f"{'; its diagnostics: ' + self.stderr_tail() if self.diagnostics else ''}")
             try:
@@ -513,22 +598,40 @@ class AppServer:
             except queue.Empty:
                 continue
             if line is None:
-                raise RuntimeError(f"the app server closed its output while answering {method}")
-            message = json.loads(line)
+                return NoAnswer(f"the app server closed its output while answering {method}")
+            try:
+                message = json.loads(line)
+            except (ValueError, RecursionError):
+                return NoAnswer(f"the app server wrote a line that is not JSON while answering {method}")
+            if not isinstance(message, dict):
+                return NoAnswer(f"the app server answered {method} with JSON that is not an object")
             if message.get("id") != request_id:
                 continue  # a notification (a warning, a status change): not this call's answer
-            if "error" in message:
-                raise RuntimeError(f"{method} failed: {message['error'].get('message')}")
-            return message.get("result") or {}
+            error = message.get("error")
+            if error is not None:
+                detail = error.get("message") if isinstance(error, dict) else error
+                return OtherError(f"{method} failed: {detail}")
+            return Thread(message.get("result") or {})
 
-    def notify(self, method: str, params: dict) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}) + "\n")
-        self.process.stdin.flush()
+    def notify(self, method: str, params: dict) -> NoAnswer | None:
+        """Send one notification: the `NoAnswer` where the pipe did not take it, `None` where it did."""
+        failure = self._write(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}))
+        return NoAnswer(failure) if failure else None
 
-    def handshake(self) -> None:
-        self.call("initialize", {"clientInfo": {"name": "ccc-native-check", "version": "0.1.0"}})
-        self.notify("initialized", {})
+    def handshake(self) -> NoAnswer | None:
+        """Initialize the session over this pipe: the `initialize` call and the `initialized`
+        notification.
+
+        Answers the `NoAnswer` where either half did not go through -- an error answer to `initialize`
+        included, because the handshake is what establishes the pipe answers at all -- and `None` where
+        the handshake completed.
+        """
+        answer = self.call("initialize", {"clientInfo": {"name": "ccc-native-check", "version": "0.1.0"}})
+        if isinstance(answer, NoAnswer):
+            return answer
+        if isinstance(answer, OtherError):
+            return NoAnswer(answer.message)
+        return self.notify("initialized", {})
 
 
 def append_fragment(path: Path, fragment: Path) -> int:
@@ -609,14 +712,14 @@ def copy_of_fixture(fixture: Path, root: Path) -> Path:
     return target
 
 
-def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]]:
-    """The target harness's own view of a thread: the lines it shows, and the item types it lists.
+def thread_view(result: dict) -> tuple[list[str], list[str]]:
+    """The target harness's own view of a thread, read from its own `thread/read` reply: the lines it
+    shows, and the item types it lists.
 
     The item types come from the reply's own ``thread.turns[].items[].type`` fields, so the check that
     the converted turns are listed reads the structured answer rather than the lines this script
     rendered from it (a message body could contain the word the lines are searched for).
     """
-    result = server.call("thread/read", {"threadId": thread_id, "includeTurns": True})
     thread = result.get("thread") or {}
     lines = [f"thread {thread.get('id')} [{thread.get('historyMode')}] provider={thread.get('modelProvider')}"]
     kinds: list[str] = []
@@ -633,32 +736,222 @@ def thread_view(server: AppServer, thread_id: str) -> tuple[list[str], list[str]
     return lines, kinds
 
 
+def sha256_or_failure(path: Path) -> tuple[str, str]:
+    """One path's digest, or the failure that prevented reading it -- never the exception itself.
+
+    Every read of the bytes in a caller-named home goes through this answer or `read_text_or_failure`,
+    so what an unreadable path means is one shape rather than each site's accident: a site whose promise
+    depends on the read (the snapshot of the sessions a conversion must not touch) ends the run
+    INCOMPLETE naming the path and the failure, and a site whose check can still run records that
+    failure under the check's own name.
+    """
+    try:
+        return sha256(path), ""
+    except OSError as failure:
+        return "", f"{path} cannot be read: {failure}"
+
+
+def read_text_or_failure(path: Path) -> tuple[str, str]:
+    """One path's text, read as UTF-8 — never through the process's locale — or the failure that
+    prevented it.
+
+    A byte some locale happens to decode is not evidence the file is UTF-8 on disk, and where the
+    locale is strict the decoder's exception would escape this rule; both shapes are the one named
+    failure, so the verdict follows the file's own bytes rather than the reading interpreter's locale.
+    """
+    try:
+        return path.read_bytes().decode("utf-8"), ""
+    except OSError as failure:
+        return "", f"{path} cannot be read: {failure}"
+    except UnicodeDecodeError as failure:
+        return "", f"{path} cannot be read as UTF-8: {failure}"
+
+
+def absolute_launch_path(path: str, pathmod=os.path, cwd: str | None = None) -> str:
+    """The path a launcher may be handed: the caller's spelling when the dialect's own join onto the
+    process's directory changes nothing, and that spelling anchored to the directory otherwise.
+
+    One spelling has to name one binary for every process this run starts, and the processes do not
+    share a working directory (`ccc continue` runs from `--repo` while the harness runs from this
+    process's own). Whether a spelling already names its own anchor is the path dialect's own answer to
+    `join`: a relative path, and the drive-less rooted form (`\\opt\\bin\\codex`) that 3.11/3.12's
+    `ntpath.isabs` *calls* absolute, are both spelled differently once joined onto the process's
+    directory -- the join supplies the drive, which is how the platform resolves a rooted path for this
+    process -- so they are answered anchored, identically on every CPython minor and identically for
+    every process the run starts. A spelling the join answers unchanged (a POSIX absolute path, a
+    Windows drive-rooted or UNC path) is returned untouched: no component is normalized, because
+    `abspath`'s lexical `..`-collapse can name another file -- a path that resolved to the executable
+    can be rewritten to a name that does not exist or to another file's name at that path -- and a
+    launcher shim is not `resolve()`d either, because it dispatches on `argv[0]`. A join-unchanged
+    word that carries a drive but no root (`D:tools\\codex.exe`) is refused (``ValueError``) instead:
+    the join supplies no anchor for it, and the directory it resolves against -- the current
+    directory on that drive -- is process state this run cannot spell for the processes it starts.
+
+    `pathmod`/`cwd` exist so this pure rule can be driven over both path dialects (`posixpath` and
+    `ntpath`) on any host; every shipped call site leaves them at the running platform's own `os.path`
+    and process directory.
+    """
+    anchored = pathmod.join(cwd if cwd is not None else os.getcwd(), path)
+    if anchored != path:
+        return anchored
+    drive, tail = pathmod.splitdrive(path)
+    if drive and (not tail or tail[0] not in pathmod.sep + (pathmod.altsep or "")):
+        raise ValueError(
+            f"the executable {path} is relative to the current directory of drive {drive}, which "
+            f"this run cannot spell for the processes it starts; name it absolutely instead")
+    return path
+
+
+class ForeignHome:
+    """The files and directories this run fabricated inside a caller-named home, and their exclusive
+    create.
+
+    One object is entered before any plant, and every plant goes through it: `plant` records a path the
+    instant its exclusive create (`O_EXCL`) succeeds -- before the write or the buffered close -- so a
+    write that fails or is cut off still leaves the path recorded, and cleanup consults no flag a caller
+    could fail to set. `remove_all` unlinks every recorded path and removes the directories this run
+    created only to hold them; the converted session is not planted through this object (it is a keep),
+    and nothing else in the plant/cleanup region opens, unlinks or creates through this home.
+
+    The home root itself is the keep's own precondition -- it holds the converted session, is created
+    before this object is entered, and is never this object's to remove; everything below it that exists
+    only to hold fabricated files is this object's. One declared residual: a kill between the exclusive
+    create and process exit leaves a file no `finally` runs for, answered by the next run's collision
+    refusal rather than swept.
+    """
+
+    def __init__(self) -> None:
+        self._files: list[Path] = []
+        self._directories: list[Path] = []
+
+    def plant(self, path: Path, data: bytes) -> tuple[bool, str]:
+        """Create one fabricated file under a name nothing else holds, and write its bytes.
+
+        Answers ``(True, "")`` where this run's create wrote the file, ``(False, "")`` where the name is
+        already held -- a caller's file, a directory, an unreadable entry, a *dangling* symlink (the
+        flag refuses an existing symlink whatever it points at): nothing is written through it, and only
+        a file this run created is ever removed -- and ``(False, failure)`` where the create or write
+        failed, with the path already recorded for `remove_all` either way.
+        """
+        self._create_parents(path.parent)
+        # The name is asked first, and before the create: a *dangling* symlink holds the name while
+        # `exists()` sees nothing, and a platform whose exclusive create follows the link (measured on
+        # Windows) would write through it and create the target. `lexists` asks the name itself. The
+        # exclusive create below is still the atomic reservation; this is the portable answer for entries
+        # the platform's own create would follow.
+        if os.path.lexists(path):
+            return False, ""
+        try:
+            handle = path.open("xb")
+        except FileExistsError:
+            return False, ""
+        except OSError as failure:
+            # A create can fail with a platform's own answer for a name that is held rather than with
+            # `FileExistsError`: a directory answers `PermissionError` and a *dangling* symlink answers
+            # `FileNotFoundError` on Windows. `lexists` asks the name rather than what it points at, so a
+            # held name is a collision here too (nothing is written through a link, and only a file this
+            # run created is ever removed) while a create that failed for any other reason still names it.
+            if os.path.lexists(path):
+                return False, ""
+            return False, f"{path} cannot be created: {failure}"
+        self._files.append(path)
+        try:
+            with handle:
+                handle.write(data)
+        except OSError as failure:
+            return False, f"{path} cannot be written: {failure}"
+        return True, ""
+
+    def _create_parents(self, directory: Path) -> None:
+        missing: list[Path] = []
+        walk = directory
+        while not walk.exists():
+            missing.append(walk)
+            walk = walk.parent
+        for path in reversed(missing):
+            try:
+                path.mkdir()
+            except FileExistsError:
+                continue
+            self._directories.append(path)
+
+    def remove_all(self) -> list[str]:
+        """Remove every path and directory this run created, answering the failures by name.
+
+        The recorded paths are answered once: the caller that reports the run's own verdict and a
+        `finally` that sweeps an unexpected exit can both call this, and the second call finds nothing
+        to do. A directory that is not empty any more holds something this run must keep (the converted
+        session installed inside a tree this run created to plant into), which is not a removal failure.
+        """
+        problems: list[str] = []
+        for path in self._files:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as failure:
+                problems.append(f"{path} cannot be removed: {failure}")
+        for path in reversed(self._directories):
+            try:
+                path.rmdir()
+            except FileNotFoundError:
+                pass
+            except OSError as failure:
+                if failure.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                    continue
+                problems.append(f"{path} cannot be removed: {failure}")
+        self._files = []
+        self._directories = []
+        return problems
+
+
+def report_leftovers(problems: list[str]) -> None:
+    """The INCOMPLETE report for fabrications a run could not remove: named, never swallowed."""
+    if problems:
+        print("INCOMPLETE — this harness could not remove what it fabricated: " + "; ".join(problems),
+              file=sys.stderr)
+
+
 def record_installed_jsonl(path: Path, check_name: str, note: str = "") -> None:
     """One installed file is one JSON object per line, under the check's own name.
 
     ``note`` is what the first conversion's file earns for its passing detail -- it is also the file the
     load check below reads -- while a file that is not that shape fails the check with the parse error
-    itself, so the failure names the line rather than restating the check's name.
+    itself, so the failure names the line rather than restating the check's name. A file the run cannot
+    read at all is that same check's failure carrying the failure, never an exception out of the run.
     """
-    parsed = jsonl_parse_error(path.read_text())
+    text, failure = read_text_or_failure(path)
+    if failure:
+        record(check_name, False, failure)
+        return
+    parsed = jsonl_parse_error(text)
     record(check_name, not parsed, parsed or f"{path.stat().st_size} bytes{note}")
 
 
-def inspect_counts(repo: Path, home: Path, thread_id: str) -> tuple[dict, subprocess.CompletedProcess]:
-    """The inherited reader's own read of one installed session: its counts, and the run that read them.
+def inspect_counts(repo: Path, home: Path, thread_id: str) -> tuple[dict, str, bool]:
+    """The inherited reader's own read of one installed session: its counts, how its run ended, and
+    whether it answered a clean exit.
 
     The file is read back by this script's own invocation of the reader, not by the conversion's own
     structure block: `ccc inspect` is a second process reading the same isolated Codex root, and the
     counts it reports are compared with what the conversion says it carried. A broken round-trip check
-    inside ccc -- or a CLI that mapped it to "verified" -- cannot make that comparison green.
+    inside ccc -- or a CLI that mapped it to "verified" -- cannot make that comparison green. A reader
+    that cannot be started, overruns its deadline, or exits non-zero is no answer either: it returns no
+    counts and the failure, which the caller records under the check's own name.
     """
-    readback = run([str(repo / BINARY), "inspect", f"codex:{thread_id}", "--json"],
-                   cwd=repo, env={"CODEX_HOME": str(home)})
+    try:
+        readback = run([str(repo / BINARY), "inspect", f"codex:{thread_id}", "--json"],
+                       cwd=repo, env={"CODEX_HOME": str(home)})
+    except (OSError, subprocess.TimeoutExpired) as failure:
+        return {}, f"the reader could not run: {failure}", False
     try:
         counts = json.loads(readback.stdout).get("source", {}).get("counts", {})
     except json.JSONDecodeError:
         counts = {}
-    return counts, readback
+    if readback.returncode != 0:
+        return counts, (f"inspect rc={readback.returncode}: "
+                        f"{last_meaningful_line(readback.stderr)}"), False
+    return counts, "", True
 
 
 def readback_verdict(thread_id: str, counts: dict, carried: dict) -> tuple[bool, str]:
@@ -680,36 +973,61 @@ def readback_verdict(thread_id: str, counts: dict, carried: dict) -> tuple[bool,
 
 
 def load_and_view(codex: str, home: Path, thread_id: str, installed: Path,
-                  loader_name: str, view_label: str) -> tuple[list[str], list[str]]:
-    """One installed session as the target harness itself answers for it: its own view, or the failure.
+                  loader_name: str, view_label: str) -> tuple[list[str], list[str], str]:
+    """One installed session as the target harness itself answers for it: its own view, its item kinds,
+    and the failure the view's own read answered ("" where the read answered).
 
     The strings a run records about a load are the run's own -- each conversion's checks have their own
     names and the second session's own view has its own heading -- and the loader's answer is the
-    harness's reply itself: a server that stopped answering is a failed check carrying its diagnostics,
-    not a traceback, because the protocol is bounded and so is this run's verdict.
+    harness's reply itself: a server that stopped answering is a failed check carrying its own words,
+    not a traceback, because every interaction answers its variant instead of raising. The loader's own
+    check is `thread/resume`'s verdict and is recorded whether or not the view was read; a read that
+    answered no view is returned to the caller, whose view check names that failure, so a read-only
+    failure cannot speak for a resume the harness answered.
     """
     view: list[str] = []
     kinds: list[str] = []
-    server = AppServer(codex, home)
-    try:
-        server.handshake()
-        loaded = server.call("thread/resume", {"threadId": thread_id})
-        loaded_thread = loaded.get("thread") or {}
-        record(loader_name,
-               loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
-               f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
-               f"cwd={loaded_thread.get('cwd')}")
-        view, kinds = thread_view(server, thread_id)
-    except RuntimeError as failure:
-        record(loader_name, False, str(failure))
-    finally:
-        server.close()
+    server = start_app_server(codex, home)
+    problem = ""
+    read_failure = ""
+    loaded_thread: dict = {}
+    reply: dict = {}
+    if isinstance(server, NoAnswer):
+        problem = server.reason
+    else:
+        try:
+            handshake = server.handshake()
+            if isinstance(handshake, NoAnswer):
+                problem = handshake.reason
+            else:
+                resumed = server.call("thread/resume", {"threadId": thread_id})
+                if not isinstance(resumed, Thread):
+                    problem = answer_problem(resumed)
+                else:
+                    loaded_thread = resumed.result.get("thread") or {}
+                    viewed = server.call("thread/read", {"threadId": thread_id, "includeTurns": True})
+                    if isinstance(viewed, Thread):
+                        reply = viewed.result
+                    else:
+                        read_failure = answer_problem(viewed)
+        finally:
+            server.close()
+    if problem:
+        record(loader_name, False, problem)
+        return view, kinds, read_failure
+    record(loader_name,
+           loaded_thread.get("id") == thread_id and str(loaded_thread.get("path")) == str(installed),
+           f"thread/resume -> {loaded_thread.get('id')} [{loaded_thread.get('historyMode')}] "
+           f"cwd={loaded_thread.get('cwd')}")
+    if read_failure:
+        return view, kinds, read_failure
+    view, kinds = thread_view(reply)
     if view:
         print()
         print(view_label)
         for line in view:
             print("   ", line)
-    return view, kinds
+    return view, kinds, ""
 
 
 def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> list[str]:
@@ -725,25 +1043,947 @@ def turn_identity(codex: str, thread_id: str, reported_arguments: list[str]) -> 
     return ["exec", "resume", thread_id]
 
 
+def turn_answer(repo: Path, codex: str, home: Path, identity: list[str], prompt: str
+                ) -> subprocess.CompletedProcess | NoAnswer:
+    """One `exec` turn through the target harness's own binary: its process, or the `NoAnswer` that it
+    did not start or did not finish inside its deadline.
+
+    The same variant the app server's pipe failures answer: "the harness did not start / did not
+    finish" is one reading with one vocabulary, wherever the harness was driven from. The deadline is
+    answered as the duration it was given, never by formatting the exception: ``TimeoutExpired``'s own
+    ``str`` holds the whole argument vector, and this command carries the prompt as one of its words --
+    words that travel into the run's printed report and, under ``--json``, into the machine-readable
+    one.
+    """
+    deadline = 900
+    try:
+        return run([codex] + identity + [prompt] + [
+            "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
+        ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=deadline)
+    except subprocess.TimeoutExpired as overrun:
+        return NoAnswer(f"the turn could not run: it did not finish within {overrun.timeout} seconds")
+    except OSError as failure:
+        return NoAnswer(f"the turn could not run: {failure}")
+
+
 def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: list[str],
-             prompt: str, check_name: str) -> None:
+             prompt: str, check_name: str) -> bool:
     """One real turn in an installed session, recorded under ``check_name``, and its answer printed.
 
     The flags this harness adds are its own isolation (no git repository, a read-only sandbox, no
     approvals) and belong to the check, not to the reported command; what the check answers is whether
-    the turn ran and the session it names grew.
+    the turn ran and the session it names grew. A session whose bytes cannot be measured, and a turn
+    that did not start or did not finish (`turn_answer`'s own `NoAnswer`), are this check's own named
+    failures rather than exceptions out of the run. The answer is whether the turn *ran* — a verified
+    continuation: the process exited zero and the session it names grew — which is the same predicate
+    the check records, so the run's own count of turns is the turns that ran, never the prompt flags a
+    caller passed and never a process that answered non-zero without continuing anything.
     """
-    session_before = session_file.stat().st_size
-    turn = run([codex] + identity + [prompt] + [
-        "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-    ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
-    session_after = session_file.stat().st_size
-    record(check_name, turn.returncode == 0 and session_after > session_before,
-           f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
+    try:
+        session_before = session_file.stat().st_size
+    except OSError as failure:
+        record(check_name, False, f"the session's bytes cannot be measured: {failure}")
+        return False
+    turn = turn_answer(repo, codex, home, identity, prompt)
+    if isinstance(turn, NoAnswer):
+        record(check_name, False, turn.reason)
+        return False
+    try:
+        session_after = session_file.stat().st_size
+    except OSError as failure:
+        record(check_name, False, f"the session's bytes cannot be measured after the turn: {failure}")
+        return False
+    ran = turn.returncode == 0 and session_after > session_before
+    record(check_name, ran, f"exit {turn.returncode}, session {session_before} -> {session_after} bytes")
     print()
     print(TURN_OUTPUT_MARKER)
     for line in (turn.stdout or turn.stderr).splitlines():
         print("   ", line)
+    return ran
+
+
+#: The deepest `{`/`[` nesting one text may reach before the decoder reads it — an artifact line, or the
+#: receipt document. An artifact line's bound is `ORACLE_RULES["oracle.jsonl-objects"]`'s own statement;
+#: a receipt document's is the reading's own refusal (`oracle_report` answers INCOMPLETE for it, never a
+#: rule violation a caller could disable), so a text's verdict is its own bytes rather than the reading
+#: interpreter's recursion limit (CPython's default limit covers this depth on either scanner).
+ORACLE_NESTING_BOUND = 256
+
+#: Every rule the offline oracle states: rule id → the sentence it states. The ids are this report's own
+#: vocabulary and the keys of `ORACLE_MUTATIONS`, which `--selftest-mutations` asserts to be in
+#: bijection with this table.
+ORACLE_RULES: dict[str, str] = {
+    "oracle.utf8":
+        "the artifact's bytes are valid UTF-8 text and open with no byte-order mark",
+    "oracle.whole-lines":
+        "the artifact's bytes are whole lines — the empty artifact, or bytes whose final byte is a line "
+        "feed; an artifact whose last bytes are an unterminated record is refused",
+    "oracle.jsonl-objects":
+        "every line of the artifact is exactly one JSON object, every member name written once inside "
+        "it, and no string it holds carries an unpaired surrogate escape: a repeated name and a "
+        "`\\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently "
+        "for, so such a line is refused rather than read as either answer; a line nested deeper than "
+        f"{ORACLE_NESTING_BOUND} levels is refused as well, because that bound is this rule's own "
+        "statement rather than the reading interpreter's recursion limit",
+    "oracle.receipt-integrity":
+        "a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per "
+        "line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt "
+        "whose statements do not match the artifact's bytes is refused, naming the line a changed byte "
+        "moved and, where the two sides hold different line counts, the first line without a "
+        "counterpart anchor; a receipt covers an artifact holding at least one line, so the empty "
+        "artifact is not receipt-identified by this rule",
+}
+
+#: What every declared rule reads: the artifact's raw bytes (`on_bytes`), or the text the byte layer
+#: answers (`needs_text`). A `needs_text` rule whose text the byte layer refused is `NotEvaluated`
+#: naming `oracle.utf8` — a result the report shows, never an absent violation — and a new rule declares
+#: its own kind here and brings the co-citation mutations the corpus requires.
+ORACLE_RULE_INPUTS: dict[str, str] = {
+    "oracle.utf8": "on_bytes",
+    "oracle.whole-lines": "on_bytes",
+    "oracle.receipt-integrity": "on_bytes",
+    "oracle.jsonl-objects": "needs_text",
+}
+
+#: The fixtures the oracle is frozen against: one artifact that models no agent's format, and the
+#: receipt that names its bytes. A fixture shaped like a Codex session would carry the foreign-format
+#: knowledge this re-scope deleted; a case in scripts/tests/test_codex_native_check.py fails one that
+#: reappears.
+ORACLE_FIXTURE_ROOT = Path(__file__).resolve().parent / "tests" / "testdata" / "codex-oracle"
+ORACLE_ARTIFACT = "artifact.jsonl"
+ORACLE_RECEIPT = "artifact-receipt.json"
+
+#: The sentinel for "no receipt was supplied": a *supplied* document that reads `null` is a receipt that
+#: is not an object, which `oracle.receipt-integrity` refuses — not an absent receipt.
+_NO_RECEIPT = object()
+
+
+class Violation(NamedTuple):
+    rule: str
+    line: int
+    detail: str
+
+
+class NotEvaluated(NamedTuple):
+    """One declared rule the reading did not judge, and the rule whose own answer blocked it."""
+
+    rule: str
+    blocked_by: str
+
+
+class OracleReading(NamedTuple):
+    """One artifact read once: its records, every rule's violations, and the rules that were not judged.
+
+    `violations` is the reading after the disabled rules were subtracted — a set subtraction taken
+    *after* every rule was evaluated, never a reason to skip one. A verdict is `passed` only where
+    every rule was evaluated and none was violated: a `NotEvaluated` rule is a result the report shows,
+    never an absent violation.
+    """
+
+    records: list[tuple[int, dict]]
+    violations: list[Violation]
+    not_evaluated: list[NotEvaluated]
+
+    @property
+    def passed(self) -> bool:
+        return not self.violations and not self.not_evaluated
+
+
+class _OracleInteger(str):
+    """One JSON integer as its written digits, never an interpreter integer.
+
+    A receipt's document is parsed with this as its `parse_int`, so a member this rule does not read --
+    an ignored extra member holding a five-thousand-digit integer, say -- is never converted, and the
+    interpreter's integer-string conversion limit cannot decide an unchanged receipt's verdict.
+    """
+
+
+def oracle_digest_stated(value: object) -> str | None:
+    if (isinstance(value, str) and not isinstance(value, _OracleInteger)
+            and len(value) == 64 and all(char in "0123456789abcdef" for char in value)):
+        return value
+    return None
+
+
+def _oracle_count_stated(value: object) -> str | None:
+    """One receipt's stated byte count as its written digits, or None where the member is not a
+    non-negative integer: a JSON integer arrives as its digits (`_OracleInteger`), and a Python integer
+    is written back to digits only where the interpreter can -- a value past the conversion limit is
+    refused rather than raised."""
+    if isinstance(value, _OracleInteger):
+        return value if value.isdigit() else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    try:
+        return str(value)
+    except ValueError:
+        return None
+
+
+class _OracleMemberNameRepeated(ValueError):
+    """One JSON document writes a member name twice: no single reading to answer with.
+
+    The message names neither the member nor its value: this report is printed by default, and a member
+    name is a string a document controls.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("one member name is written twice")
+
+
+def _oracle_unique_members(pairs: list[tuple[str, object]]) -> dict:
+    """One JSON object, refused where a member name is written twice.
+
+    Python's decoder keeps the last value for a repeated name and the carried tree's `gjson` the first
+    (measured on v1.20.0), so such a line is one two readers answer differently for: it is refused
+    rather than compared through either reading. The artifact's lines and the receipt document are read
+    through this same hook, because a document whose members collide is no more one document than such
+    a line is one record.
+    """
+    members: dict[str, object] = {}
+    for name, value in pairs:
+        if name in members:
+            raise _OracleMemberNameRepeated()
+        members[name] = value
+    return members
+
+
+def _reject_json_constant(name: str) -> None:
+    """Refuse a constant JSON does not define (`NaN`, `Infinity`, `-Infinity`), which Python accepts:
+    the artifact is JSON, so a line this decoder would turn into a float the format has no spelling for
+    is refused exactly as a line that does not parse is."""
+    raise ValueError(f"{name} is not a JSON constant")
+
+
+def _oracle_lone_surrogate(value: object) -> bool:
+    """Whether one parsed line holds an unpaired surrogate code point in any of its strings — member
+    names included.
+
+    JSON's `\\ud800`-style escape decodes to one, which this decoder answers as the code point and a Go
+    reader as U+FFFD, so the line is one two readers answer differently for and its strings may not be
+    compared by either. The walk is iterative rather than recursive: a recursive scan holds a frame per
+    container level, so an object `json.loads` accepted could exhaust the interpreter's stack instead of
+    yielding a verdict.
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if any(0xD800 <= ord(character) <= 0xDFFF for character in item):
+                return True
+        elif isinstance(item, dict):
+            for name, member in item.items():
+                stack.append(name)
+                stack.append(member)
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
+
+
+def oracle_utf8(data: bytes) -> tuple[str | None, list[Violation]]:
+    """The byte layer: the artifact's text, or the one violation that ends the reading.
+
+    A byte-order mark is refused here rather than left to the line layer below: Python's `json.loads`
+    and Go's `encoding/json` both refuse a document that opens with one, so without this rule the mark
+    would be reported as the first line's own defect rather than as the framing byte it is.
+    """
+    if data.startswith(b"\xef\xbb\xbf"):
+        return None, [Violation("oracle.utf8", 0, "the artifact opens with a UTF-8 byte-order mark")]
+    try:
+        return data.decode("utf-8"), []
+    except UnicodeDecodeError as failure:
+        return None, [Violation("oracle.utf8", 0,
+                                f"the artifact is not UTF-8 text: byte 0x{data[failure.start]:02x} at "
+                                f"offset {failure.start}")]
+
+
+def oracle_lines(text: str) -> list[str]:
+    """One artifact's lines, line feeds excluded; the split is on the line feed alone.
+
+    `str.splitlines` is not this split — it also breaks on U+0085, U+2028 and the other boundaries a
+    JSON string may hold — and the file's final line feed ends its last record rather than opening an
+    empty one.
+    """
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def oracle_line_bytes(data: bytes) -> list[bytes]:
+    """The same lines as their own bytes, each with its line feed where it has one — what a receipt's
+    anchors are computed over — so the two splits cannot disagree about how many lines there are."""
+    lines = data.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+        return [line + b"\n" for line in lines]
+    return [line + b"\n" for line in lines[:-1]] + lines[-1:]
+
+
+def oracle_whole_lines(data: bytes) -> list[Violation]:
+    """`oracle.whole-lines`: the artifact's own bytes after its last line feed, where there are any.
+
+    The rule is a byte predicate and reads the artifact's bytes directly: an artifact the text layer
+    cannot decode still holds or lacks a final line feed, so a decode result cannot gate it.
+    """
+    if data == b"" or data.endswith(b"\n"):
+        return []
+    tail = len(data) - data.rfind(b"\n") - 1
+    return [Violation("oracle.whole-lines", len(oracle_line_bytes(data)),
+                      f"the artifact's last {tail} byte(s) are a record without its line feed")]
+
+
+def _oracle_nesting_depth(text: str) -> int:
+    """The deepest `{`/`[` nesting one text — a line, or the receipt document — reaches, counted outside
+    its string literals: a bracket inside a string is that string's text, so the count is what
+    `ORACLE_NESTING_BOUND` is stated over."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "{[":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif character in "}]":
+            depth -= 1
+    return deepest
+
+
+def oracle_records(text: str) -> tuple[list[tuple[int, dict]], list[Violation]]:
+    """One line per record: every line exactly one JSON object, read the way a strict JSON reader reads
+    it — no `NaN`/`Infinity` constant, no repeated member name, no unpaired surrogate escape, and a line
+    nested deeper than `ORACLE_NESTING_BOUND` levels refused by this rule's own bound rather than by the
+    reading interpreter's recursion limit. Integers are decoded as their written digits (`parse_int`),
+    never converted to interpreter integers, so the interpreter's integer-string conversion limit
+    decides no line's verdict either."""
+    records: list[tuple[int, dict]] = []
+    violations: list[Violation] = []
+    for number, line in enumerate(oracle_lines(text), start=1):
+        if _oracle_nesting_depth(line) > ORACLE_NESTING_BOUND:
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        f"not JSON: nested deeper than {ORACLE_NESTING_BOUND} levels, "
+                                        f"the bound this rule states"))
+            continue
+        try:
+            # `parse_int=str`: the recorded digit string, never an interpreter integer, so a line's
+            # verdict is its own bytes rather than the reading interpreter's digit-limit setting.
+            value = json.loads(line, parse_constant=_reject_json_constant,
+                               object_pairs_hook=_oracle_unique_members, parse_int=str)
+        except _OracleMemberNameRepeated:
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        "one member name is written twice in one object, so two JSON "
+                                        "readers answer different records for the line"))
+            continue
+        except json.JSONDecodeError as broken:
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        f"not JSON ({broken.msg} at column {broken.colno})"))
+            continue
+        except ValueError as broken:
+            # `_reject_json_constant`'s own refusal (`JSONDecodeError` is a `ValueError` and is answered
+            # above, so this arm is a constant the format does not hold).
+            violations.append(Violation("oracle.jsonl-objects", number, f"not JSON ({broken})"))
+            continue
+        if not isinstance(value, dict):
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        f"one JSON object per line, found {type(value).__name__}"))
+            continue
+        if _oracle_lone_surrogate(value):
+            violations.append(Violation("oracle.jsonl-objects", number,
+                                        "the line holds an unpaired surrogate escape (`\\ud800`-style): "
+                                        "two JSON readers answer different strings for the line"))
+            continue
+        records.append((number, value))
+    return records, violations
+
+
+def oracle_fixture(name: str) -> bytes:
+    return (ORACLE_FIXTURE_ROOT / name).read_bytes()
+
+
+def oracle_receipt(name: str) -> dict:
+    return json.loads(oracle_fixture(name).decode("utf-8"))
+
+
+def oracle_receipt_violations(data: bytes, receipt: object) -> list[Violation]:
+    """`oracle.receipt-integrity`: the receipt's own statements, read against the artifact's bytes.
+
+    Further members than the three the rule names are not read: a receipt is the three statements it is
+    asked for, and a statement this oracle does not know is not one it may compare. A document the
+    reading refused to read at all (nested past `ORACLE_NESTING_BOUND`) never reaches this rule: the
+    command answers INCOMPLETE for it before any member is read.
+    """
+    if not isinstance(receipt, dict):
+        return [Violation("oracle.receipt-integrity", 0,
+                          f"a receipt is a JSON object, found {type(receipt).__name__}")]
+    violations: list[Violation] = []
+    stated_count = _oracle_count_stated(receipt.get("bytes"))
+    if stated_count is None:
+        violations.append(Violation("oracle.receipt-integrity", 0,
+                                    "a receipt states its artifact's byte count as a non-negative "
+                                    "integer"))
+    elif stated_count != str(len(data)):
+        violations.append(Violation("oracle.receipt-integrity", 0,
+                                    f"the receipt states {stated_count[:40]}"
+                                    + ("…" if len(stated_count) > 40 else "")
+                                    + f" byte(s), the artifact holds {len(data)}"))
+    stated_digest = oracle_digest_stated(receipt.get("sha256"))
+    if stated_digest is None:
+        violations.append(Violation("oracle.receipt-integrity", 0,
+                                    "a receipt states its artifact's whole-file SHA-256 as 64 "
+                                    "lowercase hex digits"))
+    elif stated_digest != hashlib.sha256(data).hexdigest():
+        violations.append(Violation("oracle.receipt-integrity", 0,
+                                    f"the receipt states sha256 {stated_digest[:12]}…, the artifact's "
+                                    f"bytes are sha256 {hashlib.sha256(data).hexdigest()[:12]}…"))
+    anchors = receipt.get("lines")
+    spans = oracle_line_bytes(data)
+    if not isinstance(anchors, list) or not anchors:
+        violations.append(Violation("oracle.receipt-integrity", 0,
+                                    "a receipt names one anchor per line, as a non-empty array"))
+    else:
+        if len(anchors) != len(spans):
+            unmatched = min(len(anchors), len(spans)) + 1
+            if len(anchors) < len(spans):
+                naming = f"line {unmatched} is the first the receipt gives no anchor for"
+            else:
+                naming = f"anchor {unmatched} is the first the artifact gives no line for"
+            violations.append(Violation("oracle.receipt-integrity", unmatched,
+                                        f"the receipt names {len(anchors)} line(s), the artifact holds "
+                                        f"{len(spans)}; {naming}"))
+        # The anchors the two sides share are compared even where the counts differ, so the first line
+        # whose bytes diverged is still named: a moved delimiter byte changes the count too, and the
+        # count statement names the first line with no counterpart, because a reader who cannot locate
+        # the line the statements disagree about has been told only that two numbers differ.
+        for number, (anchor, span) in enumerate(zip(anchors, spans), start=1):
+            stated = oracle_digest_stated(anchor.get("sha256") if isinstance(anchor, dict) else None)
+            if stated is None:
+                violations.append(Violation("oracle.receipt-integrity", number,
+                                            "an anchor is 64 lowercase hex digits"))
+            elif stated != hashlib.sha256(span).hexdigest():
+                violations.append(Violation("oracle.receipt-integrity", number,
+                                            f"the line's bytes are sha256 "
+                                            f"{hashlib.sha256(span).hexdigest()[:12]}…, the receipt's "
+                                            f"anchor is sha256 {stated[:12]}…"))
+    return violations
+
+
+def oracle_reading(data: bytes, receipt: object = _NO_RECEIPT,
+                   disabled: frozenset[str] = frozenset()) -> OracleReading:
+    """One artifact read once: its records, every rule's violations, and the rules that were not judged.
+
+    Every byte rule is evaluated against the artifact's own bytes — the line rule included, which a
+    decode result cannot gate — and a receipt, when one is supplied, is compared against those bytes
+    regardless: its statements are statements about bytes, so a byte the text layer cannot decode is
+    still a byte the receipt disagrees about. The text layer's own answer gates exactly the rules that
+    declare `needs_text` (`ORACLE_RULE_INPUTS`): where it answered no text they are `NotEvaluated`,
+    naming the rule that refused, which the report shows rather than reading as a pass. The disabled set
+    is subtracted from the violation list *after* every rule was evaluated, never a reason to skip one.
+    """
+    text, violations = oracle_utf8(data)
+    violations += oracle_whole_lines(data)
+    if receipt is not _NO_RECEIPT:
+        violations += oracle_receipt_violations(data, receipt)
+    records: list[tuple[int, dict]] = []
+    not_evaluated: list[NotEvaluated] = []
+    if text is None:
+        not_evaluated = [NotEvaluated(rule, "oracle.utf8") for rule, kind in ORACLE_RULE_INPUTS.items()
+                         if kind == "needs_text"]
+    else:
+        records, json_violations = oracle_records(text)
+        violations += json_violations
+    return OracleReading(
+        records,
+        sorted((violation for violation in violations if violation.rule not in disabled),
+               key=lambda violation: (violation.line, violation.rule, violation.detail)),
+        not_evaluated)
+
+
+def validate_artifact(data: bytes, receipt: object = _NO_RECEIPT,
+                      disabled: Iterable[str] = ()) -> OracleReading:
+    """Every rule this oracle states, over one artifact's own bytes and — where a receipt is handed in —
+    its receipt: no path, no source session and no harness, which is what lets a reduced artifact be
+    validated with the source absent from the process. The reading says both what every evaluated rule
+    answered and which rules the bytes left unjudged."""
+    return oracle_reading(data, receipt, frozenset(disabled))
+
+
+def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
+                  disabled: frozenset[str] = frozenset()) -> int:
+    """The oracle's own command: one artifact, at most one receipt, a verdict and an exit code.
+
+    It reads the artifact's bytes and, when one is named, the receipt's — nothing else, ever. An input
+    it cannot read at all ends as `oracle: INCOMPLETE` (exit 2), never as a pass: a file that cannot be
+    opened, a receipt document that is not UTF-8 or not JSON, a document whose object writes a member
+    name twice, and a document nested deeper than `ORACLE_NESTING_BOUND` — refused before a member of
+    it is read, so an ignored member's depth cannot move the verdict with the reading interpreter and
+    no rule's `--disable-rule` can mask the refusal. A reading where a rule was not evaluated and none
+    was violated is `oracle: INCOMPLETE` (exit 2) too, naming the rule and what blocked it: PASS is
+    for a reading where every rule was evaluated and the violation set is empty. The verdict line is
+    the last one printed, and `--json` adds the machine-readable document above it.
+    """
+    try:
+        data = artifact.read_bytes()
+    except OSError as failure:
+        print(f"oracle: INCOMPLETE — the artifact {artifact} cannot be read: {failure}",
+              file=sys.stderr)
+        return 2
+    document: object = _NO_RECEIPT
+    if receipt is not None:
+        try:
+            text = receipt.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as failure:
+            print(f"oracle: INCOMPLETE — the receipt {receipt} is not UTF-8 text: {failure}",
+                  file=sys.stderr)
+            return 2
+        except OSError as failure:
+            print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}",
+                  file=sys.stderr)
+            return 2
+        if _oracle_nesting_depth(text) > ORACLE_NESTING_BOUND:
+            print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: nested deeper than "
+                  f"{ORACLE_NESTING_BOUND} levels, the bound this reading states", file=sys.stderr)
+            return 2
+        try:
+            document = json.loads(text,
+                                  parse_constant=_reject_json_constant,
+                                  object_pairs_hook=_oracle_unique_members,
+                                  parse_int=_OracleInteger)
+        except (ValueError, RecursionError) as failure:
+            print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}",
+                  file=sys.stderr)
+            return 2
+    reading = oracle_reading(data, receipt=document, disabled=disabled)
+    verdict = "PASS" if reading.passed else ("FAIL" if reading.violations else "INCOMPLETE")
+    if as_json:
+        print(json.dumps({
+            "artifact": str(artifact),
+            "receipt": str(receipt) if receipt is not None else None,
+            "disabled_rules": sorted(disabled),
+            "records": len(reading.records),
+            "violations": [{"rule": rule, "line": line, "detail": detail}
+                           for rule, line, detail in reading.violations],
+            "not_evaluated": [{"rule": rule, "blocked_by": blocked_by}
+                              for rule, blocked_by in reading.not_evaluated],
+            "verdict": verdict,
+        }, indent=2))
+    else:
+        for rule, line, detail in reading.violations:
+            print(f"oracle: {rule}" + (f" line {line}" if line else "") + f" — {detail}")
+        for rule, blocked_by in reading.not_evaluated:
+            print(f"oracle: {rule} — not evaluated: {blocked_by} answered no text to judge")
+    print(f"oracle: {verdict} — {len(reading.records)} record(s)"
+          + (f", {len(reading.violations)} violation(s)" if reading.violations else "")
+          + (f", {len(reading.not_evaluated)} rule(s) not evaluated" if reading.not_evaluated else ""))
+    if reading.passed:
+        return 0
+    return 1 if reading.violations else 2
+
+
+class OracleMutation(NamedTuple):
+    """One fixture pair's mutation, every other rule its bytes are known to break, and the rules the
+    pair's own disabled arm leaves unjudged.
+
+    `also_cited` names the rules the mutated bytes violate beside the one this pair proves: the corpus
+    then asserts the mutation cites exactly this pair's rule plus those, and that disabling this pair's
+    rule still fails citing exactly those -- the arm the receipt's independence needs (dropping
+    `oracle.utf8` leaves a receipt's own disagreement standing, because the receipt speaks about bytes).
+    `unjudged` names the rules the same disabled arm leaves `NotEvaluated`: the corpus asserts that
+    reading independently, so a report that stopped carrying the not-evaluated rules cannot pass the arm
+    by agreeing with itself.
+    """
+
+    label: str
+    artifact: str
+    receipt: str | None
+    mutate: Callable[[bytes, dict | None], tuple[bytes, dict | None]]
+    also_cited: tuple[str, ...] = ()
+    unjudged: tuple[str, ...] = ()
+
+
+def oracle_replace_line(data: bytes, number: int, replacement: bytes) -> bytes:
+    lines = data.split(b"\n")
+    lines[number - 1] = replacement
+    return b"\n".join(lines)
+
+
+def _mutation_byte_not_utf8(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    """One byte inside the first line's string replaced with 0xFF: still one whole line, no longer
+    UTF-8 text."""
+    lines = data.split(b"\n")
+    assert b"frozen artifact" in lines[0], "the fixture no longer holds the text this mutation edits"
+    lines[0] = lines[0].replace(b"frozen", b"froz\xffen", 1)
+    return b"\n".join(lines), receipt
+
+
+def _mutation_byte_order_mark(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    return b"\xef\xbb\xbf" + data, receipt
+
+
+def _mutation_final_line_feed_dropped(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    assert data.endswith(b"\n"), "the fixture no longer ends at a line feed"
+    return data[:-1], receipt
+
+
+def _mutation_line_not_json(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    return oracle_replace_line(data, 2, b"this line is not JSON"), receipt
+
+
+def _mutation_line_is_an_array(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    return oracle_replace_line(data, 2, b"[1, 2, 3]"), receipt
+
+
+def _mutation_line_non_json_constant(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    """One value written as `NaN`, a constant JSON has no spelling for: Python's decoder accepts it, and
+    a reader that refuses it would answer differently."""
+    return oracle_replace_line(data, 2, b'{"n": NaN}'), receipt
+
+
+def _mutation_line_nested_past_reading(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    depth = 200000
+    return oracle_replace_line(data, 2, b'{"n": ' + b"[" * depth + b"]" * depth + b"}"), receipt
+
+
+def _mutation_line_duplicate_member(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    return oracle_replace_line(data, 2, b'{"note": "one", "note": "two"}'), receipt
+
+
+def _mutation_line_lone_surrogate(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    """One string written with a `\\ud800`-style escape: valid JSON the decoder answers with a code
+    point that is not text, where a Go reader writes U+FFFD."""
+    return oracle_replace_line(data, 2, b'{"note": "\\ud800"}'), receipt
+
+
+def _mutation_artifact_byte_changed(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    """One value inside the third line changed under the committed receipt: the same length, still one
+    whole JSON object per line — and no longer the frozen bytes."""
+    lines = data.split(b"\n")
+    assert b'"n":3' in lines[2], "the fixture no longer holds the value this mutation edits"
+    lines[2] = lines[2].replace(b'"n":3', b'"n":9')
+    return b"\n".join(lines), receipt
+
+
+def _mutation_receipt_other_digest(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    assert receipt is not None
+    receipt["sha256"] = "0" * 64
+    return data, receipt
+
+
+def _mutation_receipt_byte_count(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    assert receipt is not None
+    receipt["bytes"] = receipt["bytes"] + 1
+    return data, receipt
+
+
+def _mutation_receipt_no_lines(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    assert receipt is not None
+    receipt["lines"] = []
+    return data, receipt
+
+
+def _mutation_receipt_one_line_fewer(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    assert receipt is not None
+    receipt["lines"] = receipt["lines"][:-1]
+    return data, receipt
+
+
+def _mutation_receipt_last_anchor_another_line(data: bytes, receipt: dict | None
+                                               ) -> tuple[bytes, dict | None]:
+    assert receipt is not None
+    assert receipt["lines"][-1] != receipt["lines"][0], "the fixture's anchors no longer differ"
+    receipt["lines"][-1] = dict(receipt["lines"][0])
+    return data, receipt
+
+
+def _mutation_receipt_not_an_object(data: bytes, receipt: dict | None) -> tuple[bytes, dict | None]:
+    return data, []
+
+
+def _mutation_byte_not_utf8_under_receipt(data: bytes, receipt: dict | None
+                                          ) -> tuple[bytes, dict | None]:
+    """One byte of the first line replaced in place with 0xFF, under the receipt the frozen bytes earned:
+    the same length, so the receipt disagrees with the whole-file digest and the line's own anchor while
+    its byte count still holds -- the anchor/digest comparison, not a length change."""
+    lines = data.split(b"\n")
+    assert b"frozen" in lines[0], "the fixture no longer holds the text this mutation edits"
+    lines[0] = lines[0].replace(b"frozen", b"froz\xffn", 1)
+    return b"\n".join(lines), receipt
+
+
+def _mutation_byte_not_utf8_and_unterminated(data: bytes, receipt: dict | None
+                                             ) -> tuple[bytes, dict | None]:
+    """One byte of the first line replaced with 0xFF *and* the final line feed dropped: the two byte
+    rules' own defects at once, so disabling either still leaves the other's violation standing (the
+    pair the R3 finding measured a reading answering PASS for)."""
+    data, receipt = _mutation_byte_not_utf8(data, receipt)
+    return _mutation_final_line_feed_dropped(data, receipt)
+
+
+def _mutation_final_line_feed_dropped_under_receipt(data: bytes, receipt: dict | None
+                                                    ) -> tuple[bytes, dict | None]:
+    """The final line feed dropped under the unchanged receipt: the line rule's defect and the
+    receipt's own disagreement (byte count, digest and the last line's anchor) at once."""
+    assert receipt is not None
+    return _mutation_final_line_feed_dropped(data, receipt)
+
+
+ORACLE_MUTATIONS: dict[str, tuple[OracleMutation, ...]] = {
+    "oracle.utf8": (
+        OracleMutation("a byte that is not UTF-8", ORACLE_ARTIFACT, None, _mutation_byte_not_utf8,
+                       unjudged=("oracle.jsonl-objects",)),
+        OracleMutation("a byte-order mark", ORACLE_ARTIFACT, None, _mutation_byte_order_mark,
+                       unjudged=("oracle.jsonl-objects",)),
+        OracleMutation("a byte that is not UTF-8 under the unchanged receipt", ORACLE_ARTIFACT,
+                       ORACLE_RECEIPT, _mutation_byte_not_utf8_under_receipt,
+                       ("oracle.receipt-integrity",), unjudged=("oracle.jsonl-objects",)),
+        OracleMutation("a byte that is not UTF-8 in an unterminated record", ORACLE_ARTIFACT, None,
+                       _mutation_byte_not_utf8_and_unterminated, ("oracle.whole-lines",),
+                       unjudged=("oracle.jsonl-objects",)),
+    ),
+    "oracle.whole-lines": (
+        OracleMutation("a record left unterminated", ORACLE_ARTIFACT, None,
+                       _mutation_final_line_feed_dropped),
+        OracleMutation("a record left unterminated beside a masked byte", ORACLE_ARTIFACT, None,
+                       _mutation_byte_not_utf8_and_unterminated, ("oracle.utf8",),
+                       unjudged=("oracle.jsonl-objects",)),
+        OracleMutation("a record left unterminated under the unchanged receipt", ORACLE_ARTIFACT,
+                       ORACLE_RECEIPT, _mutation_final_line_feed_dropped_under_receipt,
+                       ("oracle.receipt-integrity",)),
+    ),
+    "oracle.jsonl-objects": (
+        OracleMutation("a line that is not JSON", ORACLE_ARTIFACT, None, _mutation_line_not_json),
+        OracleMutation("a line that parses as an array", ORACLE_ARTIFACT, None,
+                       _mutation_line_is_an_array),
+        OracleMutation("a line holding a non-JSON constant", ORACLE_ARTIFACT, None,
+                       _mutation_line_non_json_constant),
+        OracleMutation("a line nested past reading", ORACLE_ARTIFACT, None,
+                       _mutation_line_nested_past_reading),
+        OracleMutation("a line holding a member name twice", ORACLE_ARTIFACT, None,
+                       _mutation_line_duplicate_member),
+        OracleMutation("a line holding an unpaired surrogate escape", ORACLE_ARTIFACT, None,
+                       _mutation_line_lone_surrogate),
+    ),
+    "oracle.receipt-integrity": (
+        OracleMutation("an artifact byte changed under an unchanged receipt", ORACLE_ARTIFACT,
+                       ORACLE_RECEIPT, _mutation_artifact_byte_changed),
+        OracleMutation("a receipt that states another whole-file digest", ORACLE_ARTIFACT,
+                       ORACLE_RECEIPT, _mutation_receipt_other_digest),
+        OracleMutation("a receipt whose byte count is wrong", ORACLE_ARTIFACT, ORACLE_RECEIPT,
+                       _mutation_receipt_byte_count),
+        OracleMutation("a receipt naming no lines", ORACLE_ARTIFACT, ORACLE_RECEIPT,
+                       _mutation_receipt_no_lines),
+        OracleMutation("a receipt naming one line fewer", ORACLE_ARTIFACT, ORACLE_RECEIPT,
+                       _mutation_receipt_one_line_fewer),
+        OracleMutation("a receipt whose last anchor is another line's", ORACLE_ARTIFACT,
+                       ORACLE_RECEIPT, _mutation_receipt_last_anchor_another_line),
+        OracleMutation("a receipt that is not an object", ORACLE_ARTIFACT, ORACLE_RECEIPT,
+                       _mutation_receipt_not_an_object),
+        OracleMutation("a receipt under a masked byte", ORACLE_ARTIFACT, ORACLE_RECEIPT,
+                       _mutation_byte_not_utf8_under_receipt, ("oracle.utf8",),
+                       unjudged=("oracle.jsonl-objects",)),
+        OracleMutation("a receipt under an unterminated record", ORACLE_ARTIFACT, ORACLE_RECEIPT,
+                       _mutation_final_line_feed_dropped_under_receipt, ("oracle.whole-lines",)),
+    ),
+}
+
+
+def _oracle_cli_reading(argv: list[str]) -> tuple[int, dict | None, str | None]:
+    """One `--validate` invocation through `main`, the shipped command's own entry point.
+
+    Returns ``(exit code, the command's own JSON document, None)`` where the command answered a readable
+    document, and ``(code, None, why)`` where it did not. The arms of `_oracle_selftest_one` are read
+    through this function rather than `validate_artifact`'s Python `disabled` default: a regression that
+    stopped `--disable-rule <RULE_ID>` from reaching the reading turns `--selftest-mutations` red instead
+    of staying green behind an in-process call.
+    """
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        try:
+            code = main(argv)
+        except SystemExit as refusal:  # argparse refused the invocation itself
+            return int(refusal.code or 0), None, ("the command refused the invocation: "
+                                                  + errors.getvalue().strip())
+    stdout = output.getvalue()
+    marker = stdout.find("\noracle: ")
+    if marker < 0 or not stdout.startswith("{"):
+        answer = (stdout.strip() or errors.getvalue().strip() or "no output")
+        return code, None, f"the command printed no JSON document (exit {code}): {answer[:200]}"
+    try:
+        document = json.loads(stdout[:marker])
+    except ValueError as failure:
+        return code, None, f"the command's JSON document cannot be read ({failure})"
+    return code, document, None
+
+
+def _cited(document: dict) -> list[str]:
+    """The rule ids one reading's own document cites."""
+    return sorted({violation["rule"] for violation in document["violations"]})
+
+
+def _unjudged(document: dict) -> list[str]:
+    """The rule ids one reading's own document reports unjudged."""
+    return [entry["rule"] for entry in document["not_evaluated"]]
+
+
+def _oracle_selftest_one(rule: str, mutation: OracleMutation, work: Path
+                         ) -> tuple[str | None, str]:
+    """One fixture pair's three arms, each through the shipped command: None where all three hold.
+
+    (a) the positive fixture passes — with its receipt where the pair names one; (b) the mutated pair
+    differs from it and fails citing **only** `rule` plus the rules its bytes are declared to break;
+    (c) the same mutated pair with `--disable-rule` for `rule` cites exactly those others and no
+    violation of its own — a pass where every rule was still evaluated, INCOMPLETE where the disabled
+    rule was the one whose refusal left a `needs_text` rule unjudged. Every arm asserts the document's
+    own machine-readable `verdict` against the arm's declared expectation — the field a consumer reads,
+    never the exit code standing in for it — and the declared unjudged set on **both** negative arms,
+    so a report that stopped saying `FAIL`, or stopped carrying the not-evaluated rules, turns the
+    corpus red instead of agreeing with itself. The mutated bytes are materialized under `work`, the
+    only place this run writes, so both negative arms judge the bytes a caller of the command would
+    supply. The second half of the answer describes arm (c) for the caller's own line.
+    """
+    try:
+        data = oracle_fixture(mutation.artifact)
+        receipt = oracle_receipt(mutation.receipt) if mutation.receipt is not None else None
+    except (OSError, ValueError) as failure:
+        return f"the committed fixture cannot be read ({failure})", ""
+    positive_argv = ["--validate", str(ORACLE_FIXTURE_ROOT / mutation.artifact), "--json"]
+    if mutation.receipt is not None:
+        positive_argv += ["--receipt", str(ORACLE_FIXTURE_ROOT / mutation.receipt)]
+    code, document, problem = _oracle_cli_reading(positive_argv)
+    if problem is not None:
+        return f"the positive fixture: {problem}", ""
+    if code != 0 or document["verdict"] != "PASS" or document["violations"] \
+            or document["not_evaluated"]:
+        return (f"the positive fixture is not green (exit {code}, verdict {document['verdict']!r}, "
+                f"citing {_cited(document)}, not evaluated {_unjudged(document)}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']} — {violation['detail']}"
+                            for violation in document["violations"])), ""
+    before = (data, json.dumps(receipt, sort_keys=True) if receipt is not None else None)
+    mutated_data, mutated_receipt = mutation.mutate(
+        data, oracle_receipt(mutation.receipt) if mutation.receipt is not None else None)
+    after = (mutated_data,
+             json.dumps(mutated_receipt, sort_keys=True) if mutated_receipt is not None else None)
+    if after == before:
+        return "the mutation changed nothing", ""
+    stem = rule.replace(".", "-")
+    artifact_path = work / (stem + ".jsonl")
+    artifact_path.write_bytes(mutated_data)
+    negative_argv = ["--validate", str(artifact_path), "--json"]
+    if mutated_receipt is not None:
+        receipt_path = work / (stem + ".receipt.json")
+        receipt_path.write_bytes(json.dumps(mutated_receipt, sort_keys=True).encode("utf-8"))
+        negative_argv += ["--receipt", str(receipt_path)]
+    code, document, problem = _oracle_cli_reading(negative_argv)
+    if problem is not None:
+        return f"the negative fixture: {problem}", ""
+    cited = _cited(document)
+    expected = sorted({rule, *mutation.also_cited})
+    if code != 1 or document["verdict"] != "FAIL" or cited != expected:
+        return (f"the negative fixture turned {cited} red instead of exactly {expected} "
+                f"(exit {code}, verdict {document['verdict']!r}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']} — {violation['detail']}"
+                            for violation in document["violations"])), ""
+    expected_unjudged = sorted(mutation.unjudged)
+    if _unjudged(document) != expected_unjudged:
+        return (f"the negative fixture reads {_unjudged(document)} as not evaluated instead of "
+                f"{expected_unjudged} (exit {code}, {document['verdict']}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']}"
+                            for violation in document["violations"])), ""
+    code, document, problem = _oracle_cli_reading(negative_argv + ["--disable-rule", rule])
+    if problem is not None:
+        return f"the negative fixture with `--disable-rule {rule}`: {problem}", ""
+    cited = _cited(document)
+    if cited != sorted(mutation.also_cited):
+        return (f"the negative fixture with `--disable-rule {rule}` cites {cited} instead of exactly "
+                f"{sorted(mutation.also_cited)} (exit {code}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']}"
+                            for violation in document["violations"])), ""
+    if _unjudged(document) != expected_unjudged:
+        return (f"the negative fixture with `--disable-rule {rule}` reads {_unjudged(document)} as not "
+                f"evaluated instead of {expected_unjudged} (exit {code}, {document['verdict']}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']}"
+                            for violation in document["violations"])), ""
+    expected_code = 1 if mutation.also_cited else (2 if mutation.unjudged else 0)
+    expected_verdict = {1: "FAIL", 2: "INCOMPLETE", 0: "PASS"}[expected_code]
+    if code != expected_code or document["verdict"] != expected_verdict:
+        return (f"the negative fixture with `--disable-rule {rule}` exited {code} where the reading is "
+                f"{document['verdict']} instead of {expected_verdict} (citing {cited}, not evaluated "
+                f"{_unjudged(document)}): "
+                + "; ".join(f"{violation['rule']} line {violation['line']}"
+                            for violation in document["violations"])), ""
+    if mutation.also_cited:
+        still = "FAIL, still citing " + ", ".join(mutation.also_cited)
+    elif expected_unjudged:
+        still = "INCOMPLETE, not evaluated " + ", ".join(expected_unjudged)
+    else:
+        still = "PASS"
+    return None, still
+
+
+def oracle_mutation_selftest() -> int:
+    """The registry's closure, executed: the declared rule set against the mutation corpus.
+
+    One line per fixture pair says its three arms held; a failure names the rule and what disagreed, and
+    the exit code is 0 only when every arm of every pair held. The run creates one scratch directory and
+    removes it again; it writes nothing outside it and touches no fixture. A mutation whose subject the
+    fixture no longer holds raises rather than editing nothing — a case that silently mutated nothing
+    would read as a rule nothing can break.
+    """
+    failures: list[str] = []
+    declared, mutated = set(ORACLE_RULES), set(ORACLE_MUTATIONS)
+    needs_text = {name for name, kind in ORACLE_RULE_INPUTS.items() if kind == "needs_text"}
+    for rule in sorted(declared - mutated):
+        failures.append(f"{rule}: declared in ORACLE_RULES with no fixture pair in ORACLE_MUTATIONS")
+    for rule in sorted(mutated - declared):
+        failures.append(f"{rule}: a fixture pair names an id ORACLE_RULES does not declare")
+    checked = 0
+    work = Path(tempfile.mkdtemp(prefix="ccc-oracle-selftest-"))
+    try:
+        for rule in sorted(declared & mutated):
+            mutations = ORACLE_MUTATIONS[rule]
+            if not mutations:
+                failures.append(f"{rule}: declared with an empty fixture list")
+                continue
+            for mutation in mutations:
+                checked += 1
+                if rule in set(mutation.also_cited):
+                    failures.append(f"{rule}: {mutation.label}: also_cited repeats the pair's own rule")
+                for other in sorted(set(mutation.also_cited) - declared):
+                    failures.append(f"{rule}: {mutation.label}: also_cited names {other}, which "
+                                    f"ORACLE_RULES does not declare")
+                if rule in set(mutation.unjudged):
+                    failures.append(f"{rule}: {mutation.label}: unjudged names the pair's own rule")
+                for other in sorted(set(mutation.unjudged) - declared):
+                    failures.append(f"{rule}: {mutation.label}: unjudged names {other}, which "
+                                    f"ORACLE_RULES does not declare")
+                for other in sorted((set(mutation.unjudged) & declared) - needs_text):
+                    failures.append(f"{rule}: {mutation.label}: unjudged names {other}, which the "
+                                    f"reading's declared input kinds never leave unjudged")
+                problem, still = _oracle_selftest_one(rule, mutation, work)
+                if problem is None:
+                    print(f"oracle.selftest: {rule} — {mutation.label}: positive PASS, negative FAIL "
+                          f"({', '.join([rule, *mutation.also_cited])} cited), --disable-rule {still}")
+                else:
+                    failures.append(f"{rule}: {mutation.label}: {problem}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if failures:
+        for failure in failures:
+            print(f"oracle.selftest: FAIL — {failure}")
+        print(f"oracle.selftest: FAIL — {len(failures)} failure(s), {checked} fixture pair(s) run")
+        return 1
+    print(f"oracle.selftest: PASS — {len(declared)} rule(s), {checked} fixture pair(s): positive "
+          f"PASS, negative FAIL (each citing its own rule; a pair whose bytes break another rule names it "
+          f"too), --disable-rule clean of the pair's own rule (still citing those others where the bytes "
+          f"break them, INCOMPLETE where the disabled rule left a needs_text rule unjudged)")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -763,7 +2003,51 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", help="model the throw-away Codex config should name")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory and say where it is")
     parser.add_argument("--json", action="store_true", help="also print a machine-readable summary")
+    parser.add_argument("--validate", type=Path, metavar="ARTIFACT",
+                        help="validate one session artifact against the frozen offline oracle — the "
+                             "container rules and, with --receipt, the artifact's receipt — and exit "
+                             "(no harness, no source session)")
+    parser.add_argument("--receipt", type=Path, metavar="DOCUMENT",
+                        help="with --validate: the frozen artifact's receipt, stating its byte count, "
+                             "whole-file SHA-256 and one anchor per line")
+    parser.add_argument("--disable-rule", action="append", default=[], metavar="RULE_ID",
+                        help="with --validate: drop exactly this rule's violations from the reading, as "
+                             "if the rule were not stated (repeatable); an id the registry does not "
+                             "declare is refused")
+    parser.add_argument("--selftest-mutations", action="store_true",
+                        help="prove the rule registry against its mutation corpus and exit: for every "
+                             "declared rule id its positive fixture passes; the mutated fixture fails "
+                             "citing that rule beside the rules its bytes are declared to break; and "
+                             "with --disable-rule for its own rule the same bytes cite exactly those "
+                             "others — still failing, or passing where nothing is cited and every rule "
+                             "was evaluated, or INCOMPLETE where the disabled rule's refusal left a "
+                             "needs_text rule unjudged — each arm through this command's own --validate "
+                             "path, under a scratch directory")
     args = parser.parse_args(argv)
+
+    if args.selftest_mutations:
+        if args.validate is not None or args.receipt is not None or args.disable_rule:
+            parser.error("--selftest-mutations runs the whole corpus and takes none of --validate, "
+                         "--receipt or --disable-rule")
+        if args.resume_prompt is not None or args.repeat_resume_prompt is not None:
+            parser.error("--selftest-mutations runs the offline corpus: it runs no harness turn and "
+                         "takes no --resume-prompt or --repeat-resume-prompt")
+        return oracle_mutation_selftest()
+    if args.receipt is not None and args.validate is None:
+        parser.error("--receipt names the receipt of the artifact --validate is given")
+    if args.disable_rule and args.validate is None:
+        parser.error("--disable-rule turns a rule off for --validate, which names the artifact")
+    if args.validate is not None:
+        if args.resume_prompt is not None or args.repeat_resume_prompt is not None:
+            parser.error("--validate reads one artifact and runs no harness turn: it takes no "
+                         "--resume-prompt or --repeat-resume-prompt")
+        disabled = frozenset(args.disable_rule)
+        unknown = sorted(disabled - set(ORACLE_RULES))
+        if unknown:
+            print("oracle: INCOMPLETE — --disable-rule names no rule this oracle declares: "
+                  + ", ".join(unknown), file=sys.stderr)
+            return 2
+        return oracle_report(args.validate, args.receipt, args.json, disabled)
 
     repo = args.repo.resolve()
     fixture_root = repo / FIXTURE_ROOT
@@ -782,6 +2066,17 @@ def main(argv: list[str] | None = None) -> int:
     if codex is None:
         print(f"{args.codex} is not on PATH: this harness verifies native behaviour, which needs the "
               f"target harness installed", file=sys.stderr)
+        return 2
+    # One executable serves every harness invocation below: a `which()` answer can preserve a relative
+    # PATH entry (`./codex`), and the process this run launches would then depend on where this one
+    # stands. Made absolute without a component being normalized -- never `abspath`, whose lexical
+    # `..`-collapse can name another file -- and deliberately *not* `resolve()`d: a mise shim is a
+    # symlink to the `mise` binary itself and dispatches on argv[0], so following the link launches
+    # `mise` (whose `app-server` is not Codex's) instead of the harness.
+    try:
+        codex = absolute_launch_path(codex)
+    except ValueError as refusal:
+        print(refusal, file=sys.stderr)
         return 2
     go = shutil.which("go")
     if go is None:
@@ -807,63 +2102,120 @@ def main(argv: list[str] | None = None) -> int:
         # table, a token in a URL), and the report says what was copied and what was left behind.
         host_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
         host_config = host_home / "config.toml"
+        host_text, read_failure = (read_text_or_failure(host_config) if host_config.is_file()
+                                   else ("", ""))
         overrides = {}
         if args.model_provider:
             overrides["model_provider"] = args.model_provider
         if args.model:
             overrides["model"] = args.model
-        seeding = seed_configuration(host_config.read_text() if host_config.is_file() else "", overrides)
+        seeding = seed_configuration(host_text, overrides, read_failure)
         if seeding.text:
-            (home / "config.toml").write_text(seeding.text)
+            (home / "config.toml").write_text(seeding.text, encoding="utf-8")
         if host_config.is_file():
             seeded_report = f"seeded from: {host_config} — {seeding.report()}"
         elif seeding.text:
             seeded_report = (f"seeded from: the command line (no configuration at {host_config}) — "
                              f"{seeding.report()}")
     sessions = home / "sessions" / "2026" / "01" / "01"
-    sessions.mkdir(parents=True, exist_ok=True)
     unrelated = sessions / UNRELATED_NAME
-    if unrelated.exists():
-        print(f"{unrelated} already exists: this harness plants its own fabricated session under that "
-              f"name and will not overwrite one that is there", file=sys.stderr)
-        return 2
-    unrelated.write_text(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
-                                     "payload": {"id": "unrelated", "cwd": "/tmp"}}) + "\n")
+    foreign = ForeignHome()
 
-    print(f"repo:        {repo}")
-    print(f"codex:       {codex}")
-    print(f"codex home:  {home}")
-    if seeded_report:
-        print(seeded_report)
-    print(f"source:      {source.relative_to(repo)}")
-    print(f"copy:        {copy.relative_to(scratch)} (the fixture's bytes; this is what grows)")
-    print(f"growth:      {fragment.relative_to(repo)} ({fragment.stat().st_size} bytes)")
-    print(f"scratch:     {scratch}")
-    print()
+    def finish(code: int) -> int:
+        """This run's own answer, after removing what it fabricated: a fabrication it could not remove
+        is INCOMPLETE by name, never a verdict that outruns the leftover."""
+        problems = foreign.remove_all()
+        report_leftovers(problems)
+        return 2 if problems else code
 
-    fixture_before = tree_digest(fixture_root)
-    fragment_before = sha256(fragment)
-    copy_before = sha256(copy)
-    copy_size_before = copy.stat().st_size
-    unrelated_before = sha256(unrelated)
-    # Every session the home already held — the planted one and the caller's own, when --codex-home
-    # names a real home — as the dashed id its file name ends with, and its bytes: a conversion must
-    # not reuse an id and must not touch a file it did not write.
-    existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in home.rglob("rollout-*.jsonl")]
-    existing_sessions = {path: sha256(path) for path in home.rglob("rollout-*.jsonl") if path != unrelated}
+    def refused(path: Path, what: str) -> int:
+        """The refusal one plant's own collision earns: named, and answered through `finish` so
+        nothing this run fabricated is left on this path either."""
+        print(f"{path} already exists: this harness plants {what} under that name and will not "
+              f"overwrite one that is there", file=sys.stderr)
+        return finish(2)
+
     try:
-        build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"],
-                    cwd=repo / "ccc")
+        # Every plant goes through the ownership object: its exclusive create (`O_EXCL`) is the
+        # reservation — anything at the name, a caller's file, a directory, an unreadable entry, a
+        # *dangling* symlink, is a collision nothing is written through — and the object records the path
+        # the instant the create succeeds, before the write, so neither a collision nor a write that
+        # fails leaves a fabrication of this run behind.
+        planted, failure = foreign.plant(
+            unrelated, (json.dumps({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta",
+                                    "payload": {"id": "unrelated", "cwd": "/tmp"}}) + "\n").encode())
+        if failure:
+            print(f"INCOMPLETE — {failure}", file=sys.stderr)
+            return finish(2)
+        if not planted:
+            return refused(unrelated, "its own fabricated session")
+
+        print(f"repo:        {repo}")
+        print(f"codex:       {codex}")
+        print(f"codex home:  {home}")
+        if seeded_report:
+            print(seeded_report)
+        print(f"source:      {source.relative_to(repo)}")
+        print(f"copy:        {copy.relative_to(scratch)} (the fixture's bytes; this is what grows)")
+        print(f"growth:      {fragment.relative_to(repo)} ({fragment.stat().st_size} bytes)")
+        print(f"scratch:     {scratch}")
+        print()
+
+        fixture_before = tree_digest(fixture_root)
+        fragment_before = sha256(fragment)
+        copy_before = sha256(copy)
+        copy_size_before = copy.stat().st_size
+        unrelated_before, unrelated_failure = sha256_or_failure(unrelated)
+        if unrelated_failure:
+            print(f"INCOMPLETE — this harness cannot stay answerable for leaving its own fabricated "
+                  f"session untouched: {unrelated_failure}", file=sys.stderr)
+            return finish(2)
+        # Every session the home already held — the caller's own, when --codex-home names a real home — as
+        # the dashed id its file name ends with, and its bytes: a conversion must not reuse an id and must
+        # not touch a file it did not write. The unrelated fabrication this harness planted is in the id
+        # list (a conversion must not reuse its id either) but not in the byte comparison, which is about
+        # the files this run did not write. An entry whose bytes cannot be read — a *dangling* symlink is
+        # listed by `rglob` like any other — is this run's own inability to verify that promise, so it is
+        # INCOMPLETE, named, before any check runs, rather than an exception out of the run.
+        rollouts = list(home.rglob("rollout-*.jsonl"))
+        existing_ids = ["-".join(path.stem.rsplit("-", 5)[-5:]) for path in rollouts]
+        existing_sessions: dict[Path, str] = {}
+        unreadable: list[str] = []
+        for path in rollouts:
+            if path == unrelated:
+                continue
+            digest, failure = sha256_or_failure(path)
+            if failure:
+                unreadable.append(failure)
+            else:
+                existing_sessions[path] = digest
+        if unreadable:
+            print(f"INCOMPLETE — this harness promises a conversion touches none of the sessions "
+                  f"{home} already holds, and it cannot read every one of them: "
+                  + "; ".join(unreadable), file=sys.stderr)
+            return finish(2)
+        try:
+            build = run([go, "build", f"-tags={GO_TAGS}", "-o", str(repo / BINARY), "./cmd/ccc"],
+                        cwd=repo / "ccc")
+        except (OSError, subprocess.TimeoutExpired) as failure:
+            record("ccc builds with the flags upstream ships", False,
+                   f"the build could not run: {failure}")
+            return finish(2)
         if build.returncode != 0:
             record("ccc builds with the flags upstream ships", False, build.stderr.strip()[:400])
-            return 2
+            return finish(2)
         record("ccc builds with the flags upstream ships", True)
 
         env = {"CLAUDE_PROJECTS_DIR": str(source_root)}
-        convert = run([
-            str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
-            "--target-home", str(home), "--target-binary", codex, "--json",
-        ], cwd=repo, env=env)
+        try:
+            convert = run([
+                str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
+                "--target-home", str(home), "--target-binary", codex, "--json",
+            ], cwd=repo, env=env)
+        except (OSError, subprocess.TimeoutExpired) as failure:
+            record("ccc continue converts, installs and verifies", False,
+                   f"the conversion could not run: {failure}")
+            return finish(1)
         document: dict = {}
         if convert.returncode != 0:
             # The CLI writes its JSON document before it decides its exit code, so a failed verification
@@ -875,7 +2227,7 @@ def main(argv: list[str] | None = None) -> int:
             detail = json.dumps(document.get("verification", {}))[:500] if document else \
                 last_meaningful_line(convert.stderr)
             record("ccc continue converts, installs and verifies", False, detail)
-            return 1
+            return finish(1)
         document = json.loads(convert.stdout)
 
         conversion = document["conversion"]
@@ -907,20 +2259,21 @@ def main(argv: list[str] | None = None) -> int:
                f"{thread_id}, not one of the {len(existing_ids)} id(s) already in the home")
         record_installed_jsonl(installed, "the installed file is one JSON object per line",
                                " (the target's own read of it is the load check)")
-        read_back, readback = inspect_counts(repo, home, thread_id)
+        read_back, readback_failure, readback_ok = inspect_counts(repo, home, thread_id)
         carried = conversion["carried"]
         agreed, detail = readback_verdict(thread_id, read_back, carried)
-        if readback.returncode != 0:
-            detail += f"; inspect rc={readback.returncode}: {last_meaningful_line(readback.stderr)}"
-        record("the inherited reader reads the installed file back as what was written", agreed, detail)
+        if readback_failure:
+            detail += f"; {readback_failure}"
+        record("the inherited reader reads the installed file back as what was written",
+               readback_ok and agreed, detail)
 
-        view, item_kinds = load_and_view(
+        view, item_kinds, view_failure = load_and_view(
             codex, home, thread_id, installed,
             "the target harness's own loader opens the installed session",
             "the target harness's own view of the installed session:")
         record("the target's own view lists the converted turns",
-               "userMessage" in item_kinds and "agentMessage" in item_kinds,
-               f"{len(item_kinds)} item(s) in the reply's own turn list")
+               not view_failure and "userMessage" in item_kinds and "agentMessage" in item_kinds,
+               view_failure or f"{len(item_kinds)} item(s) in the reply's own turn list")
 
         # The reported invocation, checked against the directory this run installed into: Codex takes
         # its data directory from CODEX_HOME alone, so a resume command that does not name it opens
@@ -944,11 +2297,12 @@ def main(argv: list[str] | None = None) -> int:
                f"resume_command={resume_command!r} exec_resume_command={exec_resume_command!r} "
                f"environment={resume_environment}")
 
+        turns_run = 0
         if args.resume_prompt:
             print()
-            run_turn(repo, codex, home, installed,
-                     turn_identity(codex, thread_id, exec_resume_arguments),
-                     args.resume_prompt, "a real turn continues from the installed session")
+            turns_run += run_turn(repo, codex, home, installed,
+                                  turn_identity(codex, thread_id, exec_resume_arguments),
+                                  args.resume_prompt, "a real turn continues from the installed session")
         else:
             record("a real turn continues from the installed session", False,
                    "not attempted: pass --resume-prompt to run one", skipped=True)
@@ -957,12 +2311,12 @@ def main(argv: list[str] | None = None) -> int:
         # converted again. Everything above is the first conversion's own answer; what follows is the
         # goal's repeatable-handoff half: the source gains one turn, the same session is converted a
         # second time into the same home, and both results are held to their own bytes.
-        first_installed_digest = sha256(installed)
+        first_installed_digest, first_installed_failure = sha256_or_failure(installed)
         appended = appended_texts(fragment)
         if not appended:
             record("the growth fragment records dialogue to look for", False,
                    f"{fragment.relative_to(repo)} holds no message text")
-            return 2
+            return finish(2)
         # The baseline the growth is measured from, compared against the bytes taken *before* the first
         # conversion and therefore answering for the conversion, the loader and -- when it ran -- the real
         # turn: without this the growth record's size delta would accept a same-length change made during
@@ -985,10 +2339,15 @@ def main(argv: list[str] | None = None) -> int:
                f"{copy_size_before} -> {grown_size} bytes (+{fragment.stat().st_size} from "
                f"{fragment.relative_to(repo)}), sha256 {grown_digest[:16]}…")
 
-        grown = run([
-            str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
-            "--target-home", str(home), "--target-binary", codex, "--json",
-        ], cwd=repo, env=env)
+        try:
+            grown = run([
+                str(repo / BINARY), "continue", f"{SOURCE_PROVIDER}:{args.session}", "--to", "codex",
+                "--target-home", str(home), "--target-binary", codex, "--json",
+            ], cwd=repo, env=env)
+        except (OSError, subprocess.TimeoutExpired) as failure:
+            record("ccc continue converts the grown source, installs and verifies", False,
+                   f"the conversion could not run: {failure}")
+            return finish(1)
         second_document: dict = {}
         if grown.returncode != 0:
             try:
@@ -998,7 +2357,7 @@ def main(argv: list[str] | None = None) -> int:
             record("ccc continue converts the grown source, installs and verifies", False,
                    json.dumps(second_document.get("verification", {}))[:500] if second_document
                    else last_meaningful_line(grown.stderr))
-            return 1
+            return finish(1)
         second_document = json.loads(grown.stdout)
         second_conversion = second_document["conversion"]
         second_target = second_document["target_session"]
@@ -1020,8 +2379,10 @@ def main(argv: list[str] | None = None) -> int:
                   > conversion["carried"]["user_messages"]
                   and second_conversion["carried"]["assistant_messages"]
                   > conversion["carried"]["assistant_messages"])
-        first_text, second_text = installed.read_text(), second_installed.read_text()
-        carried_texts = all(text in second_text for text in appended) \
+        first_text, first_text_failure = read_text_or_failure(installed)
+        second_text, second_text_failure = read_text_or_failure(second_installed)
+        text_failure = first_text_failure or second_text_failure
+        carried_texts = not text_failure and all(text in second_text for text in appended) \
             and not any(text in first_text for text in appended)
         record("the second conversion carries the history the source gained",
                gained and carried_texts,
@@ -1029,10 +2390,15 @@ def main(argv: list[str] | None = None) -> int:
                f"{second_conversion['carried']['user_messages']}, assistant messages "
                f"{conversion['carried']['assistant_messages']} -> "
                f"{second_conversion['carried']['assistant_messages']}; the appended turn's own words are "
-               f"in the second document and not in the first")
+               f"in the second document and not in the first" + (f"; {text_failure}" if text_failure else ""))
+        installed_after, installed_after_failure = sha256_or_failure(installed)
+        installed_unchanged = (not first_installed_failure and not installed_after_failure
+                               and installed_after == first_installed_digest)
         record("the first conversion's session is unchanged by the second",
-               installed.is_file() and sha256(installed) == first_installed_digest,
-               f"sha256 {first_installed_digest[:16]}… before and after the second conversion")
+               installed_unchanged,
+               f"sha256 {first_installed_digest[:16]}… before and after the second conversion"
+               if not (first_installed_failure or installed_after_failure)
+               else (first_installed_failure or installed_after_failure))
         record("the source copy is unchanged by the second conversion",
                sha256(copy) == grown_digest and copy.stat().st_size == grown_size,
                f"sha256 {grown_digest[:16]}…, {grown_size} bytes, taken before and after the second "
@@ -1040,22 +2406,26 @@ def main(argv: list[str] | None = None) -> int:
 
         # The inherited reader's own second read, and the target harness's own second load: this run's
         # own stub-free answers about the later snapshot.
-        second_counts, second_readback = inspect_counts(repo, home, second_thread_id)
+        second_counts, second_readback_failure, second_readback_ok = inspect_counts(
+            repo, home, second_thread_id)
         second_carried = second_conversion["carried"]
         second_agreed, second_detail = readback_verdict(second_thread_id, second_counts, second_carried)
+        if second_readback_failure:
+            second_detail += f"; {second_readback_failure}"
         record("the inherited reader reads the second installed file back as what was written",
-               second_readback.returncode == 0 and second_agreed, second_detail)
+               second_readback_ok and second_agreed, second_detail)
 
-        second_view, second_kinds = load_and_view(
+        second_view, second_kinds, second_view_failure = load_and_view(
             codex, home, second_thread_id, second_installed,
             "the target harness's own loader opens the second installed session",
             "the target harness's own view of the second installed session:")
         second_view_text = "\n".join(second_view)
         record("the target's own view of the second session lists the appended turn",
-               all(text in second_view_text for text in appended)
+               not second_view_failure
+               and all(text in second_view_text for text in appended)
                and "userMessage" in second_kinds and "agentMessage" in second_kinds,
-               f"{len(second_kinds)} item(s) in the reply's own turn list; the appended turn's own words "
-               f"are in its own view")
+               second_view_failure or f"{len(second_kinds)} item(s) in the reply's own turn list; the "
+               f"appended turn's own words are in its own view")
         record("the first session's own view does not hold the appended turn",
                bool(item_kinds) and not any(text in "\n".join(view) for text in appended),
                f"the first session's own view holds {len(item_kinds)} item(s), none of them the turn the "
@@ -1063,16 +2433,17 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.repeat_resume_prompt:
             print()
-            run_turn(repo, codex, home, second_installed,
-                     turn_identity(codex, second_thread_id,
-                                   second_target.get("exec_resume_arguments") or []),
-                     args.repeat_resume_prompt, "a real turn continues from the second installed session")
+            turns_run += run_turn(repo, codex, home, second_installed,
+                                  turn_identity(codex, second_thread_id,
+                                                second_target.get("exec_resume_arguments") or []),
+                                  args.repeat_resume_prompt,
+                                  "a real turn continues from the second installed session")
         else:
             record("a real turn continues from the second installed session", False,
                    "not attempted: pass --repeat-resume-prompt to run one", skipped=True)
         print()
         print(f"conversions: 2 session(s) installed ({thread_id} then {second_thread_id}); real turn(s) "
-              f"run: {int(bool(args.resume_prompt)) + int(bool(args.repeat_resume_prompt))}")
+              f"run: {turns_run}")
 
         # Every promise about files this run must not change is answered here, after the loader and —
         # when it ran — the real turn: a comparison recorded beside the read-back above would let a
@@ -1113,16 +2484,22 @@ def main(argv: list[str] | None = None) -> int:
                       f"sha256 {grown_digest[:16]}…, {grown_size} bytes")
         record("the source session is unchanged",
                not moved and fragment_unchanged and copy_unchanged, detail)
-        planted_unchanged = unrelated.is_file() and sha256(unrelated) == unrelated_before
+        unrelated_after, unrelated_after_failure = sha256_or_failure(unrelated)
+        planted_unchanged = not unrelated_after_failure and unrelated_after == unrelated_before
         record("the unrelated session in the target home is unchanged",
                planted_unchanged,
                f"sha256 {unrelated_before[:16]}…" if planted_unchanged
-               else f"sha256 {unrelated_before[:16]}… before, "
-                    + (f"{sha256(unrelated)[:16]}… after" if unrelated.is_file() else "missing after"))
+               else (unrelated_after_failure or (f"sha256 {unrelated_before[:16]}… before, "
+                                                 f"{unrelated_after[:16]}… after")))
         # Every session file the home held before the conversion, compared again now: the planted
         # unrelated one is checked above, and this covers a real --codex-home's own sessions too.
-        changed = [str(path.relative_to(home)) for path, digest in existing_sessions.items()
-                   if not path.is_file() or sha256(path) != digest]
+        changed: list[str] = []
+        for path, digest in existing_sessions.items():
+            now, failure = sha256_or_failure(path)
+            if failure:
+                changed.append(failure)
+            elif now != digest:
+                changed.append(str(path.relative_to(home)))
         record("no pre-existing session in the target home changed",
                not changed,
                f"{len(existing_sessions)} pre-existing session file(s)"
@@ -1138,12 +2515,14 @@ def main(argv: list[str] | None = None) -> int:
                               "target_session": thread_id, "installed": str(installed),
                               "second_session": second_thread_id, "second_installed": str(second_installed),
                               "codex": codex, "codex_home": str(home)}, indent=2))
-        return 1 if failures else 0
+        return finish(1 if failures else 0)
     finally:
-        # The fabricated unrelated session belongs to this harness and no one else: it is removed even
-        # from a home the caller named, so --codex-home is left as it was found apart from the
-        # converted session this run installed.
-        unrelated.unlink(missing_ok=True)
+        # The safety net for an exit no `finish` saw (an unexpected raise): every path this run owns is
+        # removed here too, and a removal that fails is the same INCOMPLETE report, never swallowed. The
+        # fabricated session belongs to this harness and no one else: `remove_all` unlinks only paths this
+        # run's own exclusive create recorded, so a name another writer reached first keeps its file and
+        # --codex-home is left as it was found apart from the converted session this run installed.
+        report_leftovers(foreign.remove_all())
         if args.keep:
             print(f"kept {scratch} and {home}")
         else:
