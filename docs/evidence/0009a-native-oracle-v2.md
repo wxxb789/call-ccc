@@ -347,11 +347,11 @@ $ python3 scripts/codex-native-check.py --validate <scratch>/big.jsonl          
 oracle: PASS — 3 record(s)                                                    # exit 0
 $ python3 scripts/codex-native-check.py --validate <scratch>/moved-lf.jsonl \
     --receipt scripts/tests/testdata/codex-oracle/artifact-receipt.json       # the first LF became a space
-oracle: oracle.receipt-integrity — the receipt names 3 line(s), the artifact holds 2
 oracle: oracle.receipt-integrity — the receipt states sha256 855ccca11024…, the artifact's bytes are sha256 7f78a8778a84…
 oracle: oracle.jsonl-objects line 1 — not JSON (Extra data at column 63)
 oracle: oracle.receipt-integrity line 1 — the line's bytes are sha256 f4c89b83a897…, the receipt's anchor is sha256 402041d785c7…
 oracle: oracle.receipt-integrity line 2 — the line's bytes are sha256 ac584578fe8b…, the receipt's anchor is sha256 9371e97c2450…
+oracle: oracle.receipt-integrity line 3 — the receipt names 3 line(s), the artifact holds 2; anchor 3 is the first the artifact gives no line for
 oracle: FAIL — 1 record(s), 5 violation(s)                                    # exit 1
 ```
 
@@ -447,6 +447,8 @@ $ python3 scripts/codex-native-check.py --validate scripts/tests/testdata/codex-
     --resume-prompt "a question"               # an offline mode handed a native-turn flag
 codex-native-check.py: error: --validate reads one artifact and runs no harness turn: it takes no --resume-prompt or --repeat-resume-prompt
                                                                                # exit 2 (R6-5; pre-fix: PASS, no turn, no diagnostic)
+```
+
 `--selftest-mutations` refuses the same combination by name (exit 2). The suite's own halves: the corpus
 rewritten to say `verdict: PASS` on every emitted document closes **red** (R6-3; pre-fix it closed
 green), a turn whose process answered non-zero without growing its session prints
@@ -503,6 +505,48 @@ $ python3 -m unittest … -k a_refused_exec_lookup   # and -k staged_executable_
 # the lookup answer is separate and non-fatal, and parity staging sets the bit storage answers for
 # (r8 finding #4; Q-0009a-18).
 ```
+
+**The r12 fix round's arms** (2026-11-28, on this record's tree; Part A's `windows-latest` red — CI run
+`45949278359` — and the five r9 findings; each pin was measured red before its fix and green after,
+every probe edit restored, and no case deleted, narrowed or skip-widened):
+
+```
+$ python3 -m unittest … -k test_the_expected_skip_inventory_follows_the_host_s_measured_answer
+# pre-fix the nested run's expected-skip inventory was the literal two-name tuple, so on a host whose
+# measured `mode_bits_stored` is false the child's storage-premise skip failed the inventory assertion
+# while the child run itself was green (the CI red). Now the inventory is `GUARDED` plus that one
+# case's name iff the host's own measured answer says storage is absent, and the pin drives the
+# assertion with fabricated statuses under both answers — accepted without storage, refused with it —
+# and refuses a skip of the staged-bit case's name under either answer: its disposition moved
+# skip -> assert, its no-storage arm pinned through the patched control (`st_mode & 0o100 == 0`).
+$ python3 -m unittest … -k test_the_seeded_configuration_is_written_as_utf8_whatever_the_locale_answers
+# pre-fix the scratch TOML was written with no encoding: under a process whose locale cannot encode the
+# host configuration's provider name the write raised `UnicodeEncodeError: 'ascii' codec …` out of main
+# before the cleanup block — no launch, no verdict (r9 finding #1).
+$ python3 -m unittest … -k test_a_turn_that_overran_its_deadline_names_the_duration_not_the_command
+# pre-fix the timeout handler formatted `TimeoutExpired` itself, whose `str` carries the whole argument
+# vector — the prompt among its words — into the recorded detail and so into the printed report and,
+# under --json, the machine-readable one (r9 finding #3).
+$ python3 -m unittest … -k test_a_drive_relative_word_is_refused_and_never_returned \
+    -k test_a_drive_relative_executable_is_refused_by_name_before_anything_runs
+# pre-fix `absolute_launch_path` returned a join-unchanged drive-relative word (`D:tools\codex.exe`)
+# unresolved: `ntpath.join` answers a different-drive word unchanged (it discards the accumulated
+# path) while the word still resolves against that drive's own current directory — process state this
+# run cannot spell for the processes it starts, the spelling Q-0009a-16's own "Settled by" line names
+# (r9 finding #2, the class of r11's #2). Now the rule refuses the word (`ValueError`), the call site
+# answers exit 2 by name with nothing launched and no scratch tree made, and `windows-latest` is the
+# default-path arm's oracle.
+$ python3 scripts/codex-native-check.py --validate <scratch>/moved-lf.jsonl \
+    --receipt scripts/tests/testdata/codex-oracle/artifact-receipt.json
+# the refreshed transcript above: the shipped reading puts the unmatched anchor on line 3 and sorts it
+# after the lines 1-2 violations (pre-fix this record printed the count violation unnumbered and
+# first), and the r7 block's fence now closes after its last transcript (r9 finding #4).
+```
+
+`docs/conventions.md`'s binding lint instruction now names the field the lint reads
+(`HOST_SEMANTICS.exec_lookup_follows_mode_bits`) and distinguishes it from `mode_bits_stored`, the
+parity staging answer (r9 finding #5; the stale name raised `AttributeError` and would have failed the
+lint). The two taken readings are `Q-0009a-19` (the inventory) and `Q-0009a-20` (the refusal).
 
 The plan statements the r8 findings #1/#2/#5 falsified are updated where they are stated
 (`docs/plans/0009a-native-oracle-v2.md`, `docs/plans/0009-decomposition.md`, `docs/harness.md`'s
@@ -598,24 +642,26 @@ gate: go=<go 1.27.4> module=ccc targets=./cmd/ccc/... ./internal/ccc/...
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 559 tests in 10.998s (rc=0)
-  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5778 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified…
+  PASS     selftest    Ran 564 tests in 41.868s (rc=0)
+  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5778 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified: agentsview/frontend/src/lib/utils/__fixtures__/retained-tool-image-1735.json
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
-  PASS     secrets     no leaks found in 313 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets     no leaks found in 198 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 22 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's row against the Go test it cites. The table is **re-measured on the r11 round's
-tree** (2026-11-27), whose `selftest` count is 559 against 551 at the r5 head (§2/§3 name the moved
+which verifies the goal's row against the Go test it cites. The table is **re-measured on the r12 round's
+tree** (2026-11-28), whose `selftest` count is 564 against 551 at the r5 head (§2/§3 name the moved
 cases; the whole discovery's counts moved 503 → 519 across the four rounds, → 524 in the cross-family
 review round, → 537 in the r2 round, → 548 in the r3 round, → 549 in the r4 round, → 551 in the r5
 round, whose 96-test narrowed suite the re-cut moves to 82, the r7 fix round to 90, the r8 fix
-round to 93 and the r11 round to 94; the whole discovery moves 537 → 545 → 548, → 555 in the r9+r10
-rounds (the Windows-leg cases and the host contract's own) and → 559 in the r11 round, whose four are
-the undecodable-install case, the two probe-answer cases and the parity-staging case). Its `secrets`
-count (313 files) is
+round to 93, the r11 round to 94 and the r12 round to 98; the whole discovery moves 537 → 545 → 548,
+→ 555 in the r9+r10 rounds (the Windows-leg cases and the host contract's own), → 559 in the r11
+round (the undecodable-install case, the two probe-answer cases and the parity-staging case) and
+→ 564 in the r12 round, whose five are the seeding-encoding case, the timeout case, the two
+drive-relative refusal cases and the skip-inventory case). Its `secrets`
+count (198 files) is
 this worktree's own scope — the
 count includes untracked `__pycache__`/`bin` files — not a change the re-cut made.
 

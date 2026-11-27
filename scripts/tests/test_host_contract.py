@@ -333,10 +333,18 @@ class TheProbeKeepsTheTwoExecBitQuestionsApart(unittest.TestCase):
             exec_lookup_follows_mode_bits=follows))
 
     def test_a_storage_answer_the_platform_contradicts_is_still_loud(self) -> None:
-        """This case is the POSIX arm, where storage is a documented rule rather than a measurement
-        that may legitimately answer ``False`` (win32 stores no POSIX mode bits)."""
-        if os.name != "posix":
-            self.skipTest("the assertion it pins is the POSIX arm of _assert_sane")
+        """A storage answer of ``False`` on a platform whose rule says storage is always true is refused.
+
+        This case is the POSIX arm of ``_assert_sane``, where storage is a documented rule rather than a
+        measurement that may legitimately answer ``False``: on such a host the probe answering ``False``
+        is a broken probe, and the sanity check must say so. A host that stores no POSIX mode bits (the
+        measured ``mode_bits_stored`` answer this case's own skip reads, never a platform name spelled
+        here) has no such arm -- win32's documented answer *is* ``False`` -- so there is nothing to
+        assert there and the case says so, by name, for the nested-run guard's own inventory.
+        """
+        if not HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored:
+            self.skipTest("this host stores no POSIX mode bits, so a storage answer of False is not "
+                          "one its platform's documented rule contradicts")
         with self.assertRaises(AssertionError):
             HOST_CONTRACT._assert_sane(dataclasses.replace(
                 HOST_CONTRACT.HOST_SEMANTICS, mode_bits_stored=False))

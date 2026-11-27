@@ -779,17 +779,27 @@ def absolute_launch_path(path: str, pathmod=os.path, cwd: str | None = None) -> 
     directory -- the join supplies the drive, which is how the platform resolves a rooted path for this
     process -- so they are answered anchored, identically on every CPython minor and identically for
     every process the run starts. A spelling the join answers unchanged (a POSIX absolute path, a
-    Windows drive-qualified or UNC path) is returned untouched: no component is normalized, because
+    Windows drive-rooted or UNC path) is returned untouched: no component is normalized, because
     `abspath`'s lexical `..`-collapse can name another file -- a path that resolved to the executable
     can be rewritten to a name that does not exist or to another file's name at that path -- and a
-    launcher shim is not `resolve()`d either, because it dispatches on `argv[0]`.
+    launcher shim is not `resolve()`d either, because it dispatches on `argv[0]`. A join-unchanged
+    word that carries a drive but no root (`D:tools\\codex.exe`) is refused (``ValueError``) instead:
+    the join supplies no anchor for it, and the directory it resolves against -- the current
+    directory on that drive -- is process state this run cannot spell for the processes it starts.
 
     `pathmod`/`cwd` exist so this pure rule can be driven over both path dialects (`posixpath` and
     `ntpath`) on any host; every shipped call site leaves them at the running platform's own `os.path`
     and process directory.
     """
     anchored = pathmod.join(cwd if cwd is not None else os.getcwd(), path)
-    return path if anchored == path else anchored
+    if anchored != path:
+        return anchored
+    drive, tail = pathmod.splitdrive(path)
+    if drive and (not tail or tail[0] not in pathmod.sep + (pathmod.altsep or "")):
+        raise ValueError(
+            f"the executable {path} is relative to the current directory of drive {drive}, which "
+            f"this run cannot spell for the processes it starts; name it absolutely instead")
+    return path
 
 
 class ForeignHome:
@@ -1039,13 +1049,20 @@ def turn_answer(repo: Path, codex: str, home: Path, identity: list[str], prompt:
     did not start or did not finish inside its deadline.
 
     The same variant the app server's pipe failures answer: "the harness did not start / did not
-    finish" is one reading with one vocabulary, wherever the harness was driven from.
+    finish" is one reading with one vocabulary, wherever the harness was driven from. The deadline is
+    answered as the duration it was given, never by formatting the exception: ``TimeoutExpired``'s own
+    ``str`` holds the whole argument vector, and this command carries the prompt as one of its words --
+    words that travel into the run's printed report and, under ``--json``, into the machine-readable
+    one.
     """
+    deadline = 900
     try:
         return run([codex] + identity + [prompt] + [
             "--skip-git-repo-check", "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-        ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=900)
-    except (OSError, subprocess.TimeoutExpired) as failure:
+        ], cwd=repo, env={"CODEX_HOME": str(home)}, timeout=deadline)
+    except subprocess.TimeoutExpired as overrun:
+        return NoAnswer(f"the turn could not run: it did not finish within {overrun.timeout} seconds")
+    except OSError as failure:
         return NoAnswer(f"the turn could not run: {failure}")
 
 
@@ -2056,7 +2073,11 @@ def main(argv: list[str] | None = None) -> int:
     # `..`-collapse can name another file -- and deliberately *not* `resolve()`d: a mise shim is a
     # symlink to the `mise` binary itself and dispatches on argv[0], so following the link launches
     # `mise` (whose `app-server` is not Codex's) instead of the harness.
-    codex = absolute_launch_path(codex)
+    try:
+        codex = absolute_launch_path(codex)
+    except ValueError as refusal:
+        print(refusal, file=sys.stderr)
+        return 2
     go = shutil.which("go")
     if go is None:
         print("go is not on PATH: this harness builds ccc with the Go toolchain", file=sys.stderr)
@@ -2090,7 +2111,7 @@ def main(argv: list[str] | None = None) -> int:
             overrides["model"] = args.model
         seeding = seed_configuration(host_text, overrides, read_failure)
         if seeding.text:
-            (home / "config.toml").write_text(seeding.text)
+            (home / "config.toml").write_text(seeding.text, encoding="utf-8")
         if host_config.is_file():
             seeded_report = f"seeded from: {host_config} — {seeding.report()}"
         elif seeding.text:

@@ -3579,3 +3579,55 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   two consumers it is willing to break.
 - **Settled by:** the owner, or a host that stores mode bits while refusing `X_OK` (or the converse) in
   a way these two consumers must tell apart.
+
+## Q-0009a-19 — The nested run's expected-skip inventory is the host's own measured answer
+
+- **Status:** resolved (r12 fix round, Part A, 2026-11-28).
+- **Question:** `test_gate.HostCase`'s expected-skip inventory was a hand-written two-name tuple, and
+  the suite's own platform premise — a Windows host, whose `mode_bits_stored` answers false, skips the
+  storage-premise case — contradicted it: `windows-latest` failed the inventory assertion while the
+  child run itself was green (CI run `45949278359`). The two mode-bit-premised cases' dispositions were
+  independently open: each skipped where the measured answer says storage is absent, and
+  `test_the_staged_executable_bit_follows_the_stored_bits` has something true to assert there (staging
+  writes no bit such a host's `stat` can report).
+- **Options:** (a) the inventory is the tuple plus both mode-bit case names where the measured answer
+  says storage is absent, both cases keeping their skip (refused: the r9 lesson — a case that still has
+  a platform's own answer to assert asserts it instead of skipping); (b) the inventory is the tuple plus
+  the storage-premise case's name iff `HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored` is false, and the
+  staged-bit case asserts the no-storage arm through its patched control on every host, never skipping
+  (taken).
+- **Default taken:** (b). `expected_skips` reads the measured field, never a platform name; the
+  forced-Windows child on a storing host keeps its inventory at the tuple alone. Pinned by
+  `test_the_expected_skip_inventory_follows_the_host_s_measured_answer` — fabricated statuses under both
+  answers of the patched field: accepted without storage, refused with it, and a skip of the staged-bit
+  case's name refused under either answer (red pre-fix: the accepted arm failed).
+- **Reversal:** (a) — one increment that skips both cases by the measured answer and states the lost
+  assertion.
+- **Settled by:** the owner, or the `windows-latest` leg run against this tree (the accepted arm's
+  oracle — this host stores mode bits and cannot exercise it).
+
+## Q-0009a-20 — A drive-relative launch word is refused, never anchored to a guessed drive root (refines Q-0009a-16's "a spelling whose consumers could still disagree about")
+
+- **Status:** resolved (r12 fix round, r9 finding #2, 2026-11-28).
+- **Question:** Q-0009a-16's rule treats a join-unchanged spelling as one that names its own anchor.
+  `ntpath.join` also answers a *drive-relative* word (`D:tools\codex.exe`, from a `C:` directory)
+  unchanged — it discards the accumulated path when the second path's drive differs — while the
+  directory the word resolves against is the current directory on drive `D:`, held per process: the
+  same word can name a different executable, or none, in each of the processes this run starts (the
+  spelling Q-0009a-16's own "Settled by" line names).
+- **Options:** (a) anchor the word on its own drive's root (`D:\tools\codex.exe`) (refused: that names
+  a file the word need not mean, because the drive's current directory is process state this run can
+  neither read nor carry); (b) refuse the word where the join left a spelling that carries a drive and
+  no root (taken).
+- **Default taken:** (b). `absolute_launch_path` raises `ValueError`; the call site catches it and
+  answers exit 2 by name, launching nothing and making no scratch tree. The join-unchanged
+  fully-qualified shapes (drive-rooted, UNC, POSIX-absolute) and the anchored shapes (relative,
+  same-drive drive-relative, drive-less rooted) are answered exactly as before. Pinned by
+  `test_a_drive_relative_word_is_refused_and_never_returned` (the refused shapes beside every control
+  arm; red pre-fix: `ValueError` not raised) and
+  `test_a_drive_relative_executable_is_refused_by_name_before_anything_runs` (the call site: the
+  message on stderr, exit 2, nothing recorded, nothing launched).
+- **Reversal:** (a) — one increment that anchors drive-relative words on their drive roots and states
+  that the file it names is this build's guess.
+- **Settled by:** the owner, or a caller whose `--codex` is a drive-relative word the check must serve;
+  `windows-latest` is the default-path arm's oracle.

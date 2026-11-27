@@ -89,6 +89,10 @@ SESSION = "01a1e225-a986-7372-bf0f-2c51da684752"
 OTHER_SESSION = "00000000-0000-0000-0000-000000000000"
 CODEX = "codex"
 
+#: A drive-relative executable word whose drive is not the one the refusal case drives the rule on:
+#: `which` answers it and the win32 dialect has no anchor for it, so the run must refuse it by name.
+DRIVE_RELATIVE_CODEX = "Z:tools\\codex.exe"
+
 RESUME_ARGUMENTS = [CODEX, "resume", SESSION]
 EXEC_RESUME_ARGUMENTS = [CODEX, "exec", "resume", SESSION, "<prompt>"]
 
@@ -679,9 +683,22 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               raises_at: str | None = None,
               dangling_symlink: bool = False,
               lexical_codex: bool = False,
-              turn_exit_code: int | None = None
+              turn_exit_code: int | None = None,
+              json_report: bool = False,
+              host_configuration: str | None = None,
+              codex_launch_refusal: bool = False,
               ) -> tuple[int, dict[str, tuple[str, str]]]:
         """One run of the shipped ``main`` against stubs; answers its exit code and its recorded checks.
+
+        ``json_report`` adds ``--json``, so a case can read what the machine-readable report holds
+        beside the printed one -- both are the same recorded checks.
+
+        ``host_configuration`` drives the run the way a caller with no ``--codex-home`` does: the flag
+        is omitted, so the throw-away home is the one ``main`` makes for itself (under this case's
+        ``RUN_SCRATCH_NAME`` tree, this case's own name for the run's scratch directory), and
+        ``CODEX_HOME`` answers the host configuration the seeding reads. The run then exercises the
+        home's own seeding -- the read of the host file and the write into the scratch home -- which
+        every other case, naming ``--codex-home``, skips.
 
         ``installed_extra_line`` is a line the stub appends to the first installed file after its one
         object, so the JSONL check's own failure paths are exercised: the line may be unparseable JSON or
@@ -771,9 +788,12 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         ``lexical_codex`` gives ``--codex`` a path that holds a ``..`` component after a directory —
         ``<scratch>/alias/../codex`` — and has ``which`` answer the same path, so a run that normalized
         the path it launches (``abspath``'s lexical collapse) is visible in the argv[0] the stub
-        records; ``turn_exit_code`` makes the stub's turn process *answer* non-zero without growing the
-        session, the arm beside the timeout that asks whether the run's own turn count follows the
-        predicate its check records;
+        records; ``codex_launch_refusal`` has ``which`` answer a drive-relative word and drives the pure
+        rule over the win32 dialect (a POSIX host has no drive-relative spelling), so the run's own
+        refusal of such a word -- the named message, the exit code, nothing launched, no scratch tree
+        made -- is exercised on every host; ``turn_exit_code`` makes the stub's turn process *answer*
+        non-zero without growing the session, the arm beside the timeout that asks whether the run's own
+        turn count follows the predicate its check records;
         ``unreadable_home_entry`` (``"directory"`` or ``"link"``) puts an entry under the home whose
         name matches ``rollout-*.jsonl`` and whose bytes cannot be read — a directory, or a dangling
         link — so the snapshot of the sessions a conversion must not touch cannot be taken;
@@ -818,14 +838,17 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                             + json.dumps({"type": "assistant",
                                           "message": {"content": [{"type": "text",
                                                                    "text": GROWTH_ANSWER}]}}) + "\n")
-        home = scratch / "codex-home"
-        home.mkdir()
         # The scratch directory the *run* makes for itself: this case hands the shipped `main` a fixed
-        # one (the patch below), so every path under the run's own tree -- the probe home the disclosure
-        # arm plants into above all -- has a name this case can address before the run starts and read
-        # back after it ends. A run that asked for another directory is refused here instead of a case
-        # quietly addressing paths the run never used.
+        # one (the patch below), so every path under the run's own tree has a name this case can address
+        # before the run starts and read back after it ends. A run that asked for another directory is
+        # refused here instead of a case quietly addressing paths the run never used.
         run_scratch = scratch / RUN_SCRATCH_NAME
+        # The home the run drives, and the tree this case stages its fixtures into. A case that names
+        # one (`--codex-home`) keeps it *outside* `run_scratch`, because a refusal path removes this
+        # run's own scratch tree and the fixtures there are the caller's; a case that omits the flag
+        # drives the home `main` makes for itself under its own scratch tree.
+        home = run_scratch / "codex-home" if host_configuration is not None else scratch / "codex-home"
+        home.mkdir(parents=True)
 
         def case_mkdtemp(prefix="", dir=None, **kwargs):
             run_scratch.mkdir(exist_ok=True)
@@ -843,6 +866,8 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             (scratch / "alias" / "sub").mkdir(parents=True)
             codex_argument = str(scratch / "alias" / ".." / "codex")
             which_answer = codex_argument
+        if codex_launch_refusal:
+            which_answer = DRIVE_RELATIVE_CODEX
 
         thread_id = "01a1e000-0000-7000-8000-000000000002"
         second_thread_id = "01a1e000-0000-7000-8000-000000000004"
@@ -978,6 +1003,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         #: launched, which the lexical-codex case reads back against the path it handed in.
         turn_paths: list[str] = []
 
+        #: The deadline `subprocess.run` was called with where the turn overran it: the duration the
+        #: run's own report has to name, read from the call rather than spelled here.
+        turn_deadlines: list[float] = []
+
         def fake_run(cmd, cwd=None, env=None, timeout=600):
             command = [str(part) for part in cmd]
             if raises_at is not None:
@@ -994,6 +1023,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 }[raises_at]
                 if unstartable:
                     if raises_at == "turn":
+                        turn_deadlines.append(timeout)
                         raise subprocess.TimeoutExpired(cmd, timeout)
                     raise OSError(f"the case's stub could not start {command[0]}")
             if command[0] == go:
@@ -1198,6 +1228,17 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
             patches.append(mock.patch.object(Path, "open", case_open))
         if unlink_fails_path is not None:
             patches.append(mock.patch.object(Path, "unlink", case_unlink))
+        host_home = scratch / "host-codex-home"
+        argv = ["--repo", str(repo), "--codex", codex_argument]
+        if host_configuration is None:
+            argv += ["--codex-home", str(home)]
+        else:
+            # No `--codex-home`: the run makes (and seeds) its own home under its scratch tree, and
+            # `CODEX_HOME` answers the "host's own configuration" the seeding reads, exactly as the
+            # caller's environment does.
+            host_home.mkdir()
+            (host_home / "config.toml").write_text(host_configuration, encoding="utf-8")
+        argv += prompts + (["--json"] if json_report else []) + (["--keep"] if keep else [])
         try:
             with contextlib.ExitStack() as stack:
                 for patch in patches:
@@ -1208,11 +1249,19 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                 stack.enter_context(mock.patch.object(NATIVE_CHECK, "run", fake_run))
                 stack.enter_context(mock.patch.object(NATIVE_CHECK, "AppServer", FakeAppServer))
                 stack.enter_context(mock.patch("shutil.which", fake_which))
+                if codex_launch_refusal:
+                    # The word is carried through `which`; the rule is driven over the win32 dialect,
+                    # because only it has a drive-relative spelling for the call site to refuse.
+                    real_launch = NATIVE_CHECK.absolute_launch_path
+                    stack.enter_context(mock.patch.object(
+                        NATIVE_CHECK, "absolute_launch_path",
+                        lambda path: real_launch(path, pathmod=ntpath, cwd="C:\\work")))
+                if host_configuration is not None:
+                    stack.enter_context(mock.patch.dict(os.environ,
+                                                        {"CODEX_HOME": str(host_home)}))
                 stack.enter_context(contextlib.redirect_stdout(stdout))
                 stack.enter_context(contextlib.redirect_stderr(stderr))
-                code = NATIVE_CHECK.main(["--repo", str(repo), "--codex", codex_argument,
-                                          "--codex-home", str(home)] + prompts
-                                         + (["--keep"] if keep else []))
+                code = NATIVE_CHECK.main(argv)
             results = {name: (state, detail) for name, state, detail in NATIVE_CHECK.RESULTS[before:]}
         finally:
             # A run that raised before recording its summary still wrote into the module's own list --
@@ -1223,6 +1272,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.last_scratch = run_scratch
         self.last_planted = planted
         self.last_turn_paths = turn_paths
+        self.last_turn_deadline = turn_deadlines[-1] if turn_deadlines else None
         self.last_codex_argument = codex_argument
         return code, results
 
@@ -1812,6 +1862,48 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(results.get("the source session is unchanged", ("missing", ""))[0], "PASS",
                          f"the closing comparison did not run on the undecodable run: {results}")
 
+    def test_the_seeded_configuration_is_written_as_utf8_whatever_the_locale_answers(self) -> None:
+        """The scratch TOML is written as UTF-8: a host whose locale cannot encode the value still gets
+        the home seeded.
+
+        The locale's answer is stubbed the way a CP1252 Windows process answers it — the process's
+        default text encoding is ASCII, where this host's is not — and the control write below shows
+        the stub is live, so a green run is the shipped write naming UTF-8 rather than the stub having
+        gone quiet. A non-ASCII value travels both halves: the host configuration's provider name, read
+        from the host file (r11's UTF-8 read) and written into the scratch home (the r9 finding's own
+        write). A write that took the locale's answer instead raised out of ``main`` before any check
+        could run, so no verdict and no cleanup happened at all.
+        """
+        emoji = "\N{SNOWMAN}\N{VARIATION SELECTOR-16}"
+        host_configuration = (
+            'model = "a-host-model"\n'
+            'model_provider = "a-proxy"\n'
+            "\n"
+            "[model_providers.a-proxy]\n"
+            f'name = "A Proxy {emoji}"\n'
+            'base_url = "https://proxy.example/v1"\n'
+            'wire_api = "responses"\n'
+        )
+        real_text_encoding = io.text_encoding
+
+        def ascii_locale(encoding, stacklevel=2):
+            return "ascii" if encoding is None else real_text_encoding(encoding, stacklevel)
+
+        with tempfile.TemporaryDirectory(prefix="ccc-locale-probe-") as probe_dir:
+            with mock.patch.object(io, "text_encoding", ascii_locale):
+                with self.assertRaises(UnicodeEncodeError):
+                    (Path(probe_dir) / "probe.txt").write_text(emoji)
+                code, _ = self.drive(mutate_during_resume=False,
+                                     host_configuration=host_configuration, keep=True)
+        self.assertEqual(code, 0, f"exit {code}: {self.last_stderr!r}")
+        seeded = self.last_scratch / "codex-home" / "config.toml"
+        seeded_text = seeded.read_bytes().decode("utf-8")
+        self.assertEqual(seeded_text, NATIVE_CHECK.seed_configuration(host_configuration, {}).text,
+                         "the home's bytes are not the seeding this run read")
+        self.assertIn(emoji, seeded_text, "the non-ASCII value did not survive into the home")
+        self.assertEqual(tomllib.loads(seeded_text)["model_providers"]["a-proxy"]["name"],
+                         f"A Proxy {emoji}")
+
     def test_a_command_that_cannot_be_started_is_a_named_failure(self) -> None:
         """Every invocation the run stands on answers by name when the process never starts.
 
@@ -1857,6 +1949,29 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertIn("real turn(s) run: 0", self.last_stdout,
                       "a turn that never answered was counted as run")
 
+    def test_a_turn_that_overran_its_deadline_names_the_duration_not_the_command(self) -> None:
+        """The deadline is reported as a duration; the command line — which carries the prompt — is not.
+
+        ``TimeoutExpired``'s own ``str`` holds the whole argument vector, and this run's turn carries
+        the prompt as one of its words, so formatting the exception into the check's detail put the
+        prompt into the printed report and, with ``--json``, into the machine-readable one (both read
+        the same recorded detail). The stub overruns the deadline with the argv this run really built
+        and the timeout it was really given, so the words this case asserts are the run's own.
+        """
+        prompt = "answer only from this conversation"
+        code, results = self.drive(mutate_during_resume=False, raises_at="turn", json_report=True)
+        state, detail = results.get("a real turn continues from the installed session",
+                                    ("missing", ""))
+        self.assertEqual(state, "FAIL", f"the turn's own check: {state} — {detail}")
+        self.assertIsNotNone(self.last_turn_deadline,
+                             "the stub was never handed the turn's own deadline")
+        self.assertIn(f"did not finish within {self.last_turn_deadline} seconds", detail,
+                      f"the report does not name the deadline the turn was given: {detail}")
+        self.assertNotIn(prompt, detail, f"the recorded detail holds the prompt: {detail}")
+        self.assertNotIn(prompt, self.last_stdout,
+                         "a report (the printed one or --json) holds the turn's prompt")
+        self.assertEqual(code, 1, f"exit {code}: {self.last_stderr!r}")
+
     def test_a_turn_that_exited_non_zero_without_growing_the_session_is_not_counted(self) -> None:
         """The count is the predicate the turn's own check records, for the answer as well as the silence.
 
@@ -1892,6 +2007,27 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                              "the run launched a path other than the one the caller's path traverses")
             self.assertTrue(os.path.exists(launched),
                             f"the launched path does not name an existing file: {launched}")
+
+    def test_a_drive_relative_executable_is_refused_by_name_before_anything_runs(self) -> None:
+        """The refused word reaches no launch: the run answers with the rule's message and exits 2.
+
+        The rule's own refusal is pinned in `LaunchPathResolution`; this case is the call site's half.
+        `which` answers a drive-relative word and the rule is driven over the win32 dialect (a POSIX
+        host has no such spelling, and on win32 the pure case's default-host arm is the same answer),
+        so the refusal the shipped `main` must turn into a named exit — message on stderr, nothing
+        launched, nothing recorded, not even the scratch directory made — is exercised here on every
+        host.
+        """
+        code, results = self.drive(mutate_during_resume=False, codex_launch_refusal=True)
+        self.assertEqual(code, 2, f"exit {code}: {self.last_stderr!r}")
+        self.assertIn(DRIVE_RELATIVE_CODEX, self.last_stderr, self.last_stderr)
+        self.assertIn("drive Z:", self.last_stderr, self.last_stderr)
+        self.assertNotIn("Traceback", self.last_stderr,
+                         f"the refusal came out as a traceback: {self.last_stderr!r}")
+        self.assertEqual(results, {}, f"the refused run recorded checks: {sorted(results)}")
+        self.assertFalse(self.last_scratch.exists(),
+                         "the refused run made its scratch tree before refusing the executable")
+        self.assertEqual(self.last_turn_paths, [], "the refused run asked for a turn")
 
 
 class LaunchPathResolution(unittest.TestCase):
@@ -1998,6 +2134,50 @@ class LaunchPathResolution(unittest.TestCase):
         else:
             self.assertEqual(answered, given,
                              "this host's rooted path names its own anchor and must be returned")
+
+    def test_a_drive_relative_word_is_refused_and_never_returned(self) -> None:
+        """A join-unchanged word whose own anchor is another drive's current directory is refused.
+
+        `ntpath.join` discards the accumulated path when the word carries a different drive, so a
+        drive-relative spelling (`D:tools\\codex.exe`) comes back unchanged -- no anchor for the join
+        to supply -- and the directory it resolves against is the *resolving* process's current
+        directory on drive `D:`. The processes this run starts do not share one (`ccc continue` runs
+        from `--repo`), so the word can name a different executable in each, or none, and the rule
+        raises instead of answering it. The same-drive form is *not* refused: the join anchors it
+        through this process's own directory, which is how the platform resolves a word whose drive is
+        the current one; every other shape the cases above pin (drive-rooted, UNC, drive-less rooted,
+        relative) is a control arm here, and POSIX has no drive-relative spelling at all.
+        """
+        cwd = "C:\\work"
+        for given in ("D:tools\\codex.exe", "D:tools", "D:", "d:tools\\x"):
+            with self.subTest(path=given):
+                with self.assertRaises(ValueError) as refusal:
+                    NATIVE_CHECK.absolute_launch_path(given, pathmod=ntpath, cwd=cwd)
+                self.assertIn(given, str(refusal.exception),
+                              f"the refusal does not name the word it answered: "
+                              f"{refusal.exception}")
+        for given in ("C:tools\\codex.exe", "D:\\", "D:\\tools\\x", "D:/tools/x",
+                      "\\\\srv\\share\\x", "tools\\x", "\\opt\\bin\\codex"):
+            with self.subTest(path=given):
+                self.assertEqual(NATIVE_CHECK.absolute_launch_path(given, pathmod=ntpath, cwd=cwd),
+                                 ntpath.join(cwd, given),
+                                 f"{given!r} is not the join's own answer")
+        posix_cwd = "/work"
+        for given in ("/opt/bin/codex", "codex", "./codex", "../codex"):
+            with self.subTest(path=given):
+                self.assertEqual(
+                    NATIVE_CHECK.absolute_launch_path(given, pathmod=posixpath, cwd=posix_cwd),
+                    posixpath.join(posix_cwd, given),
+                    f"{given!r} is not the join's own answer under posixpath")
+        if os.name == "nt":
+            letter = "Z" if not os.getcwd().upper().startswith("Z") else "Y"
+            with self.assertRaises(ValueError):
+                NATIVE_CHECK.absolute_launch_path(f"{letter}:tools\\codex.exe")
+            current = os.getcwd()
+            self.assertEqual(
+                NATIVE_CHECK.absolute_launch_path(f"{os.path.splitdrive(current)[0]}tools\\codex.exe"),
+                os.path.join(current, f"{os.path.splitdrive(current)[0]}tools\\codex.exe"),
+                "the shipped defaults stopped anchoring a same-drive drive-relative word")
 
     def test_a_lexical_collapse_would_name_another_file(self) -> None:
         """Which file each form names is the host's own resolution; the answer keeps the caller's path.
