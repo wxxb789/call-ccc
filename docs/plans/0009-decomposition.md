@@ -78,8 +78,10 @@ again:
 - **0009a ships the offline oracle plus the native check without the two features** (the increment this
   repository's branch `feat/0009a-native-oracle-v2` now carries), keeping every diff that fixes a
   reproducible defect of a surviving path — the dangling-symlink crash in a caller's `--codex-home`,
-  the portable held-name rule for the exclusive create, and the `os.path.abspath` (never `resolve()`)
-  rule for launching a shim.
+  the portable held-name rule for the exclusive create, and the launching rule: no component
+  normalized, nothing `resolve()`d, and a spelling whose anchor only a consumer's working directory
+  would supply (a drive-less rooted path) answered anchored to this process's own (`Q-0009a-12`,
+  `Q-0009a-16`).
 - **0009e** is the moved work's home, with the reviewed starting point at tag
   `archive/0009a-r16-native-arm` (head `768df19`): the disclosure arm (owner criterion `Q1 = B`, an
   id-only lookup miss as the failure control), the binary fingerprint (which file the launched name

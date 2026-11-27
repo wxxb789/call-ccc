@@ -752,32 +752,44 @@ def sha256_or_failure(path: Path) -> tuple[str, str]:
 
 
 def read_text_or_failure(path: Path) -> tuple[str, str]:
-    """One path's text, or the failure that prevented reading it: the same rule as `sha256_or_failure`."""
+    """One path's text, read as UTF-8 — never through the process's locale — or the failure that
+    prevented it.
+
+    A byte some locale happens to decode is not evidence the file is UTF-8 on disk, and where the
+    locale is strict the decoder's exception would escape this rule; both shapes are the one named
+    failure, so the verdict follows the file's own bytes rather than the reading interpreter's locale.
+    """
     try:
-        return path.read_text(), ""
+        return path.read_bytes().decode("utf-8"), ""
     except OSError as failure:
         return "", f"{path} cannot be read: {failure}"
+    except UnicodeDecodeError as failure:
+        return "", f"{path} cannot be read as UTF-8: {failure}"
 
 
 def absolute_launch_path(path: str, pathmod=os.path, cwd: str | None = None) -> str:
-    """The path made absolute without a component of it being normalized.
+    """The path a launcher may be handed: the caller's spelling when the dialect's own join onto the
+    process's directory changes nothing, and that spelling anchored to the directory otherwise.
 
-    Whether a path is already absolute is the path dialect's own answer (`pathmod.isabs`): an absolute
-    path is answered unchanged and every other spelling is anchored to the process's own directory, so
-    the answer is what the caller's path traverses. That includes Windows's rooted-but-drive-less form
-    (`\\opt\\bin\\codex`): a root without a drive is not absolute to CPython >= 3.13's `ntpath.isabs`
-    (only a fully qualified path is; 3.11 and 3.12 answered `True` for it), and anchoring it resolves
-    its root against the process's own directory, which supplies the current drive -- the way the
-    platform itself resolves a rooted path. `abspath` instead collapses `alias/..` lexically where the
-    filesystem follows `alias` first, so a path that resolved to the executable can be rewritten to a
-    name that does not exist or to another file's name at that path. A launcher shim is not `resolve()`d
-    either: it dispatches on `argv[0]`.
+    One spelling has to name one binary for every process this run starts, and the processes do not
+    share a working directory (`ccc continue` runs from `--repo` while the harness runs from this
+    process's own). Whether a spelling already names its own anchor is the path dialect's own answer to
+    `join`: a relative path, and the drive-less rooted form (`\\opt\\bin\\codex`) that 3.11/3.12's
+    `ntpath.isabs` *calls* absolute, are both spelled differently once joined onto the process's
+    directory -- the join supplies the drive, which is how the platform resolves a rooted path for this
+    process -- so they are answered anchored, identically on every CPython minor and identically for
+    every process the run starts. A spelling the join answers unchanged (a POSIX absolute path, a
+    Windows drive-qualified or UNC path) is returned untouched: no component is normalized, because
+    `abspath`'s lexical `..`-collapse can name another file -- a path that resolved to the executable
+    can be rewritten to a name that does not exist or to another file's name at that path -- and a
+    launcher shim is not `resolve()`d either, because it dispatches on `argv[0]`.
 
     `pathmod`/`cwd` exist so this pure rule can be driven over both path dialects (`posixpath` and
     `ntpath`) on any host; every shipped call site leaves them at the running platform's own `os.path`
     and process directory.
     """
-    return path if pathmod.isabs(path) else pathmod.join(cwd if cwd is not None else os.getcwd(), path)
+    anchored = pathmod.join(cwd if cwd is not None else os.getcwd(), path)
+    return path if anchored == path else anchored
 
 
 class ForeignHome:
@@ -1074,10 +1086,10 @@ def run_turn(repo: Path, codex: str, home: Path, session_file: Path, identity: l
 
 
 #: The deepest `{`/`[` nesting one text may reach before the decoder reads it — an artifact line, or the
-#: receipt document: the bound `ORACLE_RULES["oracle.jsonl-objects"]` and
-#: `ORACLE_RULES["oracle.receipt-integrity"]` state, so a text's verdict is its own bytes rather than
-#: the reading interpreter's recursion limit (CPython's default limit covers this depth on either
-#: scanner).
+#: receipt document. An artifact line's bound is `ORACLE_RULES["oracle.jsonl-objects"]`'s own statement;
+#: a receipt document's is the reading's own refusal (`oracle_report` answers INCOMPLETE for it, never a
+#: rule violation a caller could disable), so a text's verdict is its own bytes rather than the reading
+#: interpreter's recursion limit (CPython's default limit covers this depth on either scanner).
 ORACLE_NESTING_BOUND = 256
 
 #: Every rule the offline oracle states: rule id → the sentence it states. The ids are this report's own
@@ -1102,9 +1114,7 @@ ORACLE_RULES: dict[str, str] = {
         "whose statements do not match the artifact's bytes is refused, naming the line a changed byte "
         "moved and, where the two sides hold different line counts, the first line without a "
         "counterpart anchor; a receipt covers an artifact holding at least one line, so the empty "
-        "artifact is not receipt-identified by this rule; a receipt document nested deeper than "
-        f"{ORACLE_NESTING_BOUND} levels is refused as well, because that bound is this rule's own "
-        "statement rather than the reading interpreter's recursion limit",
+        "artifact is not receipt-identified by this rule",
 }
 
 #: What every declared rule reads: the artifact's raw bytes (`on_bytes`), or the text the byte layer
@@ -1129,16 +1139,6 @@ ORACLE_RECEIPT = "artifact-receipt.json"
 #: The sentinel for "no receipt was supplied": a *supplied* document that reads `null` is a receipt that
 #: is not an object, which `oracle.receipt-integrity` refuses — not an absent receipt.
 _NO_RECEIPT = object()
-
-
-class _OracleReceiptPastBound:
-    """A receipt document nested deeper than `ORACLE_NESTING_BOUND`: refused by `oracle.receipt-integrity`'s
-    own stated bound rather than by the reading interpreter's recursion limit, and never materialized —
-    the member a document nests that deep inside may be one this rule does not read at all, and a
-    document's verdict is its own bytes."""
-
-
-_ORACLE_RECEIPT_PAST_BOUND = _OracleReceiptPastBound()
 
 
 class Violation(NamedTuple):
@@ -1399,14 +1399,10 @@ def oracle_receipt_violations(data: bytes, receipt: object) -> list[Violation]:
     """`oracle.receipt-integrity`: the receipt's own statements, read against the artifact's bytes.
 
     Further members than the three the rule names are not read: a receipt is the three statements it is
-    asked for, and a statement this oracle does not know is not one it may compare. A document nested
-    past the bound the rule states arrives as that sentinel — refused without a member of it being
-    read — so no member the rule does not read can move the verdict with the reading interpreter.
+    asked for, and a statement this oracle does not know is not one it may compare. A document the
+    reading refused to read at all (nested past `ORACLE_NESTING_BOUND`) never reaches this rule: the
+    command answers INCOMPLETE for it before any member is read.
     """
-    if receipt is _ORACLE_RECEIPT_PAST_BOUND:
-        return [Violation("oracle.receipt-integrity", 0,
-                          f"the receipt document is nested deeper than {ORACLE_NESTING_BOUND} levels, "
-                          f"the bound this rule states")]
     if not isinstance(receipt, dict):
         return [Violation("oracle.receipt-integrity", 0,
                           f"a receipt is a JSON object, found {type(receipt).__name__}")]
@@ -1508,14 +1504,13 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
 
     It reads the artifact's bytes and, when one is named, the receipt's — nothing else, ever. An input
     it cannot read at all ends as `oracle: INCOMPLETE` (exit 2), never as a pass: a file that cannot be
-    opened, a receipt document that is not UTF-8 or not JSON, and a document whose object writes a
-    member name twice are all such inputs. A receipt document nested deeper than the bound its rule
-    states is that rule's own refusal — a violation, answered from the document's bytes before a member
-    of it is read — so an ignored member's depth cannot move the verdict with the reading interpreter. A
-    reading where a rule was not evaluated and none was violated is `oracle: INCOMPLETE` (exit 2) too,
-    naming the rule and what blocked it: PASS is for a reading where every rule was evaluated and the
-    violation set is empty. The verdict line is the last one printed, and `--json` adds the
-    machine-readable document above it.
+    opened, a receipt document that is not UTF-8 or not JSON, a document whose object writes a member
+    name twice, and a document nested deeper than `ORACLE_NESTING_BOUND` — refused before a member of
+    it is read, so an ignored member's depth cannot move the verdict with the reading interpreter and
+    no rule's `--disable-rule` can mask the refusal. A reading where a rule was not evaluated and none
+    was violated is `oracle: INCOMPLETE` (exit 2) too, naming the rule and what blocked it: PASS is
+    for a reading where every rule was evaluated and the violation set is empty. The verdict line is
+    the last one printed, and `--json` adds the machine-readable document above it.
     """
     try:
         data = artifact.read_bytes()
@@ -1536,17 +1531,18 @@ def oracle_report(artifact: Path, receipt: Path | None, as_json: bool,
                   file=sys.stderr)
             return 2
         if _oracle_nesting_depth(text) > ORACLE_NESTING_BOUND:
-            document = _ORACLE_RECEIPT_PAST_BOUND
-        else:
-            try:
-                document = json.loads(text,
-                                      parse_constant=_reject_json_constant,
-                                      object_pairs_hook=_oracle_unique_members,
-                                      parse_int=_OracleInteger)
-            except (ValueError, RecursionError) as failure:
-                print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}",
-                      file=sys.stderr)
-                return 2
+            print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: nested deeper than "
+                  f"{ORACLE_NESTING_BOUND} levels, the bound this reading states", file=sys.stderr)
+            return 2
+        try:
+            document = json.loads(text,
+                                  parse_constant=_reject_json_constant,
+                                  object_pairs_hook=_oracle_unique_members,
+                                  parse_int=_OracleInteger)
+        except (ValueError, RecursionError) as failure:
+            print(f"oracle: INCOMPLETE — the receipt {receipt} cannot be read: {failure}",
+                  file=sys.stderr)
+            return 2
     reading = oracle_reading(data, receipt=document, disabled=disabled)
     verdict = "PASS" if reading.passed else ("FAIL" if reading.violations else "INCOMPLETE")
     if as_json:

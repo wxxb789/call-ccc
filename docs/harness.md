@@ -470,8 +470,9 @@ says so.
   against the artifact: a mutated byte is refused, named by the line it moved, and the first line
   without a counterpart anchor is named the same way; a receipt covers an
   artifact holding at least one line, so the empty artifact is not receipt-identified by this rule; a
-  receipt document nested deeper than 256 levels is refused too — that bound is the rule's own statement,
-  not the reading interpreter's recursion limit).
+  receipt document nested deeper than 256 levels is an unreadable *input* — `oracle: INCOMPLETE` (exit
+  2), refused before any member is read, which no `--disable-rule` can mask — that bound is the
+  reading's own statement, not the reading interpreter's recursion limit).
   **Every rule is evaluated, or explicitly not evaluated.** `ORACLE_RULE_INPUTS` declares what each rule
   reads: `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` read the artifact's own bytes
   — the line rule included, because a decode result cannot gate a byte predicate, and the receipt

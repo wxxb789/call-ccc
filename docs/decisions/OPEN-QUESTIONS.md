@@ -3478,3 +3478,104 @@ historical maximum (the cost is the 19-round/1.47 MB failure mode returning sile
   itself) again, with the two reading sites named; or (a) — moving the guard sites to the measured
   answer with their assertions kept.
 - **Settled by:** the owner, or a host where the two answers diverge.
+
+## Q-0009a-15 — The receipt document's depth refusal is the reading's own, not a rule's (supersedes Q-0009a-11's "refused by `oracle.receipt-integrity`'s own sentence" clause)
+
+- **Status:** resolved (r11 fix round, r8 finding #1, 2026-11-27).
+- **Question:** Q-0009a-11 gave the receipt document its >256-level refusal as `oracle.receipt-integrity`'s
+  own violation. That made the refusal part of a *rule*, and `--disable-rule` is defined as "as if the
+  rule were not stated": a document with 257 openers and no closers answered only that violation, and
+  with `--disable-rule oracle.receipt-integrity` the command exited 0 — a PASS over a receipt nothing
+  read (measured on `7202fdf`; a *shallow* malformed receipt exits 2 even with the rule disabled).
+- **Options:** (a) keep the violation and exempt that one rule from `--disable-rule` (refused: the flag
+  would then have an exception no rule states, and the corpus's arm contract is "as if not stated");
+  (b) a past-bound receipt is an *input the reading cannot read* — the same class as a receipt that is
+  not UTF-8 or not JSON: `oracle: INCOMPLETE` (exit 2) on stderr, answered from the document's bytes
+  before any member is read, outside every rule's subject (taken).
+- **Default taken:** (b). `oracle_report` refuses a past-bound receipt before `json.loads`; the
+  `oracle.receipt-integrity` sentence no longer claims the bound (the rule judges the statements of a
+  readable receipt); the sentinel that carried the refusal into the rule is removed. Pinned by the
+  rewritten `test_a_receipt_document_nested_past_the_stated_bound_is_refused_by_name`: the
+  ignored-member arm and the 257-opener arm each exit 2 with the rule enabled **and** with it disabled,
+  and a document nested exactly at the bound is read and passes. The artifact-line bound is untouched: a
+  line's >256-level refusal stays `oracle.jsonl-objects`'s own statement — Q-0009a-11's mechanism moved
+  only where the subject is an input rather than a line of the artifact.
+- **Reversal:** (a) — one increment that restores the rule-attributed refusal and states the exception
+  `--disable-rule` would carry.
+- **Settled by:** the owner, or a later increment that gives the receipt document another reader with a
+  reason to stream it (Q-0009a-11's own reversal).
+
+## Q-0009a-16 — The launch spelling answered is the one the dialect's own join leaves alone (refines Q-0009a-12's "an absolute one answered unchanged")
+
+- **Status:** resolved (r11 fix round, r8 finding #2, 2026-11-27).
+- **Question:** Q-0009a-12's rule asked `pathmod.isabs` whether a spelling may pass unchanged. On
+  CPython 3.11/3.12 `ntpath.isabs` calls the drive-less rooted form (`\bin\codex`) absolute, so a
+  `which()` answer of that shape passed unchanged there while 3.13+ anchored it — and two consumers of
+  one run do not share a working directory (`ccc continue` runs from `--repo`, the app-server launches
+  from this check's own), so on different drives the same spelling selected different binaries
+  (measured: 3.11 answers it unchanged, 3.14 anchors it).
+- **Options:** (a) require `isabs` *and* a drive where the dialect has drives, refusing a spelling the
+  check cannot qualify (refused: a refusal channel for a spelling `shutil.which` can hand over in a
+  legal PATH shape); (b) the spelling is answered unchanged iff the dialect's own `join` onto the
+  process's directory answers the same string — the join supplies the drive for a rooted-without-drive
+  path, and a spelling carrying its own anchor joins to itself (taken).
+- **Default taken:** (b). `absolute_launch_path` answers `join(base, path)` where that differs from
+  `path`, and `path` otherwise; the answer is the same on every CPython minor and for every process of
+  one run. `abspath`'s lexical collapse and `resolve()` stay out (Q-0009a-12) and no component is
+  normalized. Pinned by the renamed `test_a_rooted_path_is_answered_by_the_dialects_own_join` (the win32
+  arm asserts the anchored answer and the process's own drive on every minor; the version arms keep
+  pinning the predicate spread the rule does *not* follow), beside the relative-path, absolute-path and
+  lexical-collapse cases unchanged — no case deleted, narrowed or skip-widened.
+- **Reversal:** (a) — one increment that adds the fully-qualified precondition and its refusal arm,
+  moving the rooted-path case from "answered anchored" to "refused".
+- **Settled by:** the owner, or a platform whose `join` answers a spelling whose consumers could still
+  disagree about (the drive-relative spelling).
+
+## Q-0009a-17 — A file this check reads is decoded as UTF-8, never through the process's locale
+
+- **Status:** resolved (r11 fix round, r8 finding #3, 2026-11-27).
+- **Question:** `read_text_or_failure` read with `Path.read_text()` (the locale encoding) and caught
+  only `OSError`: one invalid UTF-8 byte in an installed rollout raised `UnicodeDecodeError` out of
+  `main` where the locale was strict (measured on this host), and where a locale's decoder accepted the
+  byte, the structural check could pass text that is not valid UTF-8 on disk — one file's verdict
+  following the reading interpreter's locale.
+- **Options:** (a) keep the locale encoding and catch `UnicodeDecodeError` beside `OSError` (refused:
+  the lenient-locale arm's verdict would still differ from the strict locale's); (b) decode the file's
+  bytes as UTF-8 explicitly and answer a decode failure as the same named failure a read failure is
+  (taken).
+- **Default taken:** (b). The target harness writes these files as UTF-8, so the explicit decode is the
+  format's own encoding rather than a preference. Pinned by
+  `test_an_installed_session_that_is_not_utf8_is_a_named_failure`: one 0xFF byte inside a JSON string,
+  and the JSONL check and the appended-turn search each record `cannot be read as UTF-8` while the same
+  file's digest comparison still passes (the failure is exactly the text reads); pre-fix the same run
+  raised `UnicodeDecodeError` out of `main` on a UTF-8 locale.
+- **Reversal:** (a) — one increment that reintroduces the locale encoding with the byte-catch, and its
+  case says which locale each arm asserts.
+- **Settled by:** the owner, or a file this route must read in some other encoding.
+
+## Q-0009a-18 — Mode-bit storage and executable lookup are two measured answers (supersedes Q-0009a-14's `posix_exec_bits_enforced` reading)
+
+- **Status:** resolved (r11 fix round, r8 finding #4, 2026-11-27).
+- **Question:** Q-0009a-14's measured answer, `HOST_SEMANTICS.posix_exec_bits_enforced`, was the
+  conjunction "`chmod` controls `os.access(X_OK)`". On Linux `access(X_OK)` also consults the mount's
+  `noexec` policy, so on a writable `noexec` temp mount that one answer went False and `_assert_sane`
+  raised at import — before the required `selftest` step could start (measured: the probe answers a
+  single False and the sanity check raises). The parity fixture staging asked the same answer to decide
+  whether to `chmod` a bit the checker reads with `stat`, which `chmod` stores on a `noexec` mount too.
+- **Options:** (a) keep one answer and drop the import assertion (refused: a broken probe would go
+  silent, and the parity staging would still skip a bit the filesystem does store); (b) measure the two
+  questions separately — `mode_bits_stored` via `stat` (the bit a git mode record is read with, asserted
+  sane on POSIX) and `exec_lookup_follows_mode_bits` via `os.access` (measured, never asserted: a
+  `noexec` mount is a legitimate host, and win32 answers `X_OK` for any existing file) (taken).
+- **Default taken:** (b). `apply_executable_bit` consults `mode_bits_stored`; the AST lint's
+  executability rule now requires an `X_OK` assertion to consult `exec_lookup_follows_mode_bits` (the
+  same rule, read from the field that answers it). Pinned by
+  `TheProbeKeepsTheTwoExecBitQuestionsApart` (with `X_OK` refused as a `noexec` mount refuses it, the
+  storage answer stays at its measured value and `_assert_sane` accepts; a storage answer of False on
+  POSIX still raises) and `test_the_staged_executable_bit_follows_the_stored_bits` (staging sets a
+  `100755` record's bit where storage works and the lookup is refused, and does not `chmod` where
+  storage is answered False).
+- **Reversal:** (a) — one increment that folds the two answers back together and states which of the
+  two consumers it is willing to break.
+- **Settled by:** the owner, or a host that stores mode bits while refusing `X_OK` (or the converse) in
+  a way these two consumers must tell apart.

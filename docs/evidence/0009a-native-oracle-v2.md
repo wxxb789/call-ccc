@@ -16,15 +16,18 @@ reviewed starting point is tag `archive/0009a-r16-native-arm` (head `768df19`). 
 §1–§3 below is **the pre-re-cut tree's** — kept because it is where the moved features' fixes and the
 oracle's own rounds were measured — while every count and quoted run the re-cut changes is
 **re-measured on the re-cut tree** and marked as such. 0009a now ships: the offline oracle (unchanged by
-the re-cut; the 2026-11-26 r7 fix round's two reading refinements — the receipt document's stated bound
-and the corpus's own verdict assertions — and the r8 fix round's receipt-statement refinement are §1 and
-§3), the native load and real-turn checks (the base's own, minus the two moved additions; the r8 round
+the re-cut; the 2026-11-26 r7 fix round's two reading refinements — the receipt document's stated bound,
+superseded by the r11 round's unmaskable refusal (§3, `Q-0009a-15`) — and the corpus's own verdict
+assertions — and the r8 fix round's receipt-statement refinement are §1 and §3), the native load and
+real-turn checks (the base's own, minus the two moved additions; the r8 round
 splits the resume verdict from the read failure), and the three round-5 findings that live in the shipped
 half — the corpus's declared unjudged rules, the receipt's three-member read, and the turn count. Every diff
 that fixes a reproducible defect of a surviving path is kept: the dangling-symlink crash in a caller's
 `--codex-home`, the portable held-name rule for the exclusive create, and the launch rule for a shim —
-the path is never `resolve()`d, and since the r7 round it is made absolute without a component being
-normalized (§3). The moved decisions are
+the path is never `resolve()`d, no component is normalized since the r7 round, and since the r11 round
+the spelling answered is the one the host dialect's own join onto the process's directory leaves alone,
+so a drive-less rooted path is anchored to this process's drive on every CPython minor (§3,
+`Q-0009a-16`). The moved decisions are
 `Q-0009a-05`, `-07` and `-09`, and the re-cut itself is `Q-0009a-10`
 (`docs/decisions/OPEN-QUESTIONS.md`).
 
@@ -43,7 +46,7 @@ step or CI workflow changes.
 | `oracle.utf8` | valid UTF-8 text, opening with no byte-order mark |
 | `oracle.whole-lines` | whole lines: the empty artifact, or bytes whose final byte is a line feed |
 | `oracle.jsonl-objects` | every line exactly one JSON object, member names unique, no unpaired surrogate escape; a line nested deeper than 256 levels is refused by the rule's own stated bound, not by the reading interpreter's recursion limit; integers are read by their written digits, never converted, so the interpreter's integer-conversion limit decides no verdict |
-| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes — the anchors the two sides share are compared even where the counts differ, so a moved delimiter byte still names the line it diverged on; a receipt document nested deeper than 256 levels is refused by the rule's own stated bound, not by the reading interpreter's recursion limit (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
+| `oracle.receipt-integrity` | a receipt's byte count, whole-file SHA-256 and one anchor per line, against the artifact's bytes — the anchors the two sides share are compared even where the counts differ, so a moved delimiter byte still names the line it diverged on; the rule judges the statements of a receipt the reading could read, and a receipt document nested deeper than 256 levels is an unreadable *input* — `oracle: INCOMPLETE` (exit 2) before any member is read, which no `--disable-rule` can mask (`Q-0009a-15`) (a receipt covers an artifact holding at least one line; the empty artifact is not receipt-identified by this rule) |
 
 The reading: **every rule is evaluated, or explicitly `NotEvaluated`.** `ORACLE_RULE_INPUTS` declares
 what each rule reads — `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` read the
@@ -475,8 +478,38 @@ shape has its own case, because `ntpath.isabs('\opt\bin\codex')` answers False o
 3.11 and 3.12) while the helper's contract anchors it to the process directory — the current drive —
 which is the platform's own resolution (R7-1; the Windows CI leg is that arm's oracle).
 
+**The r11 fix round's arms** (2026-11-27, on this record's tree, the five r8 findings; each pin was
+measured red before its fix and green after, every probe edit restored, and no case deleted, narrowed
+or skip-widened):
+
+```
+$ python3 scripts/codex-native-check.py --validate …/artifact.jsonl --receipt <scratch>/deep.receipt.json \
+    --disable-rule oracle.receipt-integrity              # 257 openers and no closers
+oracle: INCOMPLETE — the receipt <scratch>/deep.receipt.json cannot be read: nested deeper than 256 levels, the bound this reading states
+                                                                               # exit 2
+# pre-fix the same bytes answered `oracle: PASS — 3 record(s)` (exit 0): the depth refusal was
+# oracle.receipt-integrity's own violation, and --disable-rule masked it (r8 finding #1; Q-0009a-15).
+$ python3.11 -m unittest … -k test_a_rooted_path_is_answered_by_the_dialects_own_join
+# pre-fix on 3.11/3.12 the drive-less rooted spelling came back unchanged ('\opt\bin\codex', no drive):
+# ntpath.isabs calls it absolute there, so one run's two consumers could resolve it against different
+# drives; now the dialect's own join supplies the drive on every minor (r8 finding #2; Q-0009a-16).
+$ python3 -m unittest … -k test_an_installed_session_that_is_not_utf8_is_a_named_failure
+# pre-fix the same run raised `UnicodeDecodeError` out of main on a UTF-8 locale; now the JSONL check
+# and the appended-turn search each record `cannot be read as UTF-8` and the same file's digest
+# comparison still passes (r8 finding #3; Q-0009a-17).
+$ python3 -m unittest … -k a_refused_exec_lookup   # and -k staged_executable_bit
+# pre-fix the probe answered one bool (False under a noexec mount, because it asked os.access) and
+# _assert_sane raised at import, before the required selftest step; now storage is measured with stat,
+# the lookup answer is separate and non-fatal, and parity staging sets the bit storage answers for
+# (r8 finding #4; Q-0009a-18).
+```
+
+The plan statements the r8 findings #1/#2/#5 falsified are updated where they are stated
+(`docs/plans/0009a-native-oracle-v2.md`, `docs/plans/0009-decomposition.md`, `docs/harness.md`'s
+native-check section), and the superseded readings are `Q-0009a-15`–`-18`.
+
 **The native run** (the Codex judgment is the binary's; `python3 scripts/codex-native-check.py --json`,
-**re-measured on the r8 round's tree**, exit 0). The header names the launched binary alone — the version and
+**re-measured on the r11 round's tree, the r8 round's answer unchanged**, exit 0). The header names the launched binary alone — the version and
 digest pairing moved out with the fingerprint — and the run's own count is the base's minus the moved
 check line:
 
@@ -565,22 +598,24 @@ gate: go=<go 1.27.4> module=ccc targets=./cmd/ccc/... ./internal/ccc/...
   PASS     vet         go vet ./cmd/ccc/... ./internal/ccc/... (in ccc) -> rc=0
   PASS     test        3 package(s) ok (in ccc)
   PASS     portability pin 83195c8a6861b8c74a4b6cb87512817fed6f8584 (v0.47.0-181-g83195c8a) | module ccc built and tested against the pristine checkout at <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584 | ran with -modfile=portability.mod (replace -> <upstream-cache>/83195c8a6861b8c74a4b6cb87512817fed6f8584) and portability.sum beside it | go build ./cmd/ccc/... ./internal/ccc/... -> rc=0 | 3 package(s) ok
-  PASS     selftest    Ran 548 tests in 11.567s (rc=0)
-  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5776 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified…
+  PASS     selftest    Ran 559 tests in 10.998s (rc=0)
+  PASS     parity      … | : 83195c8a6861b8c74a4b6cb87512817fed6f8584 | layout: carry root agentsview/, this repository's module ccc | carried: 5579 file(s) identical to the pinned revision (compared through git's own object store) | deviations: 1 upstream path(s) declared (1 of them carried with the bytes this tree stores) + 1 generated input(s), all present as declared | owned: 0 project-owned prefix(es), plus the carry directory's own boundary; files seen by git: 5778 | inputs: agentsview/internal/pricing/snapshot/litellm_snapshot.json.gz sha256=75097ea1199a3f53590ccbf6ec61aa05a0c471ffc2f44018925d4a895ab5a3e8 (pinned by agentsview/internal/pricing/cmd/litellm-snapshot/main.go) | symlinks hashed by their link target: 4 | declared stored bytes verified…
   PASS     citations   docs/evidence/0002-citations.tsv: 36 row(s) verified | docs/evidence/0007-citations.tsv: 37 row(s) verified | docs/evidence/0008-citations.tsv: 13 row(s) verified | docs/evidence/0009a-citations.tsv: 1 row(s) verified
-  PASS     secrets     no leaks found in 236 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
+  PASS     secrets     no leaks found in 313 file(s) this repository owns (the carried upstream tree is covered by the parity step, not by this scan)
 GATE: PASS
 ```
 
 The two steps this increment is about are `selftest` — whose discovery runs `CodexArtifactOracle` (the
 corpus's 22 pairs through the shipped command, the negative space, the receipt cases) — and `citations`,
-which verifies the goal's row against the Go test it cites. The table is **re-measured on the r8 round's
-tree** (2026-11-26), whose `selftest` count is 548 against 551 at the r5 head (§2/§3 name the moved
+which verifies the goal's row against the Go test it cites. The table is **re-measured on the r11 round's
+tree** (2026-11-27), whose `selftest` count is 559 against 551 at the r5 head (§2/§3 name the moved
 cases; the whole discovery's counts moved 503 → 519 across the four rounds, → 524 in the cross-family
 review round, → 537 in the r2 round, → 548 in the r3 round, → 549 in the r4 round, → 551 in the r5
-round, whose 96-test narrowed suite the re-cut moves to 82, the r7 fix round to 90 and the r8 fix
-round to 93; the whole discovery moves 537 → 545 → 548). Its `secrets` count (236
-files) is
+round, whose 96-test narrowed suite the re-cut moves to 82, the r7 fix round to 90, the r8 fix
+round to 93 and the r11 round to 94; the whole discovery moves 537 → 545 → 548, → 555 in the r9+r10
+rounds (the Windows-leg cases and the host contract's own) and → 559 in the r11 round, whose four are
+the undecodable-install case, the two probe-answer cases and the parity-staging case). Its `secrets`
+count (313 files) is
 this worktree's own scope — the
 count includes untracked `__pycache__`/`bin` files — not a change the re-cut made.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The suite's host-contract lint: no case announces a platform premise by hand.
+"""The suite's host-contract lint, and the host contract's own probe answers.
 
 ``scripts/tests/_host_contract.py`` measures this host's own filesystem answers once at import and
 offers the canonical constructors for the fixtures that depend on them; a *pure* path rule is a
@@ -18,8 +18,9 @@ idioms that were each one red CI leg before the contract existed --
 - a ``":"`` literal building or splitting ``PATH``: the split and the join go through
   ``os.pathsep``, and the lint reads the statement the call stands in for the ``PATH`` it names;
 - an ``os.access(..., os.X_OK)`` assertion whose enclosing function does not consult
-  ``HOST_SEMANTICS.posix_exec_bits_enforced``: Windows answers ``X_OK`` for any existing file, so an
-  executability assertion without the measured answer pins nothing there.
+  ``HOST_SEMANTICS.exec_lookup_follows_mode_bits``: Windows answers ``X_OK`` for any existing file
+  and a POSIX scratch mount can be mounted ``noexec``, so an executability assertion without the
+  measured answer pins nothing there.
 
 The lint is a tripwire, not a prover: a premise smuggled through a helper of the case's own is out of
 its reach. Its own bite is pinned case by case below, and the gate's ``selftest`` step runs this file
@@ -29,13 +30,20 @@ its reach. Its own bite is pinned case by case below, and the gate's ``selftest`
 from __future__ import annotations
 
 import ast
+import dataclasses
 import io
+import os
 import pathlib
+import sys
 import tempfile
 import tokenize
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import _host_contract as HOST_CONTRACT  # noqa: E402  (the suite's host contract, beside this file)
+
 EXCLUDED = {HERE / "_host_contract.py", HERE / "test_host_contract.py"}
 
 MARKER = "host-contract: synthetic-errno"
@@ -55,8 +63,8 @@ _SEPARATOR_DETAIL = ("a fixture anchored on a bare separator spells one dialect'
                      "through _host_contract.make_abs_path/make_rooted_path, or drive the path "
                      "dialects")
 _EXEC_BIT_DETAIL = ("an executability assertion does not consult "
-                    "HOST_SEMANTICS.posix_exec_bits_enforced, which says whether this host's mode "
-                    "bits answer at all")
+                    "HOST_SEMANTICS.exec_lookup_follows_mode_bits, which says whether this host's "
+                    "executable lookup answers for a mode-bit executable")
 
 
 def _comment_text_per_line(source: str) -> dict[int, str]:
@@ -119,7 +127,7 @@ class _Scanner:
         if isinstance(node, ast.Attribute):
             if node.attr == "sep" and _dotted(node.value) in ("os", "os.path"):
                 self._flag(node, "bare-separator-fixture", _SEPARATOR_DETAIL)
-            if node.attr == "posix_exec_bits_enforced":
+            if node.attr == "exec_lookup_follows_mode_bits":
                 self._consulting.add(function)
 
     def _check_call(self, node: ast.Call, statement: ast.stmt | None, function: ast.AST | None) -> None:
@@ -278,7 +286,7 @@ class TheLintBites(unittest.TestCase):
             "import os\n\nfrom _host_contract import HOST_SEMANTICS\n\n\n"
             "def executable(path):\n"
             "    os.chmod(path, 0o755)\n"
-            "    if HOST_SEMANTICS.posix_exec_bits_enforced:\n"
+            "    if HOST_SEMANTICS.exec_lookup_follows_mode_bits:\n"
             "        return os.access(path, os.X_OK)\n"
             "    return path.exists()\n")
         self.assert_not_flagged(
@@ -287,10 +295,51 @@ class TheLintBites(unittest.TestCase):
         self.assert_flagged(
             "import os\n\nfrom _host_contract import HOST_SEMANTICS\n\n\n"
             "def measured():\n"
-            "    return HOST_SEMANTICS.posix_exec_bits_enforced\n\n\n"
+            "    return HOST_SEMANTICS.exec_lookup_follows_mode_bits\n\n\n"
             "def executable(path):\n"
             "    return os.access(path, os.X_OK)\n",
             "exec-bit-premise", 11)
+
+
+class TheProbeKeepsTheTwoExecBitQuestionsApart(unittest.TestCase):
+    """The probe answers mode-bit storage from ``stat`` and executable lookup from ``access``.
+
+    A POSIX scratch mount mounted ``noexec`` refuses ``os.access(..., X_OK)`` for a file whose stored
+    owner-execute bit is set; the pre-fix probe folded that refusal into its single answer, and
+    ``_assert_sane`` then raised at import, before the suite could run (the r8 finding). Storage is
+    the answer the parity checker's own read (``stat``) depends on, so it must not move with the
+    mount; the lookup answer is measured beside it and never asserted.
+    """
+
+    def probe_with_lookup_refused(self) -> tuple[bool, bool]:
+        real_access = os.access
+
+        def refusing(path, mode, **kwargs):
+            if mode == os.X_OK:
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="host-contract-exec-") as scratch:
+            with mock.patch.object(HOST_CONTRACT.os, "access", refusing):
+                return HOST_CONTRACT._probe_exec_bits(pathlib.Path(scratch))
+
+    def test_a_refused_exec_lookup_leaves_the_storage_answer_standing(self) -> None:
+        stored, follows = self.probe_with_lookup_refused()
+        self.assertEqual(stored, HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored,
+                         "the mount's exec policy moved the probe's mode-bit storage answer")
+        self.assertFalse(follows, "a refused X_OK was answered as a lookup that followed the bits")
+        HOST_CONTRACT._assert_sane(dataclasses.replace(
+            HOST_CONTRACT.HOST_SEMANTICS, mode_bits_stored=stored,
+            exec_lookup_follows_mode_bits=follows))
+
+    def test_a_storage_answer_the_platform_contradicts_is_still_loud(self) -> None:
+        """This case is the POSIX arm, where storage is a documented rule rather than a measurement
+        that may legitimately answer ``False`` (win32 stores no POSIX mode bits)."""
+        if os.name != "posix":
+            self.skipTest("the assertion it pins is the POSIX arm of _assert_sane")
+        with self.assertRaises(AssertionError):
+            HOST_CONTRACT._assert_sane(dataclasses.replace(
+                HOST_CONTRACT.HOST_SEMANTICS, mode_bits_stored=False))
 
 
 if __name__ == "__main__":

@@ -37,7 +37,11 @@ class HostSemantics:
     ``symlink_dotdot_follows_link`` -- whether ``link/..`` follows the link (POSIX) or the component
     is removed before the link is followed (win32). ``o_excl_follows_dangling_symlink`` -- whether an
     exclusive create at a dangling link follows it and creates the target (win32) or refuses (POSIX).
-    ``posix_exec_bits_enforced`` -- whether a mode change controls ``os.access(..., X_OK)``.
+    ``mode_bits_stored`` -- whether ``chmod`` controls the bits ``stat`` reports, which is the bit a
+    git mode record is read with. ``exec_lookup_follows_mode_bits`` -- whether ``os.access(...,
+    X_OK)`` answers for a file whose stored bits allow execution: a different question, answered by
+    the mount as well as the filesystem (win32 answers ``X_OK`` for any existing file, and a POSIX
+    scratch mount can be mounted ``noexec``), so it is measured and never asserted.
     """
 
     abs_anchor: str
@@ -45,7 +49,8 @@ class HostSemantics:
     can_symlink: bool
     symlink_dotdot_follows_link: bool
     o_excl_follows_dangling_symlink: bool
-    posix_exec_bits_enforced: bool
+    mode_bits_stored: bool
+    exec_lookup_follows_mode_bits: bool
 
 
 def _lexical_dotdot_platform() -> bool:
@@ -84,16 +89,22 @@ def _probe_links(scratch: pathlib.Path) -> tuple[bool, bool, bool]:
     return True, follows, o_excl_follows
 
 
-def _probe_exec_bits(scratch: pathlib.Path) -> bool:
-    # win32 answers X_OK for any existing file, so a one-sided ask cannot tell enforcement from its
-    # absence (measured against CPython 3.13's os_access_impl); clearing the bits and setting them
-    # again can.
+def _probe_exec_bits(scratch: pathlib.Path) -> tuple[bool, bool]:
+    """``(mode bits are stored, executable lookup follows them)`` -- two different questions.
+
+    Storage is the bit question a git mode record is read with: whether ``chmod`` controls what
+    ``stat`` reports. Lookup is whether ``os.access(..., X_OK)`` answers for a file whose stored bits
+    allow execution: win32 answers ``X_OK`` for any existing file (measured against CPython 3.13's
+    ``os_access_impl``), and a POSIX scratch mount can be mounted ``noexec``, so this answer is
+    measured beside the storage one rather than standing in for it.
+    """
     probe = scratch / "exec-bits-probe"
     probe.write_text("#!/bin/sh\n", encoding="utf-8")
     os.chmod(probe, 0o644)
-    cleared = not os.access(probe, os.X_OK)
+    cleared = not probe.stat().st_mode & 0o100
     os.chmod(probe, 0o755)
-    return cleared and os.access(probe, os.X_OK)
+    stored = bool(probe.stat().st_mode & 0o100)
+    return cleared and stored, cleared and stored and os.access(probe, os.X_OK)
 
 
 def _assert_sane(semantics: HostSemantics) -> None:
@@ -101,8 +112,8 @@ def _assert_sane(semantics: HostSemantics) -> None:
     if os.name == "posix":
         assert semantics.symlink_dotdot_follows_link, (
             "POSIX resolves `link/..` through the link; the probe answered otherwise and is broken")
-        assert semantics.posix_exec_bits_enforced, (
-            "POSIX enforces its mode bits; the probe answered otherwise and is broken")
+        assert semantics.mode_bits_stored, (
+            "POSIX stores its mode bits; the probe answered otherwise and is broken")
     if os.name == "nt":
         assert not semantics.symlink_dotdot_follows_link, (
             "win32 removes a `..` component lexically before the reparse point is followed; the "
@@ -113,13 +124,15 @@ def _probe() -> HostSemantics:
     with tempfile.TemporaryDirectory(prefix="ccc-host-contract-") as scratch_text:
         scratch = pathlib.Path(scratch_text)
         can_symlink, follows_dotdot, excl_follows = _probe_links(scratch)
+        mode_bits_stored, exec_lookup_follows = _probe_exec_bits(scratch)
         semantics = HostSemantics(
             abs_anchor=os.path.splitdrive(os.getcwd())[0] + os.sep,
             fs_case_sensitive=_probe_case_sensitivity(scratch),
             can_symlink=can_symlink,
             symlink_dotdot_follows_link=follows_dotdot,
             o_excl_follows_dangling_symlink=excl_follows,
-            posix_exec_bits_enforced=_probe_exec_bits(scratch),
+            mode_bits_stored=mode_bits_stored,
+            exec_lookup_follows_mode_bits=exec_lookup_follows,
         )
     _assert_sane(semantics)
     return semantics

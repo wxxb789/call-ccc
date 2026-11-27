@@ -16,6 +16,7 @@ Python 3 the repository documents.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib.util
 import io
@@ -173,8 +174,8 @@ class ParityTree:
         (self.root / relative).unlink()
 
     def apply_executable_bit(self, relative: str, mode: str) -> None:
-        """Match the file's mode to the manifest's, where this host's filesystem carries the bits."""
-        if mode == "100755" and HOST_CONTRACT.HOST_SEMANTICS.posix_exec_bits_enforced:
+        """Match the file's mode to the manifest's, where this host's filesystem stores the bits."""
+        if mode == "100755" and HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored:
             path = self.root / relative
             path.chmod(path.stat().st_mode | 0o111)
 
@@ -818,6 +819,37 @@ class ParityCase(ParityTreeCase, unittest.TestCase):
         os.chmod(self.tree.root / "src/b.sh", 0o644)
         code, output = self.tree.run_parity(executable_bit_supported=lambda: True)
         self.assert_failed(code, output, "executable bit")
+
+    def test_the_staged_executable_bit_follows_the_stored_bits(self) -> None:
+        """The parity fixture's staging asks whether this host *stores* mode bits, not whether its
+        vfs *lookups* honour them.
+
+        The checker reads the staged copy with ``stat``, whose answer a ``noexec`` mount does not
+        change -- so staging must set the bit where storage works even when the host refuses
+        ``os.access(..., X_OK)`` for the same file (the r8 finding: the pre-fix answer folded the two
+        questions together, and a ``noexec`` mount silently staged ``100755`` records without their
+        bit). The control arm is the same call with storage answered ``False``: no bit is set. A
+        Windows filesystem stores no POSIX mode bits, so this case asserts that measured answer there
+        instead of changing one.
+        """
+        if not HOST_CONTRACT.HOST_SEMANTICS.mode_bits_stored:
+            self.skipTest("this host stores no POSIX mode bits; the rule this case pins is the "
+                          "storing POSIX one")
+        path = self.tree.root / "src/b.sh"
+        semantics = HOST_CONTRACT.HOST_SEMANTICS
+        path.chmod(0o644)
+        with mock.patch.object(HOST_CONTRACT, "HOST_SEMANTICS",
+                               dataclasses.replace(semantics, mode_bits_stored=True,
+                                                   exec_lookup_follows_mode_bits=False)):
+            self.tree.apply_executable_bit("src/b.sh", "100755")
+        self.assertEqual(path.stat().st_mode & 0o100, 0o100,
+                         "staging left a 100755 record's file without its bit where the host stores "
+                         "the bits and refuses only the exec lookup")
+        path.chmod(0o644)
+        with mock.patch.object(HOST_CONTRACT, "HOST_SEMANTICS",
+                               dataclasses.replace(semantics, mode_bits_stored=False)):
+            self.tree.apply_executable_bit("src/b.sh", "100755")
+        self.assertEqual(path.stat().st_mode & 0o100, 0, "a host without stored bits was chmod'ed")
 
     def test_the_owner_executable_bit_is_the_one_compared_with_the_record(self) -> None:
         """Git's executable mode *is* the owner's execute bit, so ``0655`` is ``100644`` to git.

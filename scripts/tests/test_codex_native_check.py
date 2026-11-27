@@ -671,6 +671,7 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
               keep: bool = False,
               unreadable_home_entry: str | None = None,
               installed_unreadable: bool = False,
+              installed_undecodable: bool = False,
               race_plant: bool = False,
               plant_write_fails: bool = False,
               unlink_fails: bool = False,
@@ -775,10 +776,13 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         predicate its check records;
         ``unreadable_home_entry`` (``"directory"`` or ``"link"``) puts an entry under the home whose
         name matches ``rollout-*.jsonl`` and whose bytes cannot be read — a directory, or a dangling
-        link — so the snapshot of the sessions a conversion must not touch cannot be taken; and
+        link — so the snapshot of the sessions a conversion must not touch cannot be taken;
         ``installed_unreadable`` makes the first conversion write nothing but a directory at the name it
         reports, so every read of the installed session becomes a named failure rather than an
-        exception. ``raises_at`` makes one of the run's own invocations fail to *start*
+        exception; ``installed_undecodable`` writes one 0xFF byte inside a JSON string of that file
+        instead, so the text reads answer the byte-level failure rather than letting the locale's
+        decoder decide (a lenient locale would decode the byte into text the line rule accepts).
+        ``raises_at`` makes one of the run's own invocations fail to *start*
         (``"build"``, ``"convert"``, ``"inspect"`` or ``"turn"``): the command is never answered — an
         ``OSError``, or a deadline the turn overruns (``TimeoutExpired``) — so every check standing on
         it has to answer by name rather than letting the exception out of ``main``. The run's own stdout
@@ -1022,6 +1026,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                         # The name the document reports holds a directory instead of the file: every
                         # read of it must be the check's own named failure, never an exception.
                         path.mkdir()
+                    elif which == "first" and installed_undecodable:
+                        # One 0xFF byte inside a JSON string: bytes no UTF-8 decoder reads, and text a
+                        # lenient locale's decoder would answer as a string the line rule accepts.
+                        path.write_bytes(body.encode("utf-8") + b'{"note": "\xff"}\n')
                     else:
                         path.write_text(body)
                     return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
@@ -1044,9 +1052,10 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
                                                        "the stub turn refused\n")
                 second = second_thread_id in command
                 turned = second_installed if second else installed
-                if second or not installed_unreadable:
-                    # `installed_unreadable` staged a directory at the first session's name: the turn
-                    # cannot add a record to it, and the turn's own check records the non-growth.
+                if second or not (installed_unreadable or installed_undecodable):
+                    # `installed_unreadable` staged a directory at the first session's name and
+                    # `installed_undecodable` bytes no decoder reads: the turn cannot add a record to
+                    # either, and the turn's own check records the non-growth.
                     turned.write_text(turned.read_text() + json.dumps({"type": "turn"}) + "\n")
                 if copy_mutation == ("second turn" if second else "first turn"):
                     # The copy the conversions read, changed while a real *turn* runs: for the first turn
@@ -1776,6 +1785,33 @@ class ProtectedArtifactsAfterNativeVerification(unittest.TestCase):
         self.assertEqual(results.get("the source session is unchanged", ("missing", ""))[0], "PASS",
                          f"the closing comparison did not run on the unreadable run: {results}")
 
+    def test_an_installed_session_that_is_not_utf8_is_a_named_failure(self) -> None:
+        """An invalid UTF-8 byte in the installed file is a text read's named failure, not an exception.
+
+        The stub's first conversion reports a name whose file holds one 0xFF byte inside a JSON
+        string — bytes no UTF-8 decoder reads, and text a lenient locale's decoder would answer as a
+        string the line rule accepts. The text reads are decoded as UTF-8 explicitly, so each records
+        its own failure carrying the path (pre-fix the helper read through the locale encoding: the
+        strict locale raised ``UnicodeDecodeError`` out of ``main``, and the lenient locale's verdict
+        followed the locale instead of the file's bytes). The byte digest of the same file still
+        answers, so the pair's digest comparison passes — the failure is exactly the text reads — and
+        the run exits 1 with no traceback.
+        """
+        code, results = self.drive(mutate_during_resume=False, installed_undecodable=True)
+        self.assertNotIn("Traceback", self.last_stdout + self.last_stderr,
+                         "an undecodable installed session came out as a traceback")
+        self.assertEqual(code, 1, f"exit {code}: {self.last_stderr!r}")
+        for name in ("the installed file is one JSON object per line",
+                     "the second conversion carries the history the source gained"):
+            state, detail = results.get(name, ("missing", ""))
+            self.assertEqual(state, "FAIL", f"{name}: {state} — {detail}")
+            self.assertIn("cannot be read as UTF-8", detail, detail)
+        self.assertEqual(results.get("the first conversion's session is unchanged by the second",
+                                     ("missing", ""))[0], "PASS",
+                         f"the same file's digest comparison did not run: {results}")
+        self.assertEqual(results.get("the source session is unchanged", ("missing", ""))[0], "PASS",
+                         f"the closing comparison did not run on the undecodable run: {results}")
+
     def test_a_command_that_cannot_be_started_is_a_named_failure(self) -> None:
         """Every invocation the run stands on answers by name when the process never starts.
 
@@ -1909,16 +1945,17 @@ class LaunchPathResolution(unittest.TestCase):
             with self.subTest(dialect="this host", path=given):
                 self.assertEqual(NATIVE_CHECK.absolute_launch_path(given), given)
 
-    def test_a_rooted_path_is_answered_by_the_dialects_own_predicate(self) -> None:
-        """The rooted, drive-less shape: absolute on POSIX, rooted-and-not-absolute on Windows.
+    def test_a_rooted_path_is_answered_by_the_dialects_own_join(self) -> None:
+        """The rooted, drive-less shape: rooted on both dialects, answered unchanged on one.
 
-        The dialect's own `isabs` answer decides, exactly as `absolute_launch_path`'s contract states:
-        `/opt/bin/codex` is absolute to `posixpath` and answered unchanged, while a root with no drive
-        is not absolute to CPython >= 3.13's `ntpath.isabs` and is anchored to the process's own
-        directory, which resolves its root and supplies the current drive. `PureWindowsPath` has
-        answered `False` for the shape since 3.4 while `ntpath.isabs` answered `True` until 3.13, so
-        both answers are pinned: a 3.11/3.12 host asserts the strict rule its own `ntpath` cannot give
-        it, and the dialect arm asserts whichever answer the running minor's predicate actually gives.
+        `/opt/bin/codex` names its own anchor to `posixpath`, so the join onto any directory answers it
+        unchanged and the rule returns it; a root with no drive is a spelling whose drive comes from
+        the *consumer's* current directory, so the win32 dialect's join onto the process's directory
+        spells it out (`C:\\opt\\bin\\codex`) and the rule answers that instead — the same answer on
+        every CPython minor, which the predicate does not decide: `PureWindowsPath` has answered
+        `False` for the shape's absoluteness since 3.4 while `ntpath.isabs` answered `True` until
+        3.13, and the two version arms below pin that spread, so a rule that followed the predicate
+        instead of the join would answer differently on 3.11/3.12 than on 3.13+.
         """
         rooted = {label: HOST_CONTRACT.make_rooted_path("opt", "bin", "codex", pathmod=pathmod)
                   for label, pathmod, _, _ in PATH_DIALECTS}
@@ -1936,26 +1973,31 @@ class LaunchPathResolution(unittest.TestCase):
             given = rooted[label]
             with self.subTest(dialect=label, path=given):
                 answered = NATIVE_CHECK.absolute_launch_path(given, pathmod=pathmod, cwd=cwd)
-                if pathmod.isabs(given):
-                    self.assertEqual(answered, given)
-                else:
+                self.assertEqual(pathmod.join(cwd, answered), answered,
+                                 f"{answered!r} is not anchored under {cwd!r}")
+                if pathmod is ntpath:
                     self.assertNotEqual(answered, given,
-                                        "a drive-less rooted path was answered as itself on a dialect "
-                                        "whose own predicate does not call it absolute")
+                                        "a drive-less rooted path was answered as itself: its drive "
+                                        "would come from whichever process joins the spelling")
+                    self.assertEqual(answered, pathmod.join(cwd, given))
                     self.assertEqual(pathmod.splitdrive(answered)[0], pathmod.splitdrive(cwd)[0],
                                      f"{answered!r} is not anchored to the dialect's own drive")
-                    self.assertEqual(answered, pathmod.join(cwd, given))
+                else:
+                    self.assertEqual(answered, given,
+                                     "a spelling that names its own anchor was rewritten")
         given = HOST_CONTRACT.make_rooted_path("opt", "bin", "codex")
         answered = NATIVE_CHECK.absolute_launch_path(given)
-        if os.path.isabs(given):
-            self.assertEqual(answered, given)
-        else:
+        self.assertEqual(os.path.join(os.getcwd(), answered), answered,
+                         f"{answered!r} is not anchored under the process's own directory")
+        if os.name == "nt":
             self.assertNotEqual(answered, given,
-                                "a drive-less rooted path was answered as itself on a platform whose "
-                                "own predicate does not call it absolute")
+                                "a drive-less rooted path was answered as itself on win32: its drive "
+                                "would come from whichever process joins the spelling")
             self.assertEqual(os.path.splitdrive(answered)[0], os.path.splitdrive(os.getcwd())[0],
                              f"{answered!r} is not anchored to the process's own drive")
-            self.assertEqual(answered, os.path.join(os.getcwd(), given))
+        else:
+            self.assertEqual(answered, given,
+                             "this host's rooted path names its own anchor and must be returned")
 
     def test_a_lexical_collapse_would_name_another_file(self) -> None:
         """Which file each form names is the host's own resolution; the answer keeps the caller's path.
@@ -2934,11 +2976,14 @@ class CodexArtifactOracle(unittest.TestCase):
     def test_a_receipt_document_nested_past_the_stated_bound_is_refused_by_name(self) -> None:
         """A receipt's own byte statement decides a nested document, not the reading interpreter.
 
-        The rule reads three members; a document nesting an *ignored* member past
-        ``ORACLE_NESTING_BOUND`` — the shape measured answering PASS on Python 3.15 and
-        `RecursionError`/INCOMPLETE on 3.11, because the whole document was materialized — is refused
-        by the bound the rule states, before any member is read. A document nested exactly at the bound
-        is read like any other, and the ignored member passes within it.
+        A document nesting an *ignored* member past ``ORACLE_NESTING_BOUND`` — the shape measured
+        answering PASS on Python 3.15 and `RecursionError`/INCOMPLETE on 3.11, because the whole
+        document was materialized — is an input the reading cannot read: refused by name, before any
+        member is read, as INCOMPLETE (exit 2) like a document that is not JSON, and never masked by
+        ``--disable-rule`` (the r8 finding: the pre-fix refusal was `oracle.receipt-integrity`'s own
+        violation, so 257 openers and no closers turned into a PASS once that rule was disabled). A
+        document nested exactly at the bound is read like any other, and the ignored member passes
+        within it.
         """
         bound = NATIVE_CHECK.ORACLE_NESTING_BOUND
         fixture = NATIVE_CHECK.ORACLE_FIXTURE_ROOT / NATIVE_CHECK.ORACLE_ARTIFACT
@@ -2955,23 +3000,35 @@ class CodexArtifactOracle(unittest.TestCase):
             at_bound.write_text(with_ignored_member(bound - 1), encoding="utf-8")
             deep = root / "deep.receipt.json"
             deep.write_text(with_ignored_member(2000), encoding="utf-8")
+            unbalanced = root / "unbalanced.receipt.json"
+            unbalanced.write_text("[" * (bound + 1), encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 code = NATIVE_CHECK.main(["--validate", str(fixture), "--receipt", str(at_bound)])
             self.assertEqual(code, 0, f"a receipt at the stated bound was refused: {output.getvalue()}")
             self.assertEqual(output.getvalue().strip().splitlines()[-1], "oracle: PASS — 3 record(s)",
                              output.getvalue())
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                code = NATIVE_CHECK.main(["--validate", str(fixture), "--receipt", str(deep)])
-            self.assertEqual(code, 1, f"exit {code}: {output.getvalue()}")
-            self.assertIn("oracle: oracle.receipt-integrity — the receipt document is nested deeper "
-                          f"than {bound} levels", output.getvalue())
-            self.assertEqual(output.getvalue().strip().splitlines()[-1],
-                             "oracle: FAIL — 3 record(s), 1 violation(s)", output.getvalue())
-        self.assertIn(f"nested deeper than {bound} levels",
-                      NATIVE_CHECK.ORACLE_RULES["oracle.receipt-integrity"],
-                      "the rule's own sentence does not state the bound the code enforces")
+            for label, document in (("an ignored member nested 2,000 deep", deep),
+                                    (f"{bound + 1} openers and no closers", unbalanced)):
+                argv = ["--validate", str(fixture), "--receipt", str(document)]
+                with self.subTest(receipt=label):
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors):
+                        code = NATIVE_CHECK.main(argv)
+                    self.assertEqual(code, 2, f"{label}: exit {code}, {errors.getvalue()}")
+                    self.assertIn("oracle: INCOMPLETE", errors.getvalue(), label)
+                    self.assertIn(f"nested deeper than {bound} levels", errors.getvalue(), label)
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors):
+                        code = NATIVE_CHECK.main(argv + ["--disable-rule", "oracle.receipt-integrity"])
+                    self.assertEqual(code, 2, f"{label} with its rule disabled: exit {code}, "
+                                              f"{errors.getvalue()}")
+                    self.assertIn("oracle: INCOMPLETE", errors.getvalue(), label)
+                    self.assertIn(f"nested deeper than {bound} levels", errors.getvalue(), label)
+        self.assertNotIn(f"nested deeper than {bound} levels",
+                         NATIVE_CHECK.ORACLE_RULES["oracle.receipt-integrity"],
+                         "the receipt rule still claims the depth refusal, which is the reading's "
+                         "own unreadable-input answer rather than this rule's to disable")
 
     def test_the_unterminated_tail_is_counted_in_the_artifact_s_own_bytes(self) -> None:
         """`oracle.whole-lines` states a byte count: an unterminated record holding multi-byte text is

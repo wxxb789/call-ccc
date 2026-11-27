@@ -34,11 +34,13 @@ the Codex knowledge from Python rather than repairing it.
    ordering, with its fixtures and mutations. The list is derived by **reading PR #19's diff**
    (`git diff 8989d2c..archive/0009a-pre-rescope`) — one entry per rule, named by its id, its positive
    fixture and each of its mutations — and lands in the evidence record in full.
-3. **The Codex judgment is the installed `codex` binary's** — the native check runs the binary against an
-   artifact and reports *its* answer (load / resume / refusal); where the binary is absent the check
-   prints the reason and exits non-zero (exit 2 today). No Python restatement of the loader anywhere.
-   The owner's answer stands: follow `latest` (no version re-pin), and every native run records the
-   resolved version and the binary's own SHA-256.
+3. **The Codex judgment is the installed `codex` binary's** — the native check drives the binary and
+   reports *its* answer (the loader's own `thread/resume`/`thread/read`, and a real turn where a prompt
+   flag asks for one); where the binary is absent the check prints the reason and exits non-zero (exit 2
+   today). No Python restatement of the loader anywhere. Follow `latest` — no version re-pin. The
+   resolved version and the binary's own SHA-256 fingerprint, and the arm that plants a fabricated
+   artifact and records the binary's refusal, are [goal
+   0009e](../goals/0009e-native-check-hardening.md)'s (both moved by the 2026-11-26 re-cut).
 4. **Not claimed** — that the offline half can detect a Codex artifact the binary would reject. It
    cannot, by construction; the disclosure lands in the goal file, the evidence record and the harness
    documentation (the gate never runs the native half).
@@ -56,7 +58,7 @@ is otherwise untouched (the re-cut below removed the two report additions the fi
 | `oracle.utf8` | the artifact's bytes are valid UTF-8 text and its first bytes are no byte-order mark |
 | `oracle.whole-lines` | the artifact's bytes are whole lines: the empty artifact, or bytes whose final byte is a line feed — an artifact whose last bytes are an unterminated record is refused |
 | `oracle.jsonl-objects` | every line is exactly one JSON object, every member name written once inside it, and no string it holds carries an unpaired surrogate escape — a repeated name and a `\ud800`-style escape are shapes JSON itself leaves two readers free to answer differently for, so such a line is refused rather than read as either answer; a line nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
-| `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule; a receipt document nested deeper than 256 levels is refused as well — the bound is the rule's own statement rather than the reading interpreter's recursion limit |
+| `oracle.receipt-integrity` | a receipt states the frozen artifact's byte count, its whole-file SHA-256 and one anchor per line — the SHA-256 of that line's own bytes, line feed included, in order — and a receipt whose statements do not match the artifact's bytes is refused, naming the line a changed byte moved and, where the two sides hold different line counts, the first line without a counterpart anchor; a receipt covers an artifact holding at least one line, so the empty artifact is not receipt-identified by this rule |
 
 **Every rule is evaluated, or explicitly `NotEvaluated`.** `ORACLE_RULE_INPUTS` declares what each rule
 reads: `oracle.utf8`, `oracle.whole-lines` and `oracle.receipt-integrity` are `on_bytes` — evaluated
@@ -78,13 +80,15 @@ three JSON objects that model no agent's format, committed with its receipt
 `session-media.jsonl` and the two manifest receipts) are **deleted with their rules**. A committed
 fixture that *were* a Codex session would re-enter the Codex knowledge the deletion removes; a case that
 fails if schema knowledge creeps back (`CodexArtifactOracle`) asserts both the id set and that this
-artifact passes, and the disclosure arm in the native check shows the binary refusing the same bytes.
+artifact passes; the arm that plants a fabricated artifact and records the binary's refusal is
+[goal 0009e](../goals/0009e-native-check-hardening.md)'s (the re-cut above).
 
 **Receipt document shape.** One JSON object per artifact:
 `{"bytes": <n>, "sha256": "<64 hex>", "lines": [{"sha256": "<64 hex>"}, …]}` — one entry per line, in
 order, each over the line's own bytes **including its line feed**; further members are not read. A
-document that does not parse, or repeats a member name, is an unreadable *input* (`INCOMPLETE`, exit 2),
-never a pass.
+document that does not parse, repeats a member name, or nests deeper than 256 levels is an unreadable
+*input* (`INCOMPLETE`, exit 2) — the depth refusal answered before a member is read, so no
+`--disable-rule` can mask it — never a pass.
 
 **CLI.** `--validate <artifact> [--receipt <document>] [--disable-rule <RULE_ID>] [--json]` prints
 `oracle: PASS` / `oracle: FAIL — <n> violation(s)` / `oracle: INCOMPLETE — <reason>` with exit 0/1/2;
@@ -101,9 +105,12 @@ fingerprint**. Both are removed from this increment and moved to [goal
 0009e](../goals/0009e-native-check-hardening.md), whose reviewed starting point is tag
 `archive/0009a-r16-native-arm` (head `768df19`). What this increment now ships under D3 is the native
 check **without** them: the loader's own answers and the real-turn checks the base carried, with the
-`os.path.abspath` (never `resolve()`) launching rule kept (the r7 round refines the absolutization: no
-component is normalized, `Q-0009a-12`), and the absent-binary reason and non-zero
-exit kept. The three round-5 findings that stay in the shipped half are fixed here: the
+launching rule kept — `os.path.abspath`'s lexical `..`-collapse and `resolve()` are both out (the r7
+refinement, `Q-0009a-12`), and since the round-11 refinement the answer is the spelling the host
+dialect's own join onto the process's directory leaves alone, so a drive-less rooted path (which
+3.11/3.12's `ntpath.isabs` *calls* absolute) is anchored to this process's own drive rather than handed
+to consumers whose working directories differ (`Q-0009a-16`) — and the absent-binary reason and
+non-zero exit kept. The three round-5 findings that stay in the shipped half are fixed here: the
 `--selftest-mutations` corpus declares each pair's expected unjudged rules and asserts them
 independently of the reading's reply (D1); the receipt rule reads only its three members, so an ignored
 member holding a five-thousand-digit integer cannot turn an unchanged receipt INCOMPLETE (D4); and the
@@ -142,9 +149,13 @@ increment's own plan/evidence — plus the documentation lines the deleted oracl
 (`docs/harness.md`'s native-check section, the goals index row), the superseded plan stub
 (`docs/plans/0009a-native-oracle.md`, reduced to a pointer in the same increment) and
 `docs/decisions/OPEN-QUESTIONS.md`.
-**No Go change, no gate step added, no CI change, no `AGENTS.md` edit** (this increment changes no
-layout, no gate step, no command an agent runs and no rule an agent follows, so the growth policy says
-no `AGENTS.md` edit is owed). Nothing carried is touched. A cited Go test must already exist and pass.
+**No Go change, no gate step added, no CI change**; the `AGENTS.md` edit the increment owes is the
+harness-tests bullet the round-10 root fix's host contract required (`scripts/tests/_host_contract.py`,
+`scripts/tests/test_host_contract.py`, `docs/conventions.md`'s host-dialect paragraph, named with the
+sibling cases the sweep aligned in the goal file's `Bounds` disclosure, `Q-0009a-14`) — the growth
+policy's own "when an increment changes a rule an agent must follow, update this file in the same
+increment", recorded there rather than silently absorbed. Nothing carried is touched. A cited Go test
+must already exist and pass.
 
 ## Rollback
 
